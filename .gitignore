@@ -4,3 +4,6 @@ records/
 dist/
 build/
 __pycache__/
+.demo/
+.demo2/
+.demo-src/

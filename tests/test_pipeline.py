@@ -162,3 +162,10 @@ def test_limit_stops_after_n_docs(cfg, flat_opc, monkeypatch):
     )
     report = pipeline.run(cfg, index=StubIndex(), limit=1)
     assert report.converted == 1
+
+
+def test_relative_folder_is_resolved_to_absolute(tmp_path, monkeypatch, docs_dir):
+    """相对目录必须解析成绝对路径：COM 不接受相对路径（WPS 报 3010 打开失败）。"""
+    monkeypatch.chdir(tmp_path)
+    entries = pipeline._iter_docs([Path("成果")])
+    assert entries and all(path.is_absolute() for path, _ in entries)

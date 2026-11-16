@@ -210,3 +210,34 @@ def plaintext_pdf_bytes() -> bytes:
     data = doc.tobytes()
     doc.close()
     return data
+
+
+@pytest.fixture
+def real_encrypted_docs_dir(tmp_path: Path) -> Path:
+    """把三份真实样本（加密 docx / 加密 pptx / 加密 pdf）复制到一个临时目录。
+
+    python 读到的是密文、写出的也还是密文，所以复制不改变加密状态。
+    """
+    import shutil
+
+    sources = [
+        DESKTOP_DOCX,
+        DESKTOP_PPTX,
+        DESKTOP_PDF,
+    ]
+    missing = [str(p) for p in sources if not p.is_file()]
+    if missing:
+        pytest.skip(f"真实样本缺失：{missing}")
+    target = tmp_path / "真实样本"
+    target.mkdir()
+    for src in sources:
+        shutil.copy2(src, target / src.name)
+    return target
+
+
+@pytest.fixture
+def acrobat_tool_dir() -> Path:
+    tool_dir = Path(r"D:\应用软件\右键解密")
+    if not (tool_dir / "acrobat.exe").is_file():
+        pytest.skip(f"兜底工具缺失：{tool_dir}")
+    return tool_dir

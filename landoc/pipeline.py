@@ -67,7 +67,9 @@ def _iter_docs(folders) -> list[tuple[Path, str]]:
     """返回 (绝对路径, 库内相对路径)；相对路径带顶层文件夹名，避免同名目录互相覆盖。"""
     out: list[tuple[Path, str]] = []
     for folder in folders:
-        folder = Path(folder)
+        # 必须是绝对路径：COM 的 Documents.Open 会把相对路径解析到 Office 自己的
+        # 工作目录，WPS 直接报"文档打开失败（3010）"。
+        folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
             continue
         for dirpath, dirnames, filenames in os.walk(folder):
