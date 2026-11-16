@@ -150,3 +150,63 @@ def encrypted_pptx_path() -> Path:
     if not DESKTOP_PPTX.is_file():
         pytest.skip(f"真实加密文件不存在：{DESKTOP_PPTX}")
     return DESKTOP_PPTX
+
+
+DESKTOP_PDF = Path(
+    r"C:\Users\Administrator\Desktop\测试文件\附件1 江西省“十五五”水安全保障规划报告（送审稿）.pdf"
+)
+ACROBAT_TOOL_DIR = Path(r"D:\应用软件\右键解密")
+
+
+@pytest.fixture
+def plain_pdf_path(tmp_path: Path) -> Path:
+    """pymupdf 生成的明文 PDF（含中文，需 CJK 内置字体）。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "附件1 江西省十五五水安全保障规划报告", fontname="china-s", fontsize=14)
+    page.insert_text((72, 140), "马斯京根法河道洪水演算示例", fontname="china-s", fontsize=12)
+    path = tmp_path / "plain.pdf"
+    doc.save(path)
+    doc.close()
+    return path
+
+
+@pytest.fixture
+def encrypted_pdf_path() -> Path:
+    """桌面上那份真实加密 PDF（密文头 17da5fa0），仅 slow 用例使用。"""
+    if not DESKTOP_PDF.is_file():
+        pytest.skip(f"真实加密文件不存在：{DESKTOP_PDF}")
+    return DESKTOP_PDF
+
+
+@pytest.fixture
+def cfg_with_tool_dir(tmp_path: Path):
+    """配置里带兜底工具目录（acrobat.exe 存在即可，实际解密由 monkeypatch 模拟）。"""
+    from landoc.config import Config
+
+    tool_dir = tmp_path / "tool"
+    tool_dir.mkdir()
+    (tool_dir / "acrobat.exe").write_bytes(b"MZ")
+    return Config(name="t", lib_dir=tmp_path / "lib", acrobat_tool_dir=tool_dir)
+
+
+@pytest.fixture
+def cfg_without_tool(tmp_path: Path):
+    from landoc.config import Config
+
+    return Config(name="t", lib_dir=tmp_path / "lib")
+
+
+@pytest.fixture
+def plaintext_pdf_bytes() -> bytes:
+    """一段最小明文 PDF 字节，供"模拟解密工具"写回副本用。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "附件1 江西省十五五水安全保障规划报告", fontname="china-s", fontsize=14)
+    data = doc.tobytes()
+    doc.close()
+    return data
