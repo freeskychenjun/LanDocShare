@@ -1,0 +1,6 @@
+records/
+*.db
+*.zip
+dist/
+build/
+__pycache__/
