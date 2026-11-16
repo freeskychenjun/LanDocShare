@@ -52,7 +52,7 @@ D:\AICoding\LanDocShare\
 │   ├── pipeline.py             扫描 + 分流 + 调度 + 检查点 + 失败清单
 │   ├── index.py                sqlite FTS5：建库、增量、search/tree/list/tables
 │   ├── server.py               只读检索 HTTP 服务（8 个端点 + 限流 + 审计 + CIDR）
-│   └── cli.py                  init / probe / convert / serve / status / import
+│   └── cli.py                  init / probe / convert / serve / status
 └── tests/
     ├── test_probe.py
     ├── test_office_bridge.py
@@ -426,20 +426,19 @@ def test_audit_written_per_request(client, audit_path):
 
 ---
 
-### Task 9: CLI + 已有库导入
+### Task 9: CLI
 
 **Files:**
 - Create: `landoc/cli.py`
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- Produces: `python -m landoc init|probe|convert|serve|status|import`：
+- Produces: `python -m landoc init|probe|convert|serve|status`：
   - `init --lib-dir D:\MyLib --name "我的资料库" --folder F:\成果 ...`
   - `probe --lib-dir`（打印 `sample_report`）
   - `convert --lib-dir [--limit N]`
   - `serve --lib-dir [--port N]`
   - `status --lib-dir`
-  - `import --lib-dir --md F:\历年工作资料库_md [--index F:\md_share\shared_index.db]`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -448,21 +447,17 @@ def test_init_creates_config_and_db(tmp_path, capsys):
     cli.main(["init", "--lib-dir", str(tmp_path), "--name", "测试", "--folder", str(tmp_path)])
     assert (tmp_path/"config.json").exists() and (tmp_path/"library.db").exists()
 
-def test_import_existing_registers_md_tree(tmp_path, existing_md_fixture):
-    cli.main(["import", "--lib-dir", str(tmp_path), "--md", str(existing_md_fixture)])
-    assert Index(tmp_path/"library.db").stats()["total"] >= 1
-
 def test_serve_picks_next_free_port(tmp_path, monkeypatch):
     # 8766 被占时应用 8767
 ```
 
 - [ ] **Step 2: 跑测试失败** — Expected: FAIL
 
-- [ ] **Step 3: 实现** — `argparse` 子命令；`import` 遍历现有 md 树，读 frontmatter 的 `source_path`，`upsert` 进新索引，`src_mtime` 取文件 mtime；`serve` 先探测端口占用（`socket.connect_ex`）并顺延。
+- [ ] **Step 3: 实现** — `argparse` 子命令；`serve` 先探测端口占用（`socket.connect_ex`）并顺延；`init` 同时建库目录与空索引。**不实现旧库导入**（D4：旧库保持独立存在）。
 
 - [ ] **Step 4: 跑测试通过** — Expected: PASS
 
-- [ ] **Step 5: 提交** — `git commit -m "feat: CLI 与已有库导入"`
+- [ ] **Step 5: 提交** — `git commit -m "feat: CLI"`
 
 ---
 
@@ -483,10 +478,6 @@ def test_real_encrypted_docx_pptx_pdf_end_to_end(tmp_path, real_fixtures):
     assert idx.search("乐平")[0]                       # 加密 docx
     assert idx.search("溪霞")[0]                       # 加密 pptx
     assert idx.stats()["total"] >= 3
-
-def test_legacy_library_import_is_queryable(tmp_path):
-    cli.main(["import", "--lib-dir", str(tmp_path), "--md", r"F:\历年工作资料库_md"])
-    assert Index(tmp_path/"library.db").search("马斯京根")[0][0]["path"]
 ```
 
 - [ ] **Step 2: 跑测试确认失败** — Run: `set LANSHARE_IT=1 && python -m pytest tests/test_e2e.py -v -m slow`；Expected: FAIL
@@ -502,10 +493,12 @@ curl -s "http://127.0.0.1:8766/api/search?q=%E9%A9%AC%E6%96%AF%E4%BA%AC%E6%A0%B9
 ```
 Expected: JSON 含 `results[]`，每项有 `path/title/snippet`，**无** `source_path`
 
-- [ ] **Step 6: 提交** — `git commit -m "test: 端到端验收（加密 docx/pptx/pdf + 旧库导入）"`
+- [ ] **Step 6: 提交** — `git commit -m "test: 端到端验收（加密 docx/pptx/pdf）"`
 
 ---
 
 ## 二期计划（不在本计划范围，接口已在此锁定）
 
 `registry.py`（中心）、`tray.py` + 开机自启 + **§6.7 的空闲门控调度（最近 5 分钟无键鼠/锁屏才推进批次）** + PyInstaller 打包、`skill/lan-lib-search`（含 `query.py`）—— 它们依赖本计划的 `Config`、`/api/health`、`/api/search` 契约。二期开工前需先完成 spec 的 S1/S2/S4。
+
+旧库接管（把 `F:\历年工作资料库_md` 注册成新库）按 D4 暂不做；若日后要做，只需给 CLI 加一个 `import` 子命令（读 md frontmatter 的 `source_path` 后 `Index.upsert`），不影响本计划任何接口。
