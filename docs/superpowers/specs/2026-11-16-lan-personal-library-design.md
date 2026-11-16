@@ -81,8 +81,11 @@
 | Word 2007（12.0） | ✗ 不支持 PDF |
 | Word 2019（16.0） | ⚠ 能打开（走 PDF→Word 转换，需处理"文件转换"对话框与 COM 时序，脆） |
 | 伪装名 `acrobat.exe`（现有右键解密工具） | ✅ 一次成功，头恢复 `%PDF-1.7`，pymupdf 读到 21 页 / 8451 字，**文本层完好，不需 OCR** |
+| **Adobe Acrobat（真装的 Acrobat DC，`AcroExch.PDDoc`）** | ✅ **最优路径**：`PDDoc.Open` 直接读密文，逐页 `CreateTextSelect(整页 Rect)` + `GetText` 取文本；21 页 **0.8 秒** / 8456 字，文本干净，**不落任何明文副本** |
 
-→ 白名单只认 `acrobat.exe` 这个名字：**装了 Adobe Acrobat（Pro/Std）的机器天然可读；Acrobat Reader（`AcroRd32.exe`）、Foxit、WPS PDF 都不行。**
+→ 白名单只认 `acrobat.exe` 这个名字：装了 **Adobe Acrobat（Pro/Std，或 Acrobat DC）** 的机器天然可读；Acrobat Reader 的可执行文件名是 `AcroRd32.exe`、Foxit、WPS PDF 都不行。
+
+**Acrobat 取词的坑（实测）**：`PDTextSelect.GetText(i)` 返回的是**单个字符**（换行也是独立 token），直接 join 会得到逐字断行的碎片，trigram 检索命中率归零。必须用拼接规则（`pdf_conv._join_tokens`）：中文之间不加分隔符、ASCII 之间补空格、空白 token 只保留一个换行。`PDDoc.GetJSObject()` 在 Acrobat DC（Reader 档位）上报 `尚未实现`，不可用；`PDDoc` 也没有 `SaveAs`，`AVDoc` 只有 `PrintPages*`，所以**取文本只能走 `CreateTextSelect`**。
 
 ### 3.5 加密文件的真实占比（抽样 G:/I: 4000 份）
 - 加密 PDF：1 / 771（0.13%）
@@ -267,7 +270,7 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 | 编号 | 要验证什么 | 验收标准 |
 |---|---|---|
 | S1 | PyInstaller 在 Python 3.14 上打包可用（含 `win32com`、`jieba` 词典、`pymupdf`、`pystray`） | 打包后的 exe 双击能跑；能 COM 转换一份加密 docx 并写出 md；托盘图标出现 |
-| S2 | 装了 Adobe Acrobat 的机器上，PDF 文本如何进入 python | 对 21 页那份加密 PDF，能拿到含"十五五""水安全"的全文文本；给出采用的具体接口（AcroExch COM + JS `getPageNthWord` / 剪贴板 / 其它） |
+| S2 | 装了 Adobe Acrobat 的机器上，PDF 文本如何进入 python | ✅ **已完成**（2026-11-17，本机 Acrobat DC）：`AcroExch.PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、文本干净、无临时明文副本；已在 `pdf_conv._acrobat_text` 实现并有真机用例 |
 | S3 | Word 2019 打开加密 PDF 的稳定性（第 3.4 的表里那条 ⚠） | 无人工点击前提下完成转换、无残留对话框、文本可用；否则明确记录"不作为产品路径" |
 | S4 | 非管理员身份下防火墙规则失败时的降级体验 | 提示清晰、可一键复制命令、服务仍可本机自测 |
 | S5 | 30 个库规模下 fan-out 合并耗时 | 全在线场景 < 3 s，部分超时场景 < 4 s |

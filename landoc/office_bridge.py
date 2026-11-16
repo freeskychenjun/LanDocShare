@@ -18,6 +18,7 @@ from pathlib import Path
 PKG = "{http://schemas.microsoft.com/office/2006/xmlPackage}"
 OFFICE_PROGIDS = ("KWPS.Application", "Word.Application")
 OFFICE_PROCESS_NAMES = ("wps.exe", "WINWORD.EXE", "wpp.exe", "POWERPNT.EXE")
+ACROBAT_PROCESS_NAMES = ("Acrobat.exe", "AcroRd32.exe")
 
 
 class OfficeUnavailable(RuntimeError):
@@ -72,10 +73,10 @@ def _decode_console(raw: bytes | None) -> str:
     return raw.decode("utf-8", "replace")
 
 
-def _office_pids() -> set[int]:
-    """当前存活的 Office 进程 PID（用于只杀“我们自己启的那个”，不误伤用户正开着的窗口）。"""
+def _pids_of(names) -> set[int]:
+    """给进程名列表，返回当前存活的 PID 集合。"""
     pids: set[int] = set()
-    for name in OFFICE_PROCESS_NAMES:
+    for name in names:
         try:
             proc = subprocess.run(
                 ["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {name}"],
@@ -89,6 +90,16 @@ def _office_pids() -> set[int]:
             if len(cols) >= 2 and cols[1].isdigit():
                 pids.add(int(cols[1]))
     return pids
+
+
+def _office_pids() -> set[int]:
+    """当前存活的 Office 进程 PID（用于只杀"我们自己启的那个"，不误伤用户正开着的窗口）。"""
+    return _pids_of(OFFICE_PROCESS_NAMES)
+
+
+def _acrobat_pids() -> set[int]:
+    """当前存活的 Acrobat 进程 PID（单独一组：Word 会话清理不该波及 Acrobat）。"""
+    return _pids_of(ACROBAT_PROCESS_NAMES)
 
 
 def _kill_office_processes(pids: set[int] | None = None) -> None:

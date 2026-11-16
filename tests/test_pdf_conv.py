@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,47 @@ def test_real_encrypted_pdf_decrypts_with_real_tool(encrypted_pdf_path: Path):
     assert result.via in {"acrobat_disguise", "acrobat"}
     assert len(result.text) > 3000
     assert "十五五" in result.text
+
+
+def test_acrobat_is_used_when_available(encrypted_pdf_path, cfg_without_tool, monkeypatch):
+    """本机有 Acrobat 时走 Acrobat（白名单内、不需要临时明文副本）。"""
+    monkeypatch.setattr(pdf_conv, "has_acrobat", lambda: True)
+    monkeypatch.setattr(
+        pdf_conv, "_acrobat_text", lambda path, timeout=120.0: "十五五水安全保障规划" * 20
+    )
+    result = pdf_conv.pdf_to_text(encrypted_pdf_path, cfg=cfg_without_tool)
+    assert result.via == "acrobat"
+    assert "水安全保障" in result.text
+
+
+def test_acrobat_failure_falls_back_to_disguise(
+    encrypted_pdf_path, cfg_with_tool_dir, plaintext_pdf_bytes, monkeypatch
+):
+    monkeypatch.setattr(pdf_conv, "has_acrobat", lambda: True)
+
+    def boom(path, timeout=120.0):
+        raise pymupdf_error()
+
+    def pymupdf_error():
+        return RuntimeError("Acrobat 崩了")
+
+    monkeypatch.setattr(pdf_conv, "_acrobat_text", boom)
+    monkeypatch.setattr(
+        pdf_conv, "_run_tool", lambda tool, target, cwd, timeout: target.write_bytes(plaintext_pdf_bytes)
+    )
+    result = pdf_conv.pdf_to_text(encrypted_pdf_path, cfg=cfg_with_tool_dir)
+    assert result.via == "acrobat_disguise"
+
+
+@pytest.mark.slow
+def test_real_acrobat_extracts_encrypted_pdf(encrypted_pdf_path: Path):
+    """真机：Acrobat 直接打开加密 PDF 取文本，不落任何明文副本。"""
+    if not pdf_conv.has_acrobat():
+        pytest.skip("本机没有 Adobe Acrobat")
+    before = set(Path(tempfile.gettempdir()).glob("landoc_pdf_*"))
+    result = pdf_conv.pdf_to_text(encrypted_pdf_path)
+    assert result.via == "acrobat"
+    assert len(result.text) > 3000
+    assert "十五五" in result.text and "水安全保障" in result.text
+    after = set(Path(tempfile.gettempdir()).glob("landoc_pdf_*"))
+    assert after == before, "Acrobat 路线不应该产生临时明文目录"

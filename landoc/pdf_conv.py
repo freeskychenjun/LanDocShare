@@ -1,7 +1,7 @@
 """PDF → 文本。三条路，按库主人已批准的优先级（设计文档 D3）：
 
 1. 明文 PDF：`pymupdf` 直读（绝大多数 PDF 走这条）。
-2. 有 Adobe Acrobat：优先 Acrobat（白名单内、合规）。
+2. 有 Adobe Acrobat：优先 Acrobat —— 实测 21 页 0.8 秒、文本干净、**不落任何明文副本**。
 3. 没有 Acrobat 但有兜底工具（伪装名 `acrobat.exe`）：解一份**临时副本**、抽完立刻删除。
 
 密文 PDF 在本机其它阅读器（Foxit、WPS PDF、Word 2007）上打不开，已实测，
@@ -10,20 +10,25 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from landoc import office_bridge
 from landoc.probe import classify, has_acrobat  # noqa: F401 - has_acrobat 供测试替换
 
 MIN_TEXT_CHARS = 50
 TOOL_EXE_NAME = "acrobat.exe"
 
+_ASCII_START = re.compile(r"[A-Za-z0-9]")
+_ASCII_END = re.compile(r"[A-Za-z0-9]$")
+
 
 class PDFDecryptError(RuntimeError):
-    """兜底工具没能把文件变成明文 PDF。"""
+    """兜底工具或 Acrobat 没能把文件变成可读文本。"""
 
 
 @dataclass
@@ -67,9 +72,98 @@ def _extract_with_fitz(path: Path) -> str:
         doc.close()
 
 
-def _acrobat_text(path: Path, timeout: float) -> str:
-    """Acrobat 分支：一期只做可用性探测，取文本实现留给 spike S2（不得假装成功）。"""
-    raise NotImplementedError("Acrobat 取文本路径待 S2 验证")
+def _join_tokens(tokens) -> str:
+    """把 Acrobat 的取词结果拼回正文。
+
+    这台 Acrobat 返回的是**单个字符**（每个字一个 token，换行也是独立 token），
+    直接 join 会得到"附\\n件\\n1"这种碎片，trigram 检索命中率归零（实测）。
+    规则：中文之间不加分隔符，英文/数字之间补空格，空白 token 只保留一个换行。
+    """
+    newline = chr(10)
+    carriage = chr(13)
+    out: list[str] = []
+    prev_ascii = False
+    for raw in tokens:
+        if not raw:
+            continue
+        piece = raw.replace(carriage + newline, newline).replace(carriage, newline)
+        if not piece.strip():
+            if newline in piece and (not out or not out[-1].endswith(newline)):
+                out.append(newline)
+            continue
+        piece = piece.replace(newline, " ")
+        starts_ascii = bool(_ASCII_START.match(piece))
+        if out and prev_ascii and starts_ascii:
+            out.append(" ")
+        out.append(piece)
+        prev_ascii = bool(_ASCII_END.search(piece))
+    return "".join(out)
+
+
+def _page_text(pd, index: int, wc) -> str:
+    """取一页文本：整页建一个文本选区，逐段 GetText 后拼回正文。"""
+    page = pd.AcquirePage(index)
+    try:
+        size = page.GetSize()
+        width, height = size.x, size.y
+    finally:
+        try:
+            page.Release()
+        except Exception:  # noqa: BLE001 - 已释放/无此成员都不影响结果
+            pass
+    rect = wc.Dispatch("AcroExch.Rect")
+    # PDF 坐标原点在左下角：Top 是上边界、Bottom 是 0
+    rect.Left, rect.Right, rect.Bottom, rect.Top = 0, width, 0, height
+    selection = pd.CreateTextSelect(index, rect)
+    if selection is None:
+        return ""
+    return _join_tokens(selection.GetText(i) for i in range(selection.GetNumText()))
+
+
+def _acrobat_text(path: Path, timeout: float = 120.0) -> str:
+    """Acrobat 路线：PDDoc 打开 → 逐页全页取文本（不经临时文件）。
+
+    实测（Acrobat DC / 21 页加密 PDF）：0.8 秒、文本干净、不落任何明文副本。
+    PDDoc 在 Acrobat 侧运行，属白名单进程，所以能读到明文。
+    """
+
+    def work() -> str:
+        import pythoncom  # 仅 Windows
+        import win32com.client as wc
+
+        pythoncom.CoInitialize()
+        pd = None
+        try:
+            app = wc.Dispatch("AcroExch.App")
+            try:
+                app.Hide()
+            except Exception:  # noqa: BLE001 - 不同版本可能没有 Hide
+                pass
+            pd = wc.Dispatch("AcroExch.PDDoc")
+            if not pd.Open(str(path)):
+                raise PDFDecryptError(f"Acrobat 打不开：{path}")
+            pages = [_page_text(pd, i, wc) for i in range(pd.GetNumPages())]
+            return "\n".join(page for page in pages if page)
+        finally:
+            if pd is not None:
+                try:
+                    pd.Close()
+                except Exception:  # noqa: BLE001
+                    pass
+            pythoncom.CoUninitialize()
+
+    before = office_bridge._acrobat_pids()
+    try:
+        return office_bridge._run_with_timeout(
+            work,
+            timeout,
+            on_timeout=lambda: office_bridge._kill_office_processes(
+                office_bridge._acrobat_pids() - before
+            ),
+        )
+    finally:
+        # 只清我们自己拉起来的 Acrobat 实例，库主人自己开着的阅读器不动
+        office_bridge._kill_office_processes(office_bridge._acrobat_pids() - before)
 
 
 def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0) -> PDFResult:
@@ -92,8 +186,8 @@ def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0) -> PDFResult:
             text = _acrobat_text(path, timeout)
             if len(text.strip()) >= MIN_TEXT_CHARS:
                 return PDFResult(text, "acrobat")
-        except (NotImplementedError, OSError, RuntimeError):
-            pass  # 落到兜底
+        except (PDFDecryptError, office_bridge.OfficeTimeout, OSError, RuntimeError):
+            pass  # 落到兜底工具
 
     tool_dir = getattr(cfg, "acrobat_tool_dir", None) if cfg is not None else None
     if tool_dir and (Path(tool_dir) / TOOL_EXE_NAME).is_file():

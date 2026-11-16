@@ -43,7 +43,8 @@ curl --get "http://<内网IP>:8766/api/tables" --data-urlencode "path=成果/乐
 | 加密 docx 用 python 读会 `BadZipFile` | 透明加密驱动只对白名单进程（winword/wps/acrobat/acad…）透明解密 | `probe.classify` / `office_bridge` |
 | Office 另存为的中间文件读不出来 | **加密与否取决于"谁写"**：白名单进程写盘一律是密文 | 故一律"Office 内存取字符串 → python 落盘" |
 | 加密 docx 如何转 md | `doc.Content.WordOpenXML` 取 Flat OPC → python 补 `[Content_Types].xml` 重建 docx → `python-docx` 解析 | `office_bridge` |
-| 加密 pdf 如何转文本 | 本机有 Acrobat 优先；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录用 `init --acrobat-tool-dir` 指定（不给则自动探测 `D:\应用软件\右键解密`） | `pdf_conv` |
+| 加密 pdf 如何转文本 | **本机有 Acrobat 就用它**（`PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、不落明文副本）；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录用 `init --acrobat-tool-dir` 指定（不给则自动探测 `D:\应用软件\右键解密`） | `pdf_conv` |
+| Acrobat 取文本为什么要拼接 | `GetText(i)` 返回的是**单个字符**，直接 join 会得到逐字断行的碎片，trigram 命中率归零；`_join_tokens` 做中文不加空格/ASCII 补空格 | `pdf_conv._join_tokens` |
 | 一批文档为什么共用一个 Office | 每篇重启 Office 要白付 6 秒；`OfficeSession` 把整批固定在同一 COM 线程 | `office_bridge` |
 | `.doc/.ppt/.dps/.wps` 为什么也走 COM | 这些是 OLE 容器，python-docx/python-pptx 不认；判据是"是否加密 或 不是 zip" | `pipeline.convert_one` |
 | 中文检索为什么用 trigram | jieba 分词边界对不上就零命中（查"马斯京根"vs 索引里"马斯京根法"）；trigram 做子串匹配 | `index.build_match_query` |
@@ -57,7 +58,7 @@ curl --get "http://<内网IP>:8766/api/tables" --data-urlencode "path=成果/乐
 - 同一类批量（5 份加密 docx）：**15.4 秒** = Office 启动 6 秒 + 约 1.9 秒/篇（一批共用一个 Office 会话；若不共用，每篇要重付 6 秒）
 - 加密 docx：31,545 字正文 + 13 张表格，Heading 1/2/3 完整
 - 加密 pptx：逐页形状文本 + 表格
-- 加密 pdf：21 页 / 8,451 字，文本层完好（不需要 OCR）
+- 加密 pdf：Acrobat 路线 **5.1 秒（含进程启动）/ 21 页 8,456 字**，文本干净、无需 OCR、不留明文副本；服务端 `水安全保障`/`十五五` 均命中并高亮
 
 ## 测试
 
