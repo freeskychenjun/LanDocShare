@@ -1,4 +1,4 @@
-"""FTS5 索引：建库、增量写、检索、目录聚合、表格抽取。
+r"""FTS5 索引：建库、增量写、检索、目录聚合、表格抽取。
 
 SQL 与 `F:\md_share\share_server.py` 保持一致（同一套已验证的实现）：
 - FTS5 用 `content='documents'` 的外部内容表，检索走 `documents_fts MATCH`；
@@ -15,11 +15,8 @@ import threading
 import time
 from pathlib import Path
 
-import jieba
-
-jieba.setLogLevel(40)
-
 FTS_RESERVED = {"and", "or", "not", "near"}
+MIN_TRIGRAM_CHARS = 3  # FTS5 的 trigram 分词器要求查询词至少 3 个字符
 MAX_LIMIT = 30
 MAX_LIST = 500
 
@@ -37,28 +34,21 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     title, content,
-    tokenize='unicode61'
+    tokenize='trigram'
 );
 """
 
 
 def build_match_query(q: str, op: str = "AND") -> str:
-    """查询串 jieba 分词并转义，构造 FTS5 MATCH 表达式。"""
-    if any(kw in q.upper() for kw in (" OR ", " NEAR ")):
-        return q
-    tokens = [t for t in jieba.cut(q.strip()) if t.strip()]
-    quoted = []
-    for token in tokens:
-        token = token.replace('"', '""')
-        if token.lower() in FTS_RESERVED:
-            token = f'"{token}"'
-        quoted.append(f'"{token}"')
-    return f" {op} ".join(quoted) if quoted else ""
+    """把查询串变成 FTS5 MATCH 表达式：按空白切词，每段加引号后以 op 连接。
 
-
-def _segment(text: str) -> str:
-    """jieba 分词后用空格连接，作为 FTS5 的入库文本。"""
-    return " ".join(token for token in jieba.cut(text or "") if token.strip())
+    索引用的是 trigram 分词器，所以"马斯京根"能命中"马斯京根法河道演算"这种
+    分词边界对不上的情况（这正是纯 jieba 分词方案的死穴）。
+    """
+    terms = [t for t in q.replace('"', " ").split() if t]
+    if not terms:
+        return ""
+    return f" {op} ".join(f'"{t}"' for t in terms)
 
 
 _SNIPPET_TOKEN_RE = re.compile(r'"([^"]+)"')
@@ -146,7 +136,7 @@ class Index:
         self.conn.execute("DELETE FROM documents_fts WHERE rowid = ?", (rowid,))
         self.conn.execute(
             "INSERT INTO documents_fts (rowid, title, content) VALUES (?, ?, ?)",
-            (rowid, _segment(title), _segment(content)),
+            (rowid, title, content),
         )
 
     def commit(self) -> None:
@@ -176,8 +166,20 @@ class Index:
         return row[0] if row else None
 
     def search(self, q: str, dir_filter: str = "", limit: int = 20):
-        """AND 检索，无结果自动降级 OR；返回 (rows, fell_back)。"""
+        """AND 检索，无结果自动降级 OR；返回 (rows, fell_back)。
+
+        2 个字符的查询（"乐平""洪水"这类水文常用词）低于 trigram 的最小长度，
+        走 LIKE 子串扫描兜底：个人库只有几千篇，扫一遍代价可接受。
+        """
         limit = max(1, min(int(limit), MAX_LIMIT))
+        terms = [t for t in (q or "").split() if t]
+        if not terms:
+            return [], False
+        if min(len(t) for t in terms) < MIN_TRIGRAM_CHARS:
+            rows = self._like_search(q.strip(), dir_filter, limit, op="AND")
+            if rows:
+                return rows, False
+            return self._like_search(q.strip(), dir_filter, limit, op="OR"), True
         match = build_match_query(q, "AND")
         if not match:
             return [], False
@@ -193,8 +195,8 @@ class Index:
         where = "documents_fts MATCH ?"
         params: list = [match]
         if dir_filter:
-            where += " AND documents.rel_path LIKE ? ESCAPE '\\'"
-            params.append(like_escape(dir_filter.strip("/\\")) + "/%")
+            where += " AND instr(documents.rel_path, ?) = 1"
+            params.append(dir_filter.strip("/\\") + "/")
         sql = f"""
             SELECT documents.rel_path, documents.title, documents.ext,
                    bm25(documents_fts, 10.0, 1.0) AS score,
@@ -213,16 +215,50 @@ class Index:
                 "title": r[1],
                 "ext": r[2],
                 "score": round(r[3], 2),
-                "snippet": (r[4] or "").replace("\n", " "),
+                "snippet": _make_snippet(r[4] or "", match, self.snippet_tokens),
+            }
+            for r in rows
+        ]
+
+    def _like_search(self, q: str, dir_filter: str, limit: int, op: str = "AND"):
+        """短查询的兜底：逐词子串扫（用 instr，避开 LIKE 的通配符转义）。"""
+        terms = [t for t in q.split() if t]
+        clauses, params = [], []
+        for term in terms:
+            clauses.append("(instr(documents.content, ?) > 0 OR instr(documents.title, ?) > 0)")
+            params += [term, term]
+        joiner = " AND " if op == "AND" else " OR "
+        where = joiner.join(clauses) if clauses else "1=0"
+        if dir_filter:
+            where += " AND instr(documents.rel_path, ?) = 1"
+            params.append(dir_filter.strip("/\\") + "/")
+        sql = f"""
+            SELECT documents.rel_path, documents.title, documents.ext, 0.0 AS score,
+                   documents.content AS raw
+            FROM documents
+            WHERE {where}
+            ORDER BY (instr(documents.title, ?) > 0) DESC, length(documents.content)
+            LIMIT ?
+        """
+        params.append(terms[0] if terms else q)
+        params.append(limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [
+            {
+                "path": r[0],
+                "title": r[1],
+                "ext": r[2],
+                "score": round(r[3], 2),
+                "snippet": _make_snippet(r[4] or "", q, self.snippet_tokens),
             }
             for r in rows
         ]
 
     def tree(self, rel: str = "") -> list[dict]:
         prefix = (rel or "").replace("\\", "/").strip("/")
-        like = like_escape(prefix + "/") if prefix else ""
+        needle = prefix + "/" if prefix else ""
         rows = self.conn.execute(
-            "SELECT rel_path FROM documents WHERE rel_path LIKE ? ESCAPE '\\'", (like + "%",)
+            "SELECT rel_path FROM documents WHERE instr(rel_path, ?) = 1", (needle,)
         ).fetchall()
         counts: dict[str, int] = {}
         offset = len(prefix) + 1 if prefix else 0
@@ -238,14 +274,14 @@ class Index:
     def list_dir(self, rel: str = "", limit: int = MAX_LIST) -> list[dict]:
         limit = max(1, min(int(limit), MAX_LIST))
         prefix = (rel or "").replace("\\", "/").strip("/")
-        like = like_escape(prefix) + "/%" if prefix else "%"
+        needle = prefix + "/" if prefix else ""
         rows = self.conn.execute(
             """SELECT rel_path, title, src_size FROM documents
                WHERE rowid IN (SELECT rowid FROM documents
-                               WHERE rel_path LIKE ? ESCAPE '\\'
+                               WHERE instr(rel_path, ?) = 1
                                  AND instr(substr(rel_path, ?), '/') = 0)
                ORDER BY title LIMIT ?""",
-            (like, len(prefix) + 2 if prefix else 1, limit),
+            (needle, len(prefix) + 2 if prefix else 1, limit),
         ).fetchall()
         return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
 

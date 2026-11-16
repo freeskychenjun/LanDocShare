@@ -14,8 +14,15 @@ def idx(tmp_path: Path) -> Index:
 
 def test_build_match_query_quotes_and_escapes():
     assert build_match_query("马斯京根 演算") == '"马斯京根" AND "演算"'
-    assert build_match_query("and") == '""and""'
-    assert build_match_query('say "hi"')  # 不抛异常
+    assert build_match_query("and") == '"and"'
+    assert build_match_query('say "hi"') == '"say" AND "hi"'
+
+
+def test_short_query_uses_like_fallback(tmp_path):
+    idx = Index(tmp_path / "l.db")
+    idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
+    rows, fell_back = idx.search("乐平")
+    assert len(rows) == 1 and fell_back is False
 
 
 def test_like_escape_turns_wildcards_literal():
@@ -23,13 +30,13 @@ def test_like_escape_turns_wildcards_literal():
 
 
 def test_search_and_or_fallback(idx: Index):
-    idx.upsert("a.md", "马斯京根演算", "docx", "/s/a.docx", 10, 1.0, "马斯京根 河道演算")
-    rows, fell_back = idx.search("马斯京根演算")
+    idx.upsert("a.md", "马斯京根演算", "docx", "/s/a.docx", 10, 1.0, "马斯京根法河道洪水演算")
+    rows, fell_back = idx.search("马斯京根")
     assert rows and not fell_back
 
 
 def test_search_falls_back_to_or(idx: Index):
-    idx.upsert("a.md", "马斯京根演算", "docx", "/s/a.docx", 10, 1.0, "马斯京根")
+    idx.upsert("a.md", "马斯京根演算", "docx", "/s/a.docx", 10, 1.0, "马斯京根法河道洪水演算")
     rows, fell_back = idx.search("马斯京根 缙云")
     assert fell_back and rows
 
