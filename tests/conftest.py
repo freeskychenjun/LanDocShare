@@ -54,3 +54,64 @@ def encrypted_docx_path() -> Path:
     if not DESKTOP_DOCX.is_file():
         pytest.skip(f"真实加密文件不存在：{DESKTOP_DOCX}")
     return DESKTOP_DOCX
+
+
+@pytest.fixture
+def docx_with_headings_bytes() -> bytes:
+    """带 Heading 1/2 与中文标题样式的 docx 字节。"""
+    import io
+
+    import docx
+
+    d = docx.Document()
+    d.add_heading("1  工程概况", level=1)
+    d.add_paragraph("正文第一段。")
+    d.add_heading("2.1  设计洪水", level=2)
+    d.add_paragraph("正文第二段。")
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def docx_with_table_bytes() -> bytes:
+    import io
+
+    import docx
+
+    d = docx.Document()
+    d.add_paragraph("表 1  特征水位表")
+    t = d.add_table(rows=3, cols=3)
+    for r, row in enumerate(t.rows):
+        for c, cell in enumerate(row.cells):
+            cell.text = f"R{r}C{c}"
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def docx_bytes_with_comments() -> bytes:
+    """docx 包内注入 comments.xml：批注文字绝不能出现在 md 里。"""
+    import io
+    import zipfile
+
+    import docx
+
+    d = docx.Document()
+    d.add_paragraph("正文内容。")
+    buf = io.BytesIO()
+    d.save(buf)
+    src = zipfile.ZipFile(io.BytesIO(buf.getvalue()))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in src.namelist():
+            zf.writestr(item, src.read(item))
+        zf.writestr(
+            "word/comments.xml",
+            '<?xml version="1.0" encoding="UTF-8"?><w:comments '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:comment><w:p><w:r><w:t>评审意见：此处需补充论证</w:t></w:r></w:p></w:comment>"
+            "</w:comments>",
+        )
+    return out.getvalue()
