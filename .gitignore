@@ -7,3 +7,7 @@ __pycache__/
 .demo/
 .demo2/
 .demo-src/
+.bench-src/
+.bench/
+.smoke*/
+.demo*/
