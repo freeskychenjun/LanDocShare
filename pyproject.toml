@@ -1,0 +1,26 @@
+[project]
+name = "landoc"
+version = "0.1.0"
+description = "局域网个人资料库共享：加密/明文办公文档转 Markdown、FTS5 索引、只读检索服务"
+requires-python = ">=3.12"
+dependencies = [
+    "jieba",
+    "python-docx",
+    "python-pptx",
+    "pymupdf",
+    "pywin32",
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["landoc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 需要真机 Office、真实加密文档或大文件的集成测试（LANSHARE_IT=1 时运行）",
+]
