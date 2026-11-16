@@ -16,7 +16,7 @@ from pathlib import Path
 
 PKG = "{http://schemas.microsoft.com/office/2006/xmlPackage}"
 OFFICE_PROGIDS = ("KWPS.Application", "Word.Application")
-OFFICE_PROCESS_NAMES = ("wps.exe", "WINWORD.EXE")
+OFFICE_PROCESS_NAMES = ("wps.exe", "WINWORD.EXE", "wpp.exe", "POWERPNT.EXE")
 
 
 class OfficeUnavailable(RuntimeError):

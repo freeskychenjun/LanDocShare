@@ -115,3 +115,38 @@ def docx_bytes_with_comments() -> bytes:
             "</w:comments>",
         )
     return out.getvalue()
+
+
+DESKTOP_PPTX = Path(
+    r"C:\Users\Administrator\Desktop\测试文件\WorkBuddy水文分析实战运用汇报-溪霞水库.pptx"
+)
+
+
+@pytest.fixture
+def plain_pptx_path(tmp_path: Path) -> Path:
+    """python-pptx 生成的明文演示文稿：2 页，含文本框与表格。"""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "溪霞水库除险加固"
+    slide.placeholders[1].text = "汇报人：王昱东"
+    slide2 = prs.slides.add_slide(prs.slide_layouts[5])
+    slide2.shapes.title.text = "特征水位"
+    table = slide2.shapes.add_table(2, 2, Inches(1), Inches(1.5), Inches(4), Inches(1)).table
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "数值"
+    table.cell(1, 0).text = "正常蓄水位"
+    table.cell(1, 1).text = "58.5"
+    path = tmp_path / "plain.pptx"
+    prs.save(path)
+    return path
+
+
+@pytest.fixture
+def encrypted_pptx_path() -> Path:
+    """桌面上那份真实加密 pptx（密文头 17da5fa0），仅 slow 用例使用。"""
+    if not DESKTOP_PPTX.is_file():
+        pytest.skip(f"真实加密文件不存在：{DESKTOP_PPTX}")
+    return DESKTOP_PPTX
