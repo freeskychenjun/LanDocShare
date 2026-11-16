@@ -105,3 +105,20 @@ def test_stats_shape(idx: Index):
     stats = idx.stats()
     assert stats["service"] == "landoc"
     assert stats["total"] == 0
+
+
+def test_meta_table_roundtrip(idx: Index):
+    """I9: meta 表必须存在，否则 set_meta 一调用就炸。"""
+    idx.set_meta("port", "8767")
+    assert idx.get_meta("port") == "8767"
+    assert idx.get_meta("missing", "默认") == "默认"
+
+
+def test_delete_removes_row_and_fts(idx: Index):
+    """I7: 撤回共享时要能把文档从索引里删干净。"""
+    idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
+    assert idx.search("乐平")[0]
+    idx.delete("a.md")
+    idx.commit()
+    assert idx.stats()["total"] == 0
+    assert idx.search("乐平")[0] == []

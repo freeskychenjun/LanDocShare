@@ -34,6 +34,9 @@ class StubIndex:
     def commit(self):
         pass
 
+    def delete(self, rel_path):
+        self.rows = [r for r in self.rows if r["rel_path"] != rel_path]
+
     def stats(self):
         return {"total": len(self.rows)}
 
@@ -65,7 +68,7 @@ def cfg(docs_dir: Path, tmp_path: Path) -> Config:
 
 def test_mixed_batch_routes_by_classification(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     report = pipeline.run(cfg, index=StubIndex())
     assert report.converted == 2
@@ -74,7 +77,7 @@ def test_mixed_batch_routes_by_classification(cfg, flat_opc, monkeypatch):
 
 def test_xlsx_is_skipped_with_reason(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     report = pipeline.run(cfg, index=StubIndex())
     assert report.skipped["xls"] == 1
@@ -82,7 +85,7 @@ def test_xlsx_is_skipped_with_reason(cfg, flat_opc, monkeypatch):
 
 def test_temp_lock_file_is_not_counted(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     report = pipeline.run(cfg, index=StubIndex())
     rels = [r for r in report.md_paths]
@@ -91,7 +94,7 @@ def test_temp_lock_file_is_not_counted(cfg, flat_opc, monkeypatch):
 
 def test_md_written_with_source_path_frontmatter(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     index = StubIndex()
     pipeline.run(cfg, index=index)
@@ -104,20 +107,20 @@ def test_md_written_with_source_path_frontmatter(cfg, flat_opc, monkeypatch):
 
 
 def test_no_office_records_reason_and_writes_no_empty_md(cfg, monkeypatch):
-    def boom(path, timeout=120.0):
+    def boom(path, timeout=120.0, **kwargs):
         raise office_bridge.OfficeUnavailable("no office")
 
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", boom)
     report = pipeline.run(cfg, index=StubIndex())
     reasons = {reason for _, reason in report.failed}
     assert "no_office" in reasons
-    secret_md = Path(cfg.md_dir) / "成果" / "secret.md"
+    secret_md = Path(cfg.md_dir) / "成果" / "secret.docx.md"
     assert not secret_md.exists()
 
 
 def test_incremental_skips_unchanged(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     pipeline.run(cfg, index=StubIndex())
     second = pipeline.run(cfg, index=StubIndex())
@@ -127,7 +130,7 @@ def test_incremental_skips_unchanged(cfg, flat_opc, monkeypatch):
 
 def test_touched_file_is_reconverted(cfg, flat_opc, monkeypatch, docs_dir):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     pipeline.run(cfg, index=StubIndex())
     target = docs_dir / "plain.docx"
@@ -148,7 +151,7 @@ def test_checkpoint_written_even_on_interrupt(cfg, flat_opc, monkeypatch, docs_d
 
     monkeypatch.setattr(pipeline, "convert_one", flaky)
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     with pytest.raises(KeyboardInterrupt):
         pipeline.run(cfg, index=StubIndex())
@@ -158,7 +161,7 @@ def test_checkpoint_written_even_on_interrupt(cfg, flat_opc, monkeypatch, docs_d
 
 def test_limit_stops_after_n_docs(cfg, flat_opc, monkeypatch):
     monkeypatch.setattr(
-        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0: flat_opc
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
     )
     report = pipeline.run(cfg, index=StubIndex(), limit=1)
     assert report.converted == 1
@@ -169,3 +172,154 @@ def test_relative_folder_is_resolved_to_absolute(tmp_path, monkeypatch, docs_dir
     monkeypatch.chdir(tmp_path)
     entries = pipeline._iter_docs([Path("成果")])
     assert entries and all(path.is_absolute() for path, _ in entries)
+
+
+# ============ 终审修复批（Critical C1 + Important I1/I2/I3/I6/I7/I10）============
+
+def test_plain_doc_goes_through_com(cfg, docs_dir, flat_opc, monkeypatch):
+    """C1: 明文 .doc 是 OLE 容器，python-docx 解析不了，必须走 COM。"""
+    (docs_dir / "old.doc").write_bytes(b"\xd0\xcf\x11\xe0" + b"x" * 64)
+    (docs_dir / "secret.docx").unlink()
+    (docs_dir / "stats.xlsx").unlink()
+    (docs_dir / "plain.docx").unlink()
+    calls = {"com": 0}
+
+    def fake_extract(path, *args, **kwargs):
+        calls["com"] += 1
+        return flat_opc
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", fake_extract)
+    report = pipeline.run(cfg, index=StubIndex())
+    assert calls["com"] == 1
+    assert report.converted == 1 and report.failed == []
+
+
+def test_plain_ppt_goes_through_com(cfg, docs_dir, monkeypatch):
+    (docs_dir / "old.ppt").write_bytes(b"\xd0\xcf\x11\xe0" + b"x" * 64)
+    for name in ("plain.docx", "secret.docx", "stats.xlsx"):
+        (docs_dir / name).unlink()
+    seen = {}
+
+    def fake_ppt_to_md(path, encrypted=False, **kwargs):
+        seen["encrypted"] = encrypted
+        return "## 第 1 页\n\n汇报人：王昱东"
+
+    monkeypatch.setattr(pipeline.pptx_conv, "pptx_to_md", fake_ppt_to_md)
+    report = pipeline.run(cfg, index=StubIndex())
+    assert seen["encrypted"] is True  # OLE 容器 → 走 COM
+    assert report.converted == 1
+
+
+def test_write_failure_does_not_abort_batch(cfg, flat_opc, monkeypatch):
+    """I1: 单篇落盘失败只记账，不能中断整批。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    real_write = pipeline._write_md
+
+    def flaky_write(cfg_, rel, md, source_path):
+        if rel.endswith("plain.docx"):
+            raise OSError("文件名或扩展名太长")
+        return real_write(cfg_, rel, md, source_path)
+
+    monkeypatch.setattr(pipeline, "_write_md", flaky_write)
+    report = pipeline.run(cfg, index=StubIndex())
+    assert report.converted == 1
+    assert any(reason == "write_failed" for _, reason in report.failed)
+
+
+def test_same_stem_different_ext_kept_apart(cfg, docs_dir, flat_opc, monkeypatch):
+    """I2: 同时存在 报告.docx 与 报告.pdf 时，两篇都要留。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    real = docx.Document()
+    real.add_paragraph("报告正文")
+    real.save(docs_dir / "报告.docx")
+    (docs_dir / "报告.pdf").write_bytes(b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n")
+    monkeypatch.setattr(
+        pipeline.pdf_conv,
+        "pdf_to_text",
+        lambda path, cfg=None, **k: pipeline.pdf_conv.PDFResult("报告正文 内容", "pymupdf"),
+    )
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    paths = [row["rel_path"] for row in index.rows]
+    assert "成果/报告.docx.md" in paths
+    assert "成果/报告.pdf.md" in paths
+
+
+def test_known_failure_is_not_retried_every_run(cfg, docs_dir, monkeypatch):
+    """I3: 转换失败也要记账，未变化的文件下一轮不再重付超时。"""
+
+    def always_timeout(path, *args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    first = pipeline.run(cfg, index=StubIndex())
+    assert any(reason == "timeout" for _, reason in first.failed)
+    second = pipeline.run(cfg, index=StubIndex())
+    assert second.skipped.get("known_failure") == 1
+    assert second.failed == []
+
+
+def test_failures_file_written_for_owner_review(cfg, docs_dir, monkeypatch):
+    def always_timeout(path, *args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    pipeline.run(cfg, index=StubIndex())
+    failures = Path(cfg.lib_dir) / "failures.json"
+    assert failures.is_file()
+    payload = failures.read_text(encoding="utf-8")
+    assert "timeout" in payload
+
+
+def test_removed_source_is_pruned_from_index_and_md(cfg, docs_dir, flat_opc, monkeypatch):
+    """I7: 文件被移出共享目录 = 撤回共享，md 与索引都必须清掉。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    assert index.rows
+    (docs_dir / "plain.docx").unlink()
+    pipeline.run(cfg, index=index)
+    assert not (Path(cfg.md_dir) / "成果" / "plain.docx.md").exists()
+    assert all("plain.docx" not in row["rel_path"] for row in index.rows)
+
+
+def test_drive_root_folder_keeps_md_inside_lib(cfg):
+    """I10: 共享目录是盘符根（folder.name == ''）时，md 不能写到库目录外面。"""
+    from pathlib import Path as _P
+
+    assert pipeline._top_name(_P("D:/")) == "D"
+    assert pipeline._top_name(_P("D:/成果")) == "成果"
+    assert not pipeline._md_rel("成果/a.docx").startswith("/")
+
+
+def test_office_session_reuses_one_instance(monkeypatch):
+    """I6: 一批文档共用一个 Office 实例，不再每篇起停。"""
+    dispatches = {"n": 0}
+
+    class FakeDoc:
+        class Content:
+            WordOpenXML = "<pkg:package/>"
+
+        def Close(self, flag):
+            return None
+
+    class FakeApp:
+        class Documents:
+            @staticmethod
+            def Open(path, **kwargs):
+                return FakeDoc()
+
+        def Quit(self):
+            return None
+
+    def fake_dispatch():
+        dispatches["n"] += 1
+        return FakeApp()
+
+    monkeypatch.setattr(office_bridge, "_dispatch_office", fake_dispatch)
+    monkeypatch.setattr(office_bridge, "_office_pids", lambda: set())
+    monkeypatch.setattr(office_bridge, "_kill_office_processes", lambda pids=None: None)
+    with office_bridge.OfficeSession() as session:
+        for _ in range(3):
+            office_bridge.extract_wordopenxml(Path("x.docx"), session=session)
+    assert dispatches["n"] == 1

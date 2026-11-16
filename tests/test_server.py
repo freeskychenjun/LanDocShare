@@ -181,3 +181,41 @@ def test_audit_written_per_request(running):
     log = Path(cfg.lib_dir) / "logs" / "access_log.jsonl"
     assert log.is_file()
     assert '"/api/stats"' in log.read_text(encoding="utf-8").replace('"api": ', "")
+
+
+def test_empty_cidrs_denies_all(lib):
+    """I5: 清空 allow_cidrs = 暂停共享，绝不能变成"全网放行"。"""
+    cfg, index = lib
+    cfg.allow_cidrs = []
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        assert client.get("/api/search?q=x")[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_meta_reports_actual_bound_port(lib):
+    """I9: /api/meta 的端口必须是真正监听的端口（8766 被占时会顺延）。"""
+    cfg, index = lib
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        assert client.json("/api/meta")["port"] == port
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_health_reports_last_scan(running):
+    """M1 顺带: /api/health 带上"最后更新"，库主人和客户端都能看到新鲜度。"""
+    client, _, _ = running
+    payload = client.json("/api/health")
+    assert "last_scan" in payload

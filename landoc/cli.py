@@ -32,19 +32,48 @@ def pick_port(start: int, host: str = "0.0.0.0", tries: int = 20) -> int:
     raise RuntimeError(f"{start}..{start + tries - 1} 端口都被占用")
 
 
+ACROBAT_TOOL_CANDIDATES = (
+    Path(r"D:\应用软件\右键解密"),
+    Path(r"D:\Claude Code\解密平台\工具\单个解密"),
+)
+
+
+def _find_acrobat_tool_dir() -> Path | None:
+    """找现成的兜底工具目录（有 acrobat.exe 才算）。"""
+    for candidate in ACROBAT_TOOL_CANDIDATES:
+        if (candidate / "acrobat.exe").is_file():
+            return candidate
+    return None
+
+
 def _cmd_init(args) -> int:
     lib_dir = Path(args.lib_dir)
     lib_dir.mkdir(parents=True, exist_ok=True)
-    cfg = Config(
-        name=args.name,
-        lib_dir=lib_dir,
-        folders=[Path(f) for f in (args.folder or [])],
-    )
+    # 已存在的库：读旧配置再合并，避免把共享范围/工具目录打回默认
+    try:
+        cfg = Config.load(lib_dir)
+    except (OSError, ValueError):
+        cfg = Config(name=args.name, lib_dir=lib_dir)
+    cfg.name = args.name
+    if args.folder:
+        merged = list(cfg.folders)
+        for raw in args.folder:
+            candidate = Path(raw)
+            if candidate not in merged:
+                merged.append(candidate)
+        cfg.folders = merged
+    tool_dir = Path(args.acrobat_tool_dir) if args.acrobat_tool_dir else None
+    if tool_dir is None and cfg.acrobat_tool_dir is None:
+        tool_dir = _find_acrobat_tool_dir()
+    if tool_dir is not None:
+        cfg.acrobat_tool_dir = tool_dir
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
     print(f"     共享目录 {len(cfg.folders)} 个：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"     允许网段：{', '.join(cfg.allow_cidrs)}")
+    if cfg.acrobat_tool_dir:
+        print(f"     加密 PDF 兜底工具：{cfg.acrobat_tool_dir}")
     return 0
 
 
@@ -81,6 +110,10 @@ def _cmd_serve(args) -> int:
     port = args.port or pick_port(cfg.port)
     httpd = make_server(cfg, port=port)
     host, actual = httpd.server_address[:2]
+    try:  # 实际端口写进 meta：二期 registry 靠它登记，客户端才不会连错
+        Index(cfg.db_path, md_root=cfg.md_dir).set_meta("port", str(actual))
+    except Exception:  # noqa: BLE001
+        pass
     print(f"[OK] 服务已启动：http://{_lan_ip()}:{actual}/  （Ctrl+C 停止）")
     try:
         httpd.serve_forever()
@@ -125,6 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--lib-dir", required=True)
     init.add_argument("--name", required=True)
     init.add_argument("--folder", action="append", help="共享目录，可重复指定多个")
+    init.add_argument(
+        "--acrobat-tool-dir",
+        help="加密 PDF 兜底工具目录（内含 acrobat.exe）；不给则自动探测已知路径",
+    )
     init.set_defaults(func=_cmd_init)
 
     probe_cmd = sub.add_parser("probe", help="抽样体检：明/密/受阻比例")

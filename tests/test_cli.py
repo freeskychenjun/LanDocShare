@@ -77,3 +77,32 @@ def test_pick_port_skips_busy_port():
 def test_parser_rejects_unknown_command():
     with pytest.raises(SystemExit):
         cli.main(["nonsense"])
+
+
+def test_init_accepts_acrobat_tool_dir(tmp_path: Path):
+    """I8: 兜底工具目录必须有入口，否则 README 承诺的能力配不出来。"""
+    lib = tmp_path / "lib"
+    tool = tmp_path / "tool"
+    tool.mkdir()
+    (tool / "acrobat.exe").write_bytes(b"MZ")
+    cli.main(
+        ["init", "--lib-dir", str(lib), "--name", "库", "--acrobat-tool-dir", str(tool)]
+    )
+    assert Config.load(lib).acrobat_tool_dir == tool
+
+
+def test_init_preserves_existing_settings(tmp_path: Path):
+    """M7: 重跑 init 追加目录，不能把已有的共享范围/工具目录打回默认。"""
+    lib = tmp_path / "lib"
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--folder", str(a)])
+    cfg = Config.load(lib)
+    cfg.allow_cidrs = ["127.0.0.1"]
+    cfg.acrobat_tool_dir = tmp_path / "tool"
+    cfg.save()
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--folder", str(b)])
+    reloaded = Config.load(lib)
+    assert reloaded.allow_cidrs == ["127.0.0.1"]
+    assert reloaded.acrobat_tool_dir == tmp_path / "tool"
+    assert set(reloaded.folders) == {a, b}

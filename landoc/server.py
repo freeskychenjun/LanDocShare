@@ -95,8 +95,9 @@ class Audit:
 
 
 def _ip_allowed(ip: str, allow_cidrs) -> bool:
+    # 空列表 = 暂停共享 = 拒绝所有来源（绝不能反过来变成"全网放行"）
     if not allow_cidrs:
-        return True
+        return False
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -186,6 +187,7 @@ class Handler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "doc_count": stats["total"],
                     "name": getattr(self.config, "name", ""),
+                    "last_scan": self.index.get_meta("last_scan", ""),
                 }
             )
         if route == "/api/meta":
@@ -197,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "doc_count": self.index.stats()["total"],
                     "allow_cidrs": list(getattr(self.config, "allow_cidrs", []) or []),
-                    "port": getattr(self.config, "port", None),
+                    "port": self.server.server_address[1],
                 }
             )
         if route == "/api/stats":

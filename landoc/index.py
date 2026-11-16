@@ -1,7 +1,7 @@
 r"""FTS5 索引：建库、增量写、检索、目录聚合、表格抽取。
 
 SQL 与 `F:\md_share\share_server.py` 保持一致（同一套已验证的实现）：
-- FTS5 用 `content='documents'` 的外部内容表，检索走 `documents_fts MATCH`；
+- FTS5 用独立表 + `trigram` 分词（中文按子串匹配，不依赖分词边界），检索走 `documents_fts MATCH`；
 - `tree` / `list_dir` 只从索引聚合，不读磁盘 —— 被排除的目录对同事完全不可见；
 - `list_dir` 必须用 `rowid IN (子查询)` 两步查：直接 `LIKE + ORDER BY` 会全表扫描
   含正文的行（实测可超时 30 s 以上），不要"优化"回单层查询。
@@ -14,6 +14,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+
+from landoc import __version__
 
 FTS_RESERVED = {"and", "or", "not", "near"}
 MIN_TRIGRAM_CHARS = 3  # FTS5 的 trigram 分词器要求查询词至少 3 个字符
@@ -35,6 +37,10 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     title, content,
     tokenize='trigram'
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
 );
 """
 
@@ -116,9 +122,8 @@ class Index:
     def upsert(self, rel_path, title, ext, source_path, src_size, src_mtime, content) -> None:
         """写一条文档记录。
 
-        FTS 里存的是 **jieba 分段后的文本**：unicode61 会把整段中文当一个 token，
-        不分词就永远匹配不到"马斯京根"这种词；原始正文留在 documents.content 里，
-        片段（snippet）由 `_make_snippet` 从原文生成，展示才自然。
+        FTS 里存原文，靠 trigram 分词器做子串索引；片段（snippet）由
+        `_make_snippet` 从 documents.content 生成，命中词用 <<>> 标出。
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         self.conn.execute(
@@ -139,6 +144,16 @@ class Index:
             (rowid, title, content),
         )
 
+    def delete(self, rel_path: str) -> None:
+        """删除一条文档（撤回共享时用）：documents 与 FTS 一起删。"""
+        row = self.conn.execute(
+            "SELECT rowid FROM documents WHERE rel_path = ?", (rel_path,)
+        ).fetchone()
+        if not row:
+            return
+        self.conn.execute("DELETE FROM documents_fts WHERE rowid = ?", (row[0],))
+        self.conn.execute("DELETE FROM documents WHERE rowid = ?", (row[0],))
+
     def commit(self) -> None:
         self.conn.commit()
 
@@ -157,7 +172,7 @@ class Index:
     # ---- 读取 ----
     def stats(self) -> dict:
         total = self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        return {"total": total, "service": "landoc", "version": "0.1.0"}
+        return {"total": total, "service": "landoc", "version": __version__}
 
     def get_content(self, rel_path: str) -> str | None:
         row = self.conn.execute(

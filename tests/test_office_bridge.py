@@ -70,3 +70,28 @@ def test_encrypted_docx_roundtrip_yields_plaintext_docx(encrypted_docx_path: Pat
     out.write_bytes(office_bridge.flat_opc_to_docx_bytes(xml))
     assert out.read_bytes()[:4] == b"PK\x03\x04"  # python 写盘 = 明文
     assert len(docx.Document(out).paragraphs) > 50
+
+
+def test_password_dialog_maps_to_password_protected(monkeypatch, plain_docx_path):
+    """I4: 口令文档是"弹框阻塞→超时"，必须识别成 password_protected 而不是 timeout。"""
+    import time as _time
+
+    monkeypatch.setattr(office_bridge, "_open_document", lambda app, path: _time.sleep(3))
+    monkeypatch.setattr(office_bridge, "_dispatch_office", lambda: object())
+    monkeypatch.setattr(office_bridge, "_office_pids", lambda: set())
+    monkeypatch.setattr(office_bridge, "_kill_office_processes", lambda pids=None: None)
+    monkeypatch.setattr(office_bridge, "_has_password_dialog", lambda pids: True)
+    with pytest.raises(office_bridge.PasswordProtected):
+        office_bridge.extract_wordopenxml(plain_docx_path, timeout=0.4)
+
+
+def test_timeout_without_dialog_stays_office_timeout(monkeypatch, plain_docx_path):
+    import time as _time
+
+    monkeypatch.setattr(office_bridge, "_open_document", lambda app, path: _time.sleep(3))
+    monkeypatch.setattr(office_bridge, "_dispatch_office", lambda: object())
+    monkeypatch.setattr(office_bridge, "_office_pids", lambda: set())
+    monkeypatch.setattr(office_bridge, "_kill_office_processes", lambda pids=None: None)
+    monkeypatch.setattr(office_bridge, "_has_password_dialog", lambda pids: False)
+    with pytest.raises(office_bridge.OfficeTimeout):
+        office_bridge.extract_wordopenxml(plain_docx_path, timeout=0.4)

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import queue
 import subprocess
 import threading
 import xml.etree.ElementTree as ET
@@ -123,42 +124,144 @@ def _run_with_timeout(func, timeout: float, on_timeout=None):
     return box.get("value")
 
 
-def extract_wordopenxml(path: Path, timeout: float = 120.0) -> str:
-    """打开文档并返回 Flat OPC 字符串（纯内存，不落盘）。
+_PASSWORD_HINTS = ("密码", "口令", "password", "Password", "PASSWORD")
 
-    COM 必须在创建它的同一个线程里使用（否则动态派发拿不到 `Documents`），
-    所以整个“启动 Office → 打开 → 取 XML → 关闭”都放在工作线程内完成，
-    外层只负责超时与杀进程。
+
+def _has_password_dialog(pids: set[int]) -> bool:
+    """超时时判断是不是弹了口令/密码对话框（真口令文档会模态阻塞 COM）。"""
+    if not pids:
+        return False
+    try:
+        import win32gui
+        import win32process
+    except ImportError:  # pragma: no cover
+        return False
+    found = {"hit": False}
+
+    def visit(hwnd, _):
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:  # noqa: BLE001
+            return True
+        if pid not in pids:
+            return True
+        title = win32gui.GetWindowText(hwnd) or ""
+        cls = win32gui.GetClassName(hwnd) or ""
+        if cls == "#32770" or any(hint in title for hint in _PASSWORD_HINTS):
+            found["hit"] = True
+        return True
+
+    try:
+        win32gui.EnumWindows(visit, None)
+    except Exception:  # noqa: BLE001
+        return False
+    return found["hit"]
+
+
+class OfficeSession:
+    """复用同一个 Office 实例处理一批文档。
+
+    每篇重启 Office 会白付 6~9 秒启动成本（设计文档 §3.2 的基准是"首篇 6.4 秒，
+    之后约 1.4 秒/份"）。COM 有线程亲和性，所以整批固定跑在一个专用工作线程里，
+    调用方只做超时等待；超时则杀掉本会话新起的进程并让会话失效。
     """
 
-    def work() -> str:
-        import pythoncom  # 仅 Windows 可用，延迟导入
+    def __init__(self, dispatch=None, timeout: float = 120.0):
+        self._dispatch = dispatch or _dispatch_office
+        self._timeout = timeout
+        self._queue: "queue.Queue" = queue.Queue()
+        self._app = None
+        self._before = _office_pids()
+        self._dead = False
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        import pythoncom
 
         pythoncom.CoInitialize()
-        doc = None
         try:
-            app = _dispatch_office()
-            doc = _open_document(app, path)
+            while True:
+                job = self._queue.get()
+                if job is None:
+                    break
+                func, box, done = job
+                try:
+                    box["value"] = func(self)
+                except BaseException as exc:  # noqa: BLE001 - 原样交给调用方线程
+                    box["error"] = exc
+                finally:
+                    done.set()
+        finally:
+            pythoncom.CoUninitialize()
+
+    def app(self):
+        if self._app is None:
+            self._app = self._dispatch()
+        return self._app
+
+    def call(self, func, timeout: float | None = None):
+        if self._dead:
+            raise OfficeUnavailable("Office 会话已失效")
+        wait = self._timeout if timeout is None else timeout
+        box: dict = {}
+        done = threading.Event()
+        self._queue.put((func, box, done))
+        if not done.wait(wait):
+            pids = _office_pids() - self._before
+            password = _has_password_dialog(pids)
+            _kill_office_processes(pids)
+            self._dead = True
+            if password:
+                raise PasswordProtected("文档需要打开口令（检测到密码对话框）")
+            raise OfficeTimeout(f"超过 {wait:.0f} 秒未完成")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def extract(self, path: Path, timeout: float | None = None) -> str:
+        def job(session: "OfficeSession") -> str:
+            doc = _open_document(session.app(), path)
             if doc is None:
                 raise PasswordProtected(f"文档无法打开（可能带打开口令）：{path}")
-            return doc.Content.WordOpenXML
-        finally:
-            if doc is not None:
+            try:
+                return doc.Content.WordOpenXML
+            finally:
                 try:
                     doc.Close(False)
                 except Exception:  # noqa: BLE001
                     pass
-            # 不断言 app.Quit()：WPS 关掉最后一个文档后再 Quit 会抛 RPC 失败（0x800706be），
-            # 进程清理由 _kill_office_processes(新增 PID) 负责。
-            pythoncom.CoUninitialize()
 
-    before = _office_pids()
-    try:
-        xml = _run_with_timeout(
-            work, timeout, on_timeout=lambda: _kill_office_processes(_office_pids() - before)
-        )
-    finally:
-        _kill_office_processes(_office_pids() - before)
+        return self.call(job, timeout)
+
+    def close(self) -> None:
+        try:
+            self._queue.put(None)
+            self._thread.join(timeout=5)
+        except RuntimeError:
+            pass
+        # 只杀本会话新起的 Office 进程，不动库主人自己开着的窗口
+        _kill_office_processes(_office_pids() - self._before)
+
+    def __enter__(self) -> "OfficeSession":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+
+def extract_wordopenxml(
+    path: Path, timeout: float = 120.0, session: OfficeSession | None = None
+) -> str:
+    """打开文档并返回 Flat OPC 字符串（纯内存，不落盘）。
+
+    传 session 可让一批文档复用同一个 Office 实例；不传则临时起一个会话。
+    """
+    if session is not None:
+        xml = session.extract(path, timeout)
+    else:
+        with OfficeSession(timeout=timeout) as own_session:
+            xml = own_session.extract(path, timeout)
     if not xml or "<pkg:package" not in xml:
         raise OfficeUnavailable(f"WordOpenXML 返回异常：{path}")
     return xml
