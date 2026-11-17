@@ -437,6 +437,14 @@ def test_checker_reports_failure_without_raising(update_dir):
     assert "连不上" in phases[-1]["message"]
 
 
+def test_log_file_stays_inside_state_root(update_dir, monkeypatch):
+    """跑测试时日志别写进真人档案：状态目录指到临时目录，日志也得跟着去。"""
+    monkeypatch.setattr(updater, "local_app_data", lambda: Path("C:/Users/nobody/AppData/Local"))
+    updater.log("测试写一行")
+    written = update_dir / "logs" / "update.log"
+    assert written.exists() and "测试写一行" in written.read_text(encoding="utf-8")
+
+
 def _write(path: Path, data: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)

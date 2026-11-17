@@ -97,7 +97,8 @@ def updates_root() -> Path:
 
 
 def log_path() -> Path:
-    return local_app_data() / STATE_DIR_NAME / "logs" / "update.log"
+    """日志跟状态目录走：测试把 LANDOC_UPDATE_DIR 指到临时目录时，日志也不会写进真人档案。"""
+    return state_root() / "logs" / "update.log"
 
 
 def log(message: str) -> None:

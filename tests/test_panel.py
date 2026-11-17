@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 from landoc.app import AppStatus
+from landoc import __version__
 from landoc.config import Config
 from landoc.panel import StatusPanel, phase_text, status_rows, version_text
 
@@ -97,7 +98,7 @@ def test_version_row_shows_current_version_only(tmp_path):
     cfg = _cfg(tmp_path)
     status = AppStatus(phase="serving", doc_count=13, port=8768)
     rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
-    assert rows["版本"] == "v0.2.0"
+    assert rows["版本"] == f"v{__version__}"
     assert status_rows(cfg, status, lan_ip="x")[-1].label == "版本"  # 放最后一行
 
 
