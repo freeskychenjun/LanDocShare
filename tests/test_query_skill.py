@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,37 @@ def test_fetch_libraries_falls_back_to_cache_with_health_check(q, monkeypatch, t
     libraries, source = q.fetch_libraries()
     assert source == "cache+health"
     assert libraries[0]["online"] is True
+
+
+def test_fetch_libraries_passes_name_and_separates_cache(q, monkeypatch, tmp_path):
+    calls: list[str] = []
+
+    def fake(url, timeout=3.0):
+        calls.append(url)
+        return {"libraries": [], "latest_version": "0.2.0"}
+
+    monkeypatch.setattr(q, "_get_json", fake)
+    libraries, source = q.fetch_libraries("陈鋆")
+    assert (libraries, source) == ([], "registry")
+    assert f"name={urllib.parse.quote('陈鋆')}" in calls[0]
+    assert list((tmp_path / "home").glob("cache_libraries_*.json"))
+    # 匿名查询写自己的缓存，不会蹭到姓名缓存
+    q.fetch_libraries()
+    assert (tmp_path / "home" / "cache_libraries.json").exists()
+
+
+def test_cmd_libs_sends_identity(q, monkeypatch, tmp_path):
+    (tmp_path / "home").mkdir(parents=True)
+    (tmp_path / "home" / "identity.txt").write_text("陈鋆", encoding="utf-8")
+    urls: list[str] = []
+
+    def fake(url, timeout=3.0):
+        urls.append(url)
+        return {"libraries": []}
+
+    monkeypatch.setattr(q, "_get_json", fake)
+    assert q.cmd_libs(type("A", (), {"json": False})()) == 3
+    assert f"name={urllib.parse.quote('陈鋆')}" in urls[0]
 
 
 def test_fetch_libraries_reports_none_without_cache(q, monkeypatch):

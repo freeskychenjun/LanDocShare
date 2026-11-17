@@ -32,6 +32,10 @@ class Config:
 
     registry_url 是登记中心地址（如 `http://10.91.1.197:8767`）：非空时库软件每 60 s
     心跳一次，中心据此下发"谁在线、谁的库有多少篇"；留空则只在本机局域网里被发现。
+
+    check_updates / auto_download 是自动更新开关（设计 §9，默认都开）：启动后约半分钟
+    问一次中心有没有新版本，有就在后台下好；**安装始终由用户点"升级"触发**，不静默替换。
+    关掉 check_updates 后完全不去问中心，只在托盘菜单里手动"检查更新"。
     """
 
     name: str
@@ -42,6 +46,8 @@ class Config:
     people_departments: dict[str, str] = field(default_factory=dict)
     port: int = 8766
     registry_url: str = ""
+    check_updates: bool = True
+    auto_download: bool = True
     snippet_tokens: int = 48
     store_content: bool = True
     snippet_only_chars: int = 20000

@@ -14,7 +14,7 @@ from typing import Callable
 
 from landoc import __version__
 from landoc import idle as idle_module
-from landoc import pipeline
+from landoc import pipeline, updater
 from landoc.cli import pick_port
 from landoc.config import Config
 
@@ -37,6 +37,10 @@ class AppStatus:
     paused: bool = False
     converted: int = 0  # 本次空闲窗口里转换成功的篇数
     registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
+    version: str = __version__  # 本机程序版本
+    update_version: str = ""  # 中心上的新版本（空 = 没发现）
+    update_phase: str = ""  # "" / checking / available / downloading / ready / failed / manual / installing
+    update_message: str = ""
 
     def summary(self) -> str:
         if self.phase == "converting":
@@ -45,6 +49,8 @@ class AppStatus:
             return "已暂停共享"
         if self.phase == "error":
             return f"出错：{self.message}"
+        if self.update_phase == "ready" and self.update_version:
+            return f"我的库：{self.doc_count} 篇 · 可升级 v{self.update_version}"
         return f"我的库：{self.doc_count} 篇 · 上次 {self.last_scan or '从未'}"
 
 
@@ -69,6 +75,10 @@ class LibraryApp:
         on_notify: Callable[[str], None] | None = None,
         poster: Callable[[str, dict], dict] | None = None,
         heartbeat_seconds: float = 60.0,
+        update_fetch: Callable | None = None,
+        update_prepare: Callable | None = None,
+        update_interval: float = updater.CHECK_INTERVAL,
+        update_initial_delay: float = updater.INITIAL_DELAY,
     ) -> None:
         self.cfg = cfg
         self.index = index
@@ -83,7 +93,12 @@ class LibraryApp:
         self._on_notify = on_notify
         self._poster = poster or _post_json
         self._heartbeat_seconds = heartbeat_seconds
+        self._update_fetch = update_fetch
+        self._update_prepare = update_prepare
+        self._update_interval = update_interval
+        self._update_initial_delay = update_initial_delay
         self.last_register: dict | None = None
+        self._updates: updater.UpdateChecker | None = None
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -99,6 +114,12 @@ class LibraryApp:
         from landoc.index import Index
         from landoc.server import make_server
 
+        self._stop.clear()
+        self._threads.clear()
+        self._update(phase="starting", version=__version__)
+        if updater.install_supported():
+            # 更新器正在等这个标记：新版本一起来就写，等不到它会自动回滚
+            updater.write_applied_marker(__version__)
         self.index = self.index or Index(
             self.cfg.db_path,
             snippet_tokens=self.cfg.snippet_tokens,
@@ -126,6 +147,7 @@ class LibraryApp:
         self._spawn(self._worker, "landoc-worker")
         if str(getattr(self.cfg, "registry_url", "") or "").strip():
             self._spawn(self._heartbeat, "landoc-heartbeat")
+        self._start_updates()
 
     def _spawn(self, target, name: str) -> None:
         thread = threading.Thread(target=target, name=name, daemon=True)
@@ -135,6 +157,8 @@ class LibraryApp:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._updates is not None:
+            self._updates.stop()
         if self.httpd is not None:
             try:
                 self.httpd.shutdown()
@@ -171,6 +195,99 @@ class LibraryApp:
 
     def toggle_share(self) -> None:
         self.resume_share() if self._paused else self.pause_share()
+
+    # ---- 自动更新 ----
+    @property
+    def staged_update(self) -> updater.StagedUpdate | None:
+        return self._updates.staged if self._updates is not None else None
+
+    @property
+    def update_ready(self) -> bool:
+        status = self.status
+        return status.update_phase == "ready" and bool(status.update_version)
+
+    def _ensure_updates(self) -> updater.UpdateChecker | None:
+        url = str(getattr(self.cfg, "registry_url", "") or "").strip()
+        if not url:
+            return None
+        if self._updates is None:
+            self._updates = updater.UpdateChecker(
+                url,
+                fetch=self._update_fetch,
+                prepare=self._update_prepare,
+                interval=self._update_interval,
+                initial_delay=self._update_initial_delay,
+                auto_download=bool(getattr(self.cfg, "auto_download", True)),
+                on_change=self._on_update_change,
+            )
+        return self._updates
+
+    def _start_updates(self) -> None:
+        """启动后台检查；已经下载好的版本先认领，别让同事重启一次就白下 95 MB。"""
+        if not getattr(self.cfg, "check_updates", True):
+            return
+        checker = self._ensure_updates()
+        if checker is None:
+            return
+        checker.adopt_existing()
+        checker.start()
+
+    def _on_update_change(self, fields: dict) -> None:
+        """更新器的字段名（phase/version/message）和状态窗口的不一样，这里翻译一次。
+
+        直接 `_update(**fields)` 会把服务状态 phase 和本机版本 version 覆盖掉，
+        表现为"版本号变成新版本了、却没有升级提示"。
+        """
+        mapping = {
+            "phase": "update_phase",
+            "version": "update_version",
+            "message": "update_message",
+        }
+        mapped = {target: fields[source] for source, target in mapping.items() if source in fields}
+        if mapped:
+            self._update(**mapped)
+
+    def check_updates_async(self) -> None:
+        """托盘"检查更新"用：不阻塞界面，结果通过状态字段显示。"""
+        checker = self._ensure_updates()
+        if checker is None:
+            self._update(update_message="没配置登记中心，无法检查更新")
+            return
+        threading.Thread(
+            target=checker.check, name="landoc-update-check", daemon=True
+        ).start()
+
+    def download_update_async(self) -> None:
+        checker = self._ensure_updates()
+        if checker is None or checker.info is None:
+            return
+        threading.Thread(
+            target=checker.download, name="landoc-update-download", daemon=True
+        ).start()
+
+    def install_update(self) -> str:
+        """「升级」按钮：停服务 → 拉起暂存的新版本当更新器 → 本进程退出。
+
+        返回 "ok" 表示更新器已起来（调用方应立即退出）；其他字符串是给用户看的原因。
+        """
+        staged = self.staged_update
+        if staged is None:
+            return "新版本还没下载好"
+        if self.status.phase == "converting":
+            return "正在建库，等这一批转换完再升级"
+        if not updater.install_supported():
+            return "源码运行时不会替换程序；请打包后再用自动升级"
+        target = updater.current_install_dir()
+        if target is None:
+            return "找不到程序目录"
+        self._update(update_phase="installing", update_message="正在重启升级…")
+        self.stop()
+        try:
+            updater.spawn_update(staged, target=target)
+        except Exception as exc:  # noqa: BLE001 - 起不来就把服务恢复，别让库停了
+            self.start()
+            return f"启动更新器失败：{exc}"
+        return "ok"
 
     def local_url(self, host: str = "127.0.0.1") -> str:
         return f"http://{host}:{self._status.port}/"
@@ -237,6 +354,9 @@ class LibraryApp:
             "port": status.port or self.cfg.port,
             "doc_count": status.doc_count,
             "version": __version__,
+            # 中心按这两项决定"谁能看到这个库"；没上报的中心会把库藏起来。
+            "allow_cidrs": list(self.cfg.allow_cidrs or []),
+            "allow_people": dict(self.cfg.allow_people or {}),
         }
 
     def _heartbeat(self) -> None:

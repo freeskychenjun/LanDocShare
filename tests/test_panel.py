@@ -6,7 +6,7 @@ import threading
 
 from landoc.app import AppStatus
 from landoc.config import Config
-from landoc.panel import StatusPanel, phase_text, status_rows
+from landoc.panel import StatusPanel, phase_text, status_rows, version_text
 
 
 def _cfg(tmp_path, **overrides):
@@ -88,3 +88,29 @@ def test_show_starts_one_panel_thread(tmp_path, monkeypatch):
         threading.Event().wait(0.02)
     assert started == ["landoc-panel"]
     assert panel._thread is not None and panel._thread.daemon
+
+
+# --------------------------------------------------------------------------- #
+# 版本行：发现新版本时把"到哪一步了"讲清楚
+# --------------------------------------------------------------------------- #
+def test_version_row_shows_current_version_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    status = AppStatus(phase="serving", doc_count=13, port=8768)
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["版本"] == "v0.2.0"
+    assert status_rows(cfg, status, lan_ip="x")[-1].label == "版本"  # 放最后一行
+
+
+def test_version_text_describes_update_progress():
+    assert version_text(AppStatus(version="0.2.0", update_version="0.3.0", update_phase="ready")) == (
+        "v0.2.0 → v0.3.0（已下载，可升级）"
+    )
+    assert version_text(
+        AppStatus(version="0.2.0", update_version="0.3.0", update_phase="downloading", update_message="正在下载新版本 40%")
+    ) == "v0.2.0 → v0.3.0（正在下载新版本 40%）"
+    assert version_text(
+        AppStatus(version="0.2.0", update_version="0.9.0", update_phase="manual")
+    ) == "v0.2.0 → v0.9.0（版本跨度大，需手动重装）"
+    assert version_text(
+        AppStatus(version="0.2.0", update_version="0.3.0", update_message="检查更新失败：连不上中心")
+    ) == "v0.2.0 → v0.3.0（检查更新失败：连不上中心）"

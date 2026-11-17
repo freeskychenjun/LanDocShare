@@ -24,7 +24,7 @@
 1. 同事**零命令行、零 Python 环境**：一个 exe + 一个"选择文件夹"的向导，装完即用，随开机自启。
 2. 加密的 Office 文档（单位透明加密，密文头 `17DA5FA01633CD9A`）**不依赖解密工具**也能转成可检索文本。
 3. 同事之间**互相发现**：一个轻量登记中心 + 客户端本地缓存。
-4. 检索体验：一次查询可覆盖"全院所有在线库"，结果按相关度合并，每条带"来自谁、哪个文档"。
+4. 检索体验：一次查询可覆盖"所有对你开放且在线"的库，结果按相关度合并，每条带"来自谁、哪个文档"。
 5. 权限默认对规划院内网开放，库主人可随时收紧或停止共享。
 
 ### 非目标（本次不做）
@@ -130,7 +130,7 @@
 1. **库软件（LanDocShare.exe）** — 每台同事机器一个。托盘常驻，负责：首次向导选文件夹、后台建库/增量更新、本地 FTS5 索引、对院内提供只读检索 API、向中心注册心跳、开机自启。
 2. **登记中心（registry）** — 一台常开机器（建议复用 `10.91.1.197`，与现有 8766 服务并存，新端口 8767）。只存元数据，每 60 s 刷新在线状态，下发库名单。
 3. **客户端 skill（`lan-lib-search`）** — 装在同事 AI 助手里（pi / ZCode / Claude Code 同一份包）。首次填姓名写 `identity.txt`；查中心拿名单（本地缓存 24 h）；并发 fan-out 查询；合并排序输出。
-4. **权限模型** — 库端自己执行（默认 `10.91.0.0/16`），中心只展示状态，不做授权。
+4. **权限模型** — 库端执行内容鉴权（默认 `10.91.0.0/16`）；中心按库端上报的授权范围过滤元数据，不做内容鉴权。
 5. **分发与升级** — 单 exe 安装包 + 自更新检查；skill 包由中心动态生成（或静态包只改服务器地址）。
 
 ---
@@ -228,15 +228,17 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 ## 7. 登记中心（registry）
 
 - 单文件服务（同一个 exe 的 `LanDocShare.exe --registry` 模式，或独立 `registry.py`），默认端口 8767，与现有 8766 互不影响。
-- 数据：内存字典 + 落盘 `registry.json`（原子写）；条目 `{name, ip, port, lib_name, doc_count, version, last_seen, status}`。
+- 数据：内存字典 + 落盘 `registry.json`（原子写）；条目 `{name, ip, port, lib_name, doc_count, version, allow_cidrs, allow_people, last_seen, status}`。
 - 接口：
-  - `POST /register`（库软件每 60 s 心跳，含篇数）→ 返回中心时间与"是否需要升级"。
-  - `GET /libraries` → 在线库清单（TTL：5 分钟内有心跳 = 在线；30 分钟无心跳 = 移除）。
-  - `GET /health` → 中心自身状态。
-- 安全：只接受 `10.91.0.0/16` 来源；不接受来自客户端自报的 IP（用连接对端 IP）；不做鉴权（内容只有元数据，泄露无害）。
-- 客户端缓存：skill 把上次拿到的库清单写 `~/.pi/skills/lan-lib-search/cache_libraries.json`（24 h）；中心不可用时用它 + 逐库 `/api/health` 探活。
+  - `POST /register`（库软件每 60 s 心跳，含篇数与授权范围 `allow_cidrs` / `allow_people`）→ 返回中心时间与"是否需要升级"。
+  - `GET /libraries?name=<姓名>` → 只返回对该来源 IP（以及姓名，若填了）开放的在线库（TTL：5 分钟内有心跳 = 在线；30 分钟无心跳 = 移除）。
+  - `GET /health` / `GET /api/info` → 中心自身状态；其中的 `libraries` 计数同样只算"对你可见"的库。
+- 安全：只接受 `10.91.0.0/16` 来源；不接受来自客户端自报的 IP（用连接对端 IP）；**不做内容鉴权，但元数据按库主人上报的授权范围过滤**。没上报授权范围的旧版库、以及暂停共享（空 `allow_cidrs`）的库，一律不显示。中心因此会持有各库的授权名单（只有姓名/IP，不含文档内容）——这是"同事只能看到对自己开放的库"的必要代价。
+- 客户端缓存：skill 把上次拿到的库清单写 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（24 h）；**带身份查询时按姓名分缓存**，避免换人后蹭到别人的可见清单；中心不可用时用它 + 逐库 `/api/health` 探活。
 
 > **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。
+
+> **实施补充（2026-11-18，按权限可见）**：中心从"只报状态"改成"按库主人上报的授权范围过滤元数据"。库端心跳新增 `allow_cidrs` / `allow_people`（`LibraryApp._register_payload` 读 `Config`），暂停共享时 `allow_cidrs=[]` 照实上报。中心 `RegistryStore.register` 用 `_clean_audience` 校验：缺字段 = 旧版（存 `None`，不显示）、空列表 = 暂停（不显示）、格式错 = 整次心跳 400（fail closed）；`libraries(viewer_ip=..., viewer_name=...)` 用 `_audience_allows` 过滤，后者复用 `landoc.server.authorize_person`，保证"中心看得到"与"库端进得去"同一口径。`GET /libraries`、说明页表格、`/api/info` 与 `/health` 的 `libraries` 计数全部只用过滤后的清单；响应不回传 `allow_cidrs` / `allow_people`。说明页新增 `?name=` 姓名输入框（填了才按姓名匹配；不填只按 IP）。客户端 `query.py libs` / `search` / `tables` 都从 `identity.txt` 取姓名带给中心与库端；`libs` 缓存按姓名的 SHA-256 前 12 位分文件，匿名仍用默认缓存。旧版库升级前不会出现在清单里（中心无法知道它的授权范围）。
 
 > **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP,部门` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（网段内任何人可取）。说明页展示"已发布 N 人 + 部门分布 · 更新于 …"。库软件侧由 `landoc/roster.py`（`Roster` 把"人 + 部门"绑在一起；拉取/发布/CSV 校验/按部门排序）与 `landoc/roster_ui.py`（授权名单窗口：姓名/IP/部门三列、增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 与 `people_departments` 并即时生效；命令行等价物 `people --pull` / `--publish` / `--dept`。
 
@@ -281,6 +283,14 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 > - `GET /download` 流式发 `--package-zip` 指定的 zip（默认依次找 exe 同目录、仓库 `distribution/`、环境变量 `LANDOC_PACKAGE_ZIP`），未放包时 404 + 中文提示，说明页上也不给死链；打包脚本 `packaging/make_package.py` 把 `dist/LanDocShare/` 压成 `distribution/LanDocShare.zip`（`distribution/` 已 gitignore）；
 > - `GET /skill.zip` 现场读 `skill/lan-lib-search/` 模板（打包后从 `_MEIPASS/skill/lan-lib-search` 读，spec 里已 add-data），写入 `scripts/config.json = {"registry": "<本中心地址>"}`；地址优先 `--advertise`，否则取请求 `Host`，所以同事换 IP/域名访问也拿到对的地址；
 > - 升级提示只做"提示"不做自动更新：`/libraries` 的 `latest_version` 与各库 `version` 比对，`query.py libs` 打一行"N 个库版本落后"。真正替换目录仍由人来做（设计 §9 原意）。
+
+> **实施补充（2026-11-18）：自动更新落地（v0.2.0 起）。** 上面那条"只提示不更新"已被替换，方案如下：
+> - **版本真源**：中心目录里的 `latest.json`（`{version, platform, file, sha256, size, released_at, notes, min_from, mandatory}`）由 `packaging/release.py` 生成；中心按 mtime 缓存读取，**发布后不用重启中心**。中心进程自己的 `__version__` 只代表中心那份程序，不能当最新版。center 端新增 `GET /api/update?version=<本机>&platform=windows-x64`，返回 `update/latest/download/sha256/size/notes/min_from/manual_only`；`GET /download/<version>` 支持 `Range: bytes=N-` 断点续传并带 `X-Landoc-Sha256` 头，只放行最新版（老版本 404 并提示"已下架"）。
+> - **客户端**：`landoc/updater.py`。启动 25 s 后（±30% 抖动）检查一次，之后每 6 h（±10%）；有新版自动下载到 `%LOCALAPPDATA%\LanDocShare\updates\<版本>\`（`.part` 续传、size+sha256 双校验、zip-slip 防护、解压到 `app\LanDocShare\`），就绪后只在托盘/状态窗提示"可升级"，**用户点「升级到 v…」才重启**，不静默强更。升级完成后旧暂存目录进 `cleanup.json`，由新进程启动 8 s 后删除（自己删不掉自己）。
+> - **换目录（新版本 exe 自己当更新器）**：点升级 → 旧进程停服务退出 → 从暂存目录以 `LanDocShare.exe --apply-update --wait-pid <旧pid> --target <安装目录> --source <暂存目录> --expect-version <ver>` 启动；更新器等旧 pid 退出 → 复制到同级 `<安装目录>.new-<时间戳>`（目标目录全程完整）→ 目标改名 `.old-<时间戳>` → `.new` 改名成目标 → 启动新版 → 25 s 内等新版写 `updates\applied.json`（version/pid/at）当健康标记；等不到就杀新版、回滚旧目录、再把旧版拉起来。全程写 `%LOCALAPPDATA%\LanDocShare\logs\update.log`。**不需要单独的更新器二进制或 bat**，所以 v0.1.0 用户也能一步升上来。
+> - **边界**：源码运行不替换目录（提示"请打包后再用自动升级"）；建库转换中拒绝升级；目录不可写/版本跨度过大（`min_from`）只提示手动重装；库数据在 `lib_dir`，与程序目录分离，换程序不动数据。
+> - **命令**：发布 `python packaging/release.py --notes "…"`（拒绝降级/同版本覆盖，校验版本号与 `__version__` 一致）；客户端自检 `LanDocShare.exe update`、只查不装 `update --check`、命令行升级 `update --install`。
+> - **一次性前提**：0.2.0 之前的中心进程没有 `/api/update`、断点续传和清单读取，中心那台机器要换一次新版（`registry --package-zip <分发目录>/LanDocShare.zip`，清单自动取同目录 `latest.json`）；之后发布新版本只换文件，不重启中心。客户端不需要任何手工动作（0.1.0 那批因为当时还没有更新器，要手工装一次 0.2.0）。
 
 ---
 

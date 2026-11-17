@@ -11,8 +11,8 @@ description: 检索院内同事们共享的个人资料库（LanDocShare）。�
 ## 快速开始
 
 ```bash
-python scripts/query.py libs            # 谁在线、各多少篇
-python scripts/query.py search 马斯京根   # 全院一起查
+python scripts/query.py libs            # 谁对你开放、各多少篇
+python scripts/query.py search 马斯京根   # 对你开放的库一起查
 python scripts/query.py search 玉田水库 --lib 陈鋆
 python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库除险加固初步设计.docx.md"
 ```
@@ -21,7 +21,8 @@ python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库�
 
 ## 怎么用（给 AI 的流程）
 
-1. **先看名单**（可选，但库多时有用）：`query.py libs`，知道在线几个库、都叫什么。
+1. **先看名单**（可选，但库多时有用）：`query.py libs`，知道**谁对你开放**、各多少篇。
+   清单已经按你的来源 IP（和 `identity.txt` 里的姓名）过滤过，看不到没给你权限的库。
 2. **查**：`query.py search "<关键词>"`。查询词 **2–4 个、越具体越好**；
    命中太少就换更短的核心词（如"马斯京根"而不是"马斯京根洪水演算方法"）。
 3. **读结果**：输出按库分组，每条带 `库主人` + `文档标题` + `相对路径` + `命中片段`（片段里 `<<词>>` 是命中处）。
@@ -33,6 +34,7 @@ python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库�
 ## 何时问姓名
 
 授权默认按 **IP** 认人（库主人维护名单），所以大多数情况直接查就行。
+姓名有两个作用：① 让"IP 会变、只按姓名放行"的库也能看到你；② 让中心的清单按姓名匹配授权。
 只有当某个库返回 `401 name required` 或 `401 ip not registered` 时：
 - `name required`：库主人给这个 IP 登记的名字是"必须报姓名"型 → 问用户"你在共享库登记的名字是？"，
   然后 `python scripts/query.py whoami --set 姓名`，再重查一次。
@@ -51,12 +53,12 @@ python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库�
 ## 没有 Python 时的降级（给 AI 手工执行）
 
 ```bash
-# 1) 名单
-curl -s "http://10.91.1.197:8767/libraries"
+# 1) 名单（带了 name 就按姓名+IP 过滤；不带只按 IP）
+curl -s "http://10.91.1.197:8767/libraries?name=<你的姓名，URL 编码>"
 # 2) 逐库查（把 <ip>:<port> 换成分名单里的 url；q 用 UTF-8 URL 编码）
-curl -s "http://<ip>:<port>/api/search?q=%E9%A9%AC%E6%96%AF%E4%BA%AC%E6%A0%B9&limit=8"
+curl -s "http://<ip>:<port>/api/search?q=%E9%A9%AC%E6%96%AF%E4%BA%AC%E6%A0%B9&limit=8&name=<你的姓名，URL 编码>"
 # 3) 表格
-curl -s "http://<ip>:<port>/api/tables?path=<URL 编码后的相对路径>"
+curl -s "http://<ip>:<port>/api/tables?path=<URL 编码后的相对路径>&name=<你的姓名，URL 编码>"
 ```
 
 拿到几个库的 JSON 后，AI 自己按"库内相关度归一化"合并、按库分组输出即可。
@@ -67,6 +69,7 @@ curl -s "http://<ip>:<port>/api/tables?path=<URL 编码后的相对路径>"
   环境变量 `LANLIB_REGISTRY`、`%LOCALAPPDATA%\lan-lib-search\config.json` 里的 `"registry"`、脚本里的默认值。
 - `config.json` 还可以给某个库加权重：`{"weights": {"陈鋆": 1.3}}`（同分时让某人的库排前面）。
 - 缓存 `cache_libraries.json` 24 h 有效，只在中心连不上时启用（并逐库探活）。
+  **带身份查询时缓存按姓名分成 `cache_libraries_<hash>.json`**，换了姓名不会拿别人的清单。
 - 数据目录默认 `%LOCALAPPDATA%\lan-lib-search`，可用 `LANLIB_HOME` 改。
 
 ## 安全边界（别越界）

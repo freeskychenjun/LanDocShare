@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
+from landoc import updater
 from landoc.app import LibraryApp
 from landoc.config import Config
 from landoc.pipeline import RunReport
@@ -165,9 +166,36 @@ def test_heartbeat_registers_with_registry(tmp_path):
         assert payload["doc_count"] == 13
         assert payload["port"] == 18080
         assert payload["version"]
+        assert payload["allow_cidrs"] == ["10.91.0.0/16"]
+        assert payload["allow_people"] == {}
         assert app.last_register["ok"] is True
         assert wait_for(lambda: app.status.registry.startswith("已登记"))
         assert "2026-11-17 20:18:11" in app.status.registry
+    finally:
+        app.stop()
+
+
+def test_heartbeat_reports_empty_audience_when_paused(tmp_path):
+    """暂停共享时 allow_cidrs 为空，中心就该把这个库藏起来。"""
+    calls: list[tuple[str, dict]] = []
+
+    def poster(url, payload):
+        calls.append((url, dict(payload)))
+        return {"ok": True}
+
+    app = make_app(
+        tmp_path,
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18081),
+        poster=poster,
+        heartbeat_seconds=0.05,
+    )
+    app.cfg.registry_url = "http://10.91.1.197:8767"
+    app.pause_share()
+    app.start()
+    try:
+        assert wait_for(lambda: calls)
+        assert calls[0][1]["allow_cidrs"] == []
     finally:
         app.stop()
 
@@ -179,5 +207,82 @@ def test_no_heartbeat_without_registry_url(tmp_path):
     try:
         time.sleep(0.1)
         assert calls == []
+    finally:
+        app.stop()
+
+
+# --------------------------------------------------------------------------- #
+# 自动更新：状态、摘要、安装前置条件
+# --------------------------------------------------------------------------- #
+def _staged(tmp_path) -> updater.StagedUpdate:
+    return updater.StagedUpdate(version="0.3.0", app_dir=tmp_path / "app")
+
+
+def _update_app(tmp_path, monkeypatch, *, fetch, prepare=None, **kwargs) -> LibraryApp:
+    # 别让"上次下载好的包"从本机真实目录里被认领
+    monkeypatch.setenv("LANDOC_UPDATE_DIR", str(tmp_path / "updates"))
+    app = make_app(
+        tmp_path,
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18080),
+        update_fetch=fetch,
+        update_prepare=prepare or (lambda info, progress=None: _staged(tmp_path)),
+        update_initial_delay=0.01,
+        update_interval=3600,
+        **kwargs,
+    )
+    app.cfg.registry_url = "http://10.91.1.197:8767"
+    return app
+
+
+def test_update_checker_reaches_ready_and_summary_mentions_it(tmp_path, monkeypatch):
+    info = updater.UpdateInfo(version="0.3.0", url="http://x/p.zip", sha256="a" * 64, size=1)
+    app = _update_app(tmp_path, monkeypatch, fetch=lambda url, version: info)
+    app.start()
+    try:
+        assert wait_for(lambda: app.update_ready, 5.0)
+        assert app.status.update_version == "0.3.0"
+        assert app.staged_update is not None
+        assert "可升级 v0.3.0" in app.status.summary()
+        # 源码运行不该真去替换目录，要明确告诉用户为什么
+        assert "源码运行" in app.install_update()
+    finally:
+        app.stop()
+
+
+def test_update_checker_silent_when_up_to_date(tmp_path, monkeypatch):
+    app = _update_app(tmp_path, monkeypatch, fetch=lambda url, version: None)
+    app.start()
+    try:
+        time.sleep(0.2)
+        assert app.status.update_phase == ""
+        assert app.status.update_version == ""
+        assert app.staged_update is None
+    finally:
+        app.stop()
+
+
+def test_check_updates_switch_off(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    def fetch(url, version):
+        calls.append(1)
+        return None
+
+    app = _update_app(tmp_path, monkeypatch, fetch=fetch)
+    app.cfg.check_updates = False
+    app.start()
+    try:
+        time.sleep(0.2)
+        assert calls == []
+    finally:
+        app.stop()
+
+
+def test_install_without_staged_update_explains(tmp_path, monkeypatch):
+    app = _update_app(tmp_path, monkeypatch, fetch=lambda url, version: None)
+    app.start()
+    try:
+        assert app.install_update() == "新版本还没下载好"
     finally:
         app.stop()

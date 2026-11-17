@@ -46,6 +46,20 @@ def phase_text(status: AppStatus) -> str:
     return text
 
 
+def version_text(status: AppStatus) -> str:
+    """版本行：本机版本，以及（发现新版本时）目标版本与当前进展。"""
+    current = f"v{status.version}"
+    if not status.update_version:
+        return current
+    if status.update_phase == "ready":
+        return f"{current} → v{status.update_version}（已下载，可升级）"
+    if status.update_phase == "downloading":
+        return f"{current} → v{status.update_version}（{status.update_message or '下载中…'}）"
+    if status.update_phase == "manual":
+        return f"{current} → v{status.update_version}（版本跨度大，需手动重装）"
+    return f"{current} → v{status.update_version}（{status.update_message or '发现新版本'}）"
+
+
 def status_rows(
     cfg: Config, status: AppStatus, *, lan_ip: str, port: int | None = None
 ) -> list[PanelRow]:
@@ -69,6 +83,7 @@ def status_rows(
     ]
     if getattr(cfg, "registry_url", ""):
         rows.append(PanelRow("登记中心", status.registry or "等待心跳…"))
+    rows.append(PanelRow("版本", version_text(status)))
     return rows
 
 
@@ -96,6 +111,7 @@ class StatusPanel:
         on_update=None,
         on_toggle_share=None,
         on_open_roster=None,
+        on_install=None,
     ) -> None:
         self.cfg = cfg
         self.app = app
@@ -104,6 +120,7 @@ class StatusPanel:
         self.on_update = on_update
         self.on_toggle_share = on_toggle_share
         self.on_open_roster = on_open_roster
+        self.on_install = on_install
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -137,7 +154,8 @@ class StatusPanel:
         self._root = root
         root.title(f"LanDocShare · {self.cfg.name}")
         rows = status_rows(self.cfg, self.app.status, lan_ip=self.lan_ip or "127.0.0.1")
-        root.geometry("580x360" if len(rows) > 5 else "580x330")
+        height = min(520, 340 + 24 * len(rows))
+        root.geometry(f"580x{height}")
         root.minsize(520, 300)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         icon = _icon_path()
@@ -175,15 +193,21 @@ class StatusPanel:
         ttk.Button(buttons, text="复制地址", command=self._copy_address).pack(side="left")
         ttk.Button(buttons, text="隐藏", command=root.withdraw).pack(side="left", padx=6)
 
+        # 升级按钮单独一行：有新版时它是这里最该点的按钮，挤在第一行会被截断
+        actions = ttk.Frame(frame)
+        actions.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._upgrade_button = ttk.Button(actions, text="检查更新", command=self._upgrade)
+        self._upgrade_button.pack(side="left")
+
         self._copy_hint = ttk.Label(frame, text="", foreground="#2f7d32")
-        self._copy_hint.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._copy_hint.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         hint = ttk.Label(
             frame,
             text="关掉这个窗口只是隐藏（双击托盘图标可再打开）；退出程序请用托盘菜单的“退出”。",
             foreground="#888",
         )
-        hint.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        hint.grid(row=row + 3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         self._pump()
         root.mainloop()
@@ -226,6 +250,19 @@ class StatusPanel:
                 if widget is not None:
                     widget.configure(text=item.value)
             self._share_button.configure(text="恢复共享" if status.paused else "暂停共享")
+            button = getattr(self, "_upgrade_button", None)
+            if button is not None:
+                if status.update_phase == "ready" and status.update_version:
+                    label = f"升级到 v{status.update_version}"
+                elif status.update_phase == "downloading":
+                    label = "下载中…"
+                elif status.update_phase == "failed":
+                    label = "重试下载"
+                elif status.update_version:
+                    label = "下载更新"
+                else:
+                    label = "检查更新"
+                button.configure(text=label)
         except Exception:  # noqa: BLE001 - 窗口刚销毁时 configure 会抛
             pass
 
@@ -246,6 +283,33 @@ class StatusPanel:
     def _open_roster(self) -> None:
         if self.on_open_roster is not None:
             self.on_open_roster()
+
+    def _upgrade(self) -> None:
+        """一个按钮三种动作：没发现→检查；已发现→下载；已下载→确认后升级。"""
+        status = self.app.status
+        if self.app.update_ready:
+            from tkinter import messagebox
+
+            ok = messagebox.askyesno(
+                "升级 LanDocShare",
+                f"立即升级到 v{status.update_version}？\n\n"
+                "程序会自动重启（约 3 秒）；资料库数据在独立目录里，不受影响。\n"
+                "如果新版本启动失败，会自动回滚到现在的版本。",
+                parent=self._root,
+            )
+            if not ok:
+                return
+            if self.on_install is not None:
+                self.on_install()
+                return
+            result = self.app.install_update()
+            if result != "ok":
+                messagebox.showwarning("没能升级", result, parent=self._root)
+            return
+        if status.update_version:
+            self.app.download_update_async()
+            return
+        self.app.check_updates_async()
 
     def _copy_address(self) -> None:
         root = self._root

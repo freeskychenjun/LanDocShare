@@ -4,14 +4,15 @@
 只依赖标准库（设计 §8 / D6）：同事机器上不一定有第三方包，pip 也不一定通。
 用法：
     python query.py libs                       # 列出在线库
-    python query.py search 马斯京根             # 全院一起查
+    python query.py search 马斯京根             # 对你开放的库一起查
     python query.py search 马斯京根 --lib 陈鋆   # 只查某人的库
     python query.py tables --lib 陈鋆 --path "2026年项目/xxx.docx.md"
     python query.py whoami --set 陈鋆          # 登记自己的名字（可选）
     python query.py search 乐平 --json          # 给程序读
 
 网络约定（设计 §7 / §8）：
-- 名单从登记中心 GET /libraries 拿，并缓存 24 h 备用；中心不通时用缓存 + 逐库 /api/health 探活。
+- 名单从登记中心 GET /libraries 拿，并缓存 24 h 备用；带上 identity.txt 的姓名后，
+  中心只返回"这个姓名/IP 有权限访问"的库。中心不通时用缓存 + 逐库 /api/health 探活。
 - 每库 GET /api/search?q=…&limit=8&name=…，单库超时 2 s，并发 12 路；
   某个库超时不报错，只在脚注里说"在线 X/Y 个库返回结果"。
 - 合并：score 归一到各库最大值 × 库级权重（默认 1，可在 config.json 里按人调），
@@ -21,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -74,11 +76,27 @@ def _get_json(url: str, timeout: float = TIMEOUT) -> dict:
         return json.loads(resp.read().decode("utf-8") or "{}")
 
 
-def fetch_libraries() -> tuple[list[dict], str]:
-    """取在线库清单。返回 (libraries, 来源)，来源是 registry / cache+health / none。"""
-    cache_path = data_dir() / "cache_libraries.json"
+def _cache_path(name: str) -> Path:
+    """按身份分缓存：换了姓名不能拿别人的可见库清单。
+
+    姓名的哈希只用来分文件，不把姓名写进文件名（避免中文/特殊字符）。
+    """
+    if not name:
+        return data_dir() / "cache_libraries.json"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return data_dir() / f"cache_libraries_{digest}.json"
+
+
+def fetch_libraries(name: str = "") -> tuple[list[dict], str]:
+    """取在线库清单。返回 (libraries, 来源)，来源是 registry / cache+health / none。
+
+    带上 name 后，中心只返回"这个姓名/IP 有权限访问"的库；匿名则只按来源 IP。
+    """
+    cache_path = _cache_path(name)
+    params = {"name": name} if name else {}
+    url = registry_url() + "/libraries" + ("?" + urllib.parse.urlencode(params) if params else "")
     try:
-        payload = _get_json(registry_url() + "/libraries", timeout=3.0)
+        payload = _get_json(url, timeout=3.0)
         libraries = payload.get("libraries", [])
         _LATEST["version"] = str(payload.get("latest_version") or "")
         cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -209,8 +227,12 @@ def _clip(text: str, limit: int = 220) -> str:
 def print_libraries(libraries: list[dict], source: str) -> None:
     online = [lib for lib in libraries if lib.get("online", True)]
     if not libraries:
-        print("没有拿到任何库的名单：登记中心连不上，本地也没有缓存。")
-        print('可以把中心地址写进 config.json（{"registry": "http://…:8767"}），或设环境变量 LANLIB_REGISTRY。')
+        if source == "none":
+            print("没有拿到任何库的名单：登记中心连不上，本地也没有缓存。")
+            print('可以把中心地址写进 config.json（{"registry": "http://…:8767"}），或设环境变量 LANLIB_REGISTRY。')
+        else:
+            print("中心没有返回任何对你开放的库。")
+            print("可能原因：库主人还没升级到会报告授权范围的版本、你不在对方的授权名单里、或对方暂停了共享。")
         return
     print(f"在线 {len(online)} / {len(libraries)} 个库（名单来源：{source}）")
     for lib in libraries:
@@ -257,11 +279,17 @@ def print_results(query: str, merged: list[dict], found: list[dict], libraries: 
 
 # ---------------------------------------------------------------- 命令
 def cmd_libs(args) -> int:
-    libraries, source = fetch_libraries()
+    name = personal_name()
+    libraries, source = fetch_libraries(name)
     if args.json:
         print(
             json.dumps(
-                {"source": source, "latest_version": _LATEST.get("version", ""), "libraries": libraries},
+                {
+                    "source": source,
+                    "viewer": name,
+                    "latest_version": _LATEST.get("version", ""),
+                    "libraries": libraries,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -277,7 +305,8 @@ def cmd_search(args) -> int:
         print("请给一个查询词。", file=sys.stderr)
         return 2
     cfg = load_config()
-    libraries, source = fetch_libraries()
+    name = personal_name()
+    libraries, source = fetch_libraries(name)
     if args.lib:
         libraries = [
             lib
@@ -287,7 +316,7 @@ def cmd_search(args) -> int:
         if not libraries:
             print(f"没找到叫「{args.lib}」的库（在线名单里没有）。", file=sys.stderr)
             return 3
-    found = search_all(libraries, query, name=personal_name(), per_lib=args.per_lib)
+    found = search_all(libraries, query, name=name, per_lib=args.per_lib)
     merged = merge(found, weights=cfg.get("weights") or {}, take=args.take)
     if args.json:
         payload = {
@@ -305,14 +334,18 @@ def cmd_search(args) -> int:
 
 
 def cmd_tables(args) -> int:
-    libraries, _source = fetch_libraries()
+    libraries, _source = fetch_libraries(personal_name())
     match = [
         lib for lib in libraries if args.lib in (lib.get("name") or "") or args.lib in (lib.get("lib_name") or "")
     ]
     if not match:
         print(f"没找到叫「{args.lib}」的库。", file=sys.stderr)
         return 3
-    url = urllib.parse.urljoin(match[0]["url"], "api/tables") + "?" + urllib.parse.urlencode({"path": args.path})
+    params = {"path": args.path}
+    personal = personal_name()
+    if personal:
+        params["name"] = personal
+    url = urllib.parse.urljoin(match[0]["url"], "api/tables") + "?" + urllib.parse.urlencode(params)
     try:
         payload = _get_json(url, timeout=5.0)
     except urllib.error.HTTPError as exc:

@@ -90,6 +90,7 @@ class TrayApp:
             on_update=self._update_now,
             on_toggle_share=self._toggle_share,
             on_open_roster=self._show_roster,
+            on_install=self._install_update,
         )
         self.roster = RosterWindow(cfg, on_saved=self._roster_saved)
 
@@ -129,6 +130,49 @@ class TrayApp:
 
     def _update_now(self) -> None:
         self.app.update_now()
+
+    def _update_label(self) -> str:
+        status = self.app.status
+        if self.app.update_ready:
+            return f"升级到 v{status.update_version}（重启程序）"
+        if status.update_phase == "downloading":
+            return "正在下载新版本…"
+        if status.update_version:
+            return f"下载新版本 v{status.update_version}"
+        return "检查更新"
+
+    def _menu_update(self) -> None:
+        """托盘里的更新入口：检查 → 下载 → 升级，按当前状态自动选一步。"""
+        status = self.app.status
+        if self.app.update_ready:
+            self._install_update()
+        elif status.update_version:
+            self.app.download_update_async()
+        else:
+            self.app.check_updates_async()
+
+    def _install_update(self) -> None:
+        staged = self.app.staged_update
+        result = self.app.install_update()
+        if result != "ok":
+            self._notify(result)
+            self.panel.show()
+            return
+        self._notify(f"正在升级到 v{staged.version}，程序会自动重启…")
+        self.panel.close()
+        self.roster.close()
+        if self.icon is not None:
+            self.icon.stop()
+        # 更新器要拿单实例互斥量，这里尽快退出，别和它抢
+        threading.Timer(1.5, lambda: os._exit(0)).start()
+
+    def _notify(self, message: str) -> None:
+        if self.icon is None:
+            return
+        try:
+            self.icon.notify(message, "LanDocShare")
+        except Exception:  # noqa: BLE001 - 通知失败不影响功能
+            pass
 
     def _toggle_share(self) -> None:
         self.app.toggle_share()
@@ -190,7 +234,8 @@ class TrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("显示状态窗口", self._show_panel, default=True),
             pystray.MenuItem("打开库主页", self._open_page),
-            pystray.MenuItem("立即更新", self._update_now),
+            pystray.MenuItem(lambda item: self._update_label(), self._menu_update),
+            pystray.MenuItem("立即重建索引", self._update_now),
             pystray.MenuItem("修改建库设置…", self._edit_library),
             pystray.MenuItem("授权名单…", self._show_roster),
             pystray.MenuItem(
@@ -217,6 +262,8 @@ class TrayApp:
             self._menu(),
         )
         self.app.start()
+        # 上次升级留下的暂存目录/旧目录：等程序稳定几秒后再删，免得影响启动
+        threading.Timer(8.0, _cleanup_after_update).start()
         # 托盘没有主窗口，不主动给个东西的话用户会以为没启动：第一次就弹状态窗口
         if self.show_panel_on_start:
             self.panel.show()
@@ -232,6 +279,16 @@ class TrayApp:
             pass
 
 
+def _cleanup_after_update() -> None:
+    """升级成功后删掉暂存包与旧目录（更新器自己删不掉正在跑的目录）。"""
+    try:
+        from landoc import updater
+
+        updater.run_pending_cleanup()
+    except Exception:  # noqa: BLE001 - 清理失败不影响使用
+        pass
+
+
 def _existing_port(cfg: Config) -> int:
     """另一个实例已经在跑：从它的索引 meta 里读出真实端口。"""
     try:
@@ -245,7 +302,9 @@ def _existing_port(cfg: Config) -> int:
     return cfg.port
 
 
-CLI_COMMANDS = frozenset({"init", "probe", "convert", "serve", "status", "people", "registry"})
+CLI_COMMANDS = frozenset(
+    {"init", "probe", "convert", "serve", "status", "people", "registry", "update"}
+)
 
 LAST_LIB_MARKER = (
     Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "LanDocShare" / "last_lib.txt"
@@ -274,14 +333,19 @@ def _default_lib_dir() -> Path:
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    from landoc.wizard import run_wizard
-
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--apply-update" in argv:
+        # 新版本 exe 从暂存目录以这个参数启动，由它等旧进程退出、换目录、启动新版
+        from landoc.updater import apply_update_main
+
+        return apply_update_main(argv)
     if argv and argv[0] in CLI_COMMANDS:
         # 打包成一个 exe 后，排错时仍能直接跑 init/convert/status
         from landoc import cli
 
         return cli.main(argv)
+
+    from landoc.wizard import run_wizard
 
     parser = argparse.ArgumentParser(prog="landoc-tray", description="LanDocShare 托盘程序")
     parser.add_argument("--lib-dir", default=None, help="库目录（默认用上次的库）")

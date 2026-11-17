@@ -2,6 +2,7 @@ records/
 *.db
 *.zip
 dist/
+dist-next/
 build/
 __pycache__/
 .demo/

@@ -238,6 +238,87 @@ def test_init_records_registry_url(tmp_path: Path):
     assert Config.load(lib).registry_url == "http://10.91.1.197:8767"
 
 
+def _update_lib(tmp_path: Path) -> Path:
+    lib = tmp_path / "lib"
+    assert (
+        cli.main(
+            ["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://10.91.1.197:8767"]
+        )
+        == 0
+    )
+    return lib
+
+
+def _info(**overrides):
+    from landoc.updater import UpdateInfo
+
+    data = dict(version="0.3.0", url="http://10.91.1.197:8767/download/0.3.0", sha256="a" * 64, size=95)
+    data.update(overrides)
+    return UpdateInfo(**data)
+
+
+def test_update_command_says_up_to_date(tmp_path: Path, capsys, monkeypatch):
+    from landoc import updater
+
+    lib = _update_lib(tmp_path)
+    monkeypatch.setattr(updater, "fetch_update_info", lambda url, version: None)
+    assert cli.main(["update", "--lib-dir", str(lib)]) == 0
+    out = capsys.readouterr().out
+    assert "已是最新版本" in out
+
+
+def test_update_command_requires_registry(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    assert cli.main(["update", "--lib-dir", str(lib)]) == 2
+    assert "登记中心" in capsys.readouterr().err
+
+
+def test_update_command_check_only_does_not_download(tmp_path: Path, capsys, monkeypatch):
+    from landoc import updater
+
+    lib = _update_lib(tmp_path)
+    monkeypatch.setattr(updater, "fetch_update_info", lambda url, version: _info())
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("--check 不该下载")
+
+    monkeypatch.setattr(updater, "prepare_update", boom)
+    assert cli.main(["update", "--lib-dir", str(lib), "--check"]) == 0
+    out = capsys.readouterr().out
+    assert "0.3.0" in out and "新版本" in out
+
+
+def test_update_command_downloads_and_prepares(tmp_path: Path, capsys, monkeypatch):
+    from landoc import updater
+
+    lib = _update_lib(tmp_path)
+    monkeypatch.setattr(updater, "fetch_update_info", lambda url, version: _info())
+    prepared: list[str] = []
+
+    def fake_prepare(info, progress=None):
+        prepared.append(info.version)
+        if progress is not None:
+            progress("正在下载新版本 100%")
+        return updater.StagedUpdate(version=info.version, app_dir=tmp_path / "app")
+
+    monkeypatch.setattr(updater, "prepare_update", fake_prepare)
+    assert cli.main(["update", "--lib-dir", str(lib)]) == 0
+    assert prepared == ["0.3.0"]
+    out = capsys.readouterr().out
+    assert "右键托盘图标" in out
+
+
+def test_update_command_manual_reinstall_when_too_old(tmp_path: Path, capsys, monkeypatch):
+    from landoc import updater
+
+    lib = _update_lib(tmp_path)
+    monkeypatch.setattr(updater, "fetch_update_info", lambda url, version: _info(min_from="0.5.0"))
+    assert cli.main(["update", "--lib-dir", str(lib)]) == 1
+    out = capsys.readouterr().out
+    assert "手动" in out
+
+
 def _roster_center(tmp_path: Path):
     import threading
 

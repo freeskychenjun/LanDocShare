@@ -330,6 +330,59 @@ def _lan_ip() -> str:
     return lan_ip()
 
 
+def _cmd_update(args) -> int:
+    """检查/下载新版本；`--install` 只在打包后的 exe 里可用。"""
+    from landoc import updater
+
+    registry_url = str(args.registry or "").strip()
+    if not registry_url and args.lib_dir:
+        registry_url = Config.load(Path(args.lib_dir)).registry_url
+    if not registry_url:
+        print("[错误] 没配登记中心：给 --registry 或用 init --registry-url", file=sys.stderr)
+        return 2
+    print(f"本机版本：v{__version__}")
+    try:
+        info = updater.fetch_update_info(registry_url, __version__)
+    except Exception as exc:  # noqa: BLE001 - 排错命令，出错就直说
+        print(f"[错误] 检查更新失败：{exc}", file=sys.stderr)
+        return 2
+    if info is None:
+        print("已是最新版本。")
+        return 0
+    print(f"有新版本：v{info.version}（{info.size / 1024 / 1024:.0f} MB，{info.released_at or '发布时间未知'}）")
+    for note in info.notes:
+        print(f"     · {note}")
+    if info.too_old:
+        print(f"[提示] 版本跨度太大（最低 {info.min_from}），请手动下载完整包重装")
+        return 1
+    if args.check:
+        return 0
+    try:
+        staged = updater.prepare_update(info, progress=lambda text: print(f"     {text}", flush=True))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[错误] 下载失败：{exc}", file=sys.stderr)
+        return 2
+    print(f"[OK] 已下载到：{staged.app_dir}")
+    if args.install:
+        if not updater.install_supported():
+            print("[提示] 源码运行不能替换程序目录；请在打包后的 exe 里点「升级」", file=sys.stderr)
+            return 1
+        from landoc.tray import acquire_single_instance
+
+        if not acquire_single_instance():
+            print("[错误] LanDocShare 正在运行：先从托盘退出，再执行 --install", file=sys.stderr)
+            return 2
+        target = updater.current_install_dir()
+        if target is None:
+            print("[错误] 找不到程序目录", file=sys.stderr)
+            return 2
+        updater.spawn_update(staged, target=target)
+        print("[OK] 更新器已启动，本进程退出")
+        return 0
+    print("提示：右键托盘图标 →「升级到 v…」即可完成安装（自动重启，失败会回滚）。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="landoc", description="个人资料库共享（检索侧）")
     parser.add_argument("--version", action="version", version=f"landoc {__version__}")
@@ -422,11 +475,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     people_cmd.set_defaults(func=_cmd_people)
 
+    update_cmd = sub.add_parser("update", help="检查/下载新版本（--install 仅打包后可用）")
+    update_cmd.add_argument("--lib-dir", help="库目录（用里面的 registry_url）")
+    update_cmd.add_argument("--registry", default=None, help="登记中心地址，默认取库配置里的 registry_url")
+    update_cmd.add_argument("--check", action="store_true", help="只检查版本，不下载")
+    update_cmd.add_argument("--install", action="store_true", help="下载后立即安装并重启（需先退出托盘程序）")
+    update_cmd.set_defaults(func=_cmd_update)
+
     registry_cmd = sub.add_parser("registry", help="启动登记中心（让同事们互相发现彼此的库）")
     registry_cmd.add_argument("--port", type=int, default=None, help="默认 8767")
     registry_cmd.add_argument("--state-dir", default=None, help="registry.json 放哪，默认 ~/.landoc-registry")
     registry_cmd.add_argument("--allow-cidrs", default=None, help="允许来源网段，逗号分隔（默认 10.91.0.0/16）")
     registry_cmd.add_argument("--package-zip", default=None, help="库软件 zip 路径（/download 用）")
+    registry_cmd.add_argument("--manifest", default=None, help="版本清单 latest.json 路径（默认与 zip 同目录）")
     registry_cmd.add_argument("--advertise", default=None, help="对外公布的中心地址，默认按请求 Host 推断")
     registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run）后退出")
     registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
@@ -446,6 +507,8 @@ def _cmd_registry(args) -> int:
         argv += ["--allow-cidrs", args.allow_cidrs]
     if args.package_zip:
         argv += ["--package-zip", args.package_zip]
+    if args.manifest:
+        argv += ["--manifest", args.manifest]
     if args.advertise:
         argv += ["--advertise", args.advertise]
     if args.install_autostart:
@@ -456,6 +519,12 @@ def _cmd_registry(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 控制台是 GBK 时，版本说明里的怪字符不该让整条命令崩掉（打包版尤其明显）
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001 - 老环境/被重定向就算了
+            pass
     args = build_parser().parse_args(argv)
     return args.func(args)
 
