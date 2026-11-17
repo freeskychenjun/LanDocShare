@@ -63,10 +63,19 @@ def test_sorted_entries_groups_by_department_then_ip():
         {"郑泽锋": "水文所", "陈鋆": "水文所", "杨欢": "规划二所"},
     )
     order = [name for name, _ip, _dept in roster.sorted_entries(book)]
-    # 有部门的按部门名排（"水文所" 在 "规划二所" 前），没部门的沉底
+    # 部门内按 IP 排，没部门的沉底
     assert order[:2] == ["陈鋆", "郑泽锋"]
     assert order[2] == "杨欢"
     assert order[3] == "老王"
+
+
+def test_sorted_entries_keeps_department_insertion_order():
+    # 部门先后取决于名单里第一次出现的先后（跟导入的 CSV 走），不是按名称字符排
+    book = roster.Roster(
+        {"a": "10.91.1.5", "b": "10.91.1.6"},
+        {"a": "规划二所", "b": "水文所"},
+    )
+    assert [dept for _n, _ip, dept in roster.sorted_entries(book)] == ["规划二所", "水文所"]
 
 
 def test_department_counts_and_unnamed_group():

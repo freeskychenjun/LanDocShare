@@ -127,12 +127,20 @@ def validate_entry(name: str, ip: str, department: str = "") -> tuple[str, str, 
 
 
 def sorted_entries(roster: Roster) -> list[tuple[str, str, str]]:
-    """界面表格顺序：先按部门聚在一起，部门内按 IP，没部门/没 IP 的沉底。"""
+    """界面表格顺序：部门按在名单里第一次出现的顺序聚在一起（与导入的 CSV 一致），
+    部门内按 IP，没部门/没 IP 的沉底。"""
 
-    def key(item: tuple[str, str]) -> tuple[int, str, int, str, str]:
+    order: dict[str, int] = {}
+    for dept in roster.departments.values():
+        clean = str(dept).strip()
+        if clean and clean not in order:
+            order[clean] = len(order)
+    missing = len(order)
+
+    def key(item: tuple[str, str]) -> tuple[int, int, str, str]:
         name, ip = item
         dept = roster.department(name)
-        return (1 if not dept else 0, dept, 1 if not ip else 0, ip, name)
+        return (missing if not dept else order.get(dept, missing), 1 if not ip else 0, ip, name)
 
     return [(name, ip, roster.department(name)) for name, ip in sorted(roster.people.items(), key=key)]
 
