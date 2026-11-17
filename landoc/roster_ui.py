@@ -1,5 +1,8 @@
 """授权名单管理窗口：库主人自己维护"谁能查"（姓名 / IP / 部门），并能和登记中心对账。
 
+「发布到中心」只出现在中心那台机器上（`roster.is_center_machine()`）——名单只由管理员
+维护一份，同事的窗口里只有「从中心拉取…」，不存在被谁顺手改掉的入口。
+
 为什么单独一个窗口而不是塞进状态面板：名单要加人、改 IP、标部门、和中心同步，
 是个"表格 + 按钮"的活；状态面板只负责"一眼看清现在什么状态"。
 
@@ -49,6 +52,7 @@ class RosterWindow:
         self._roster: roster.Roster = roster.Roster()
         self._dirty = False
         self._busy = False
+        self._is_admin = False
 
     # ---------------------------------------------------------- 任意线程可调
     def show(self) -> None:
@@ -82,6 +86,9 @@ class RosterWindow:
             except Exception:  # noqa: BLE001 - 图标失败不影响使用
                 pass
         root.withdraw()
+
+        # 是不是"中心那台机器"：只有它改中心名单，同事的窗口里干脆不出现「发布到中心」
+        self._is_admin = roster.is_center_machine(getattr(self.cfg, "registry_url", "") or "")
 
         frame = ttk.Frame(root, padding=14)
         frame.pack(fill="both", expand=True)
@@ -127,8 +134,17 @@ class RosterWindow:
         sync = ttk.Frame(frame)
         sync.grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Button(sync, text="从中心拉取…", command=self._pull).pack(side="left")
-        ttk.Button(sync, text="发布到中心", command=self._publish).pack(side="left", padx=6)
-        ttk.Label(sync, text="（中心地址见下方）", foreground="#999").pack(side="left", padx=(6, 0))
+        if self._is_admin:
+            ttk.Button(sync, text="发布到中心", command=self._publish).pack(side="left", padx=6)
+            ttk.Label(sync, text="（名单由你维护，发布后同事拉一次就同步）", foreground="#999").pack(
+                side="left", padx=(6, 0)
+            )
+        else:
+            ttk.Label(
+                sync,
+                text="名单由管理员在中心那台机器上统一维护：这里只能拉取，不能改中心名单",
+                foreground="#999",
+            ).pack(side="left", padx=(6, 0))
 
         bottom = ttk.Frame(frame)
         bottom.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -441,13 +457,16 @@ class RosterWindow:
                 parent=self._root,
             )
             return
+        if not self._is_admin:
+            self._say("名单由管理员在中心那台机器上维护；这里可以用「从中心拉取…」同步")
+            return
         if not self._roster:
             self._say("名单是空的，发布没有意义")
             return
         if not messagebox.askyesno(
             "发布名单",
             f"把本地这份 {len(self._roster)} 人的名单发布到登记中心？\n"
-            "（只有中心所在机器能发布；其他同事会影响从中心拉到的名单）",
+            "发布后，全部门同事从中心拉到的名单都会跟着变。",
             parent=self._root,
         ):
             return

@@ -8,6 +8,10 @@
 - 把名单**发布**到登记中心（`POST /roster` 存成 `roster.csv`）；
 - 其他同事的库从中心**拉取**（`GET /roster.csv`），合并或整体替换。
 
+**名单只由管理员维护**：管理员 = 登记中心那台机器上的人（`is_center_machine()`）。
+普通同事的库只能"拉取"，界面不给「发布到中心」按钮；中心那边也会拒绝非本机来源的发布
+（`roster_admin_ips`）。这样全部门名单只有一份、只有一个入口能改。
+
 `Roster` 把"人 + 部门"绑在一起传，省得每个调用点都同时拿两个 dict 再拼错。
 纯逻辑放这里（可单测），tkinter 界面在 `roster_ui.py`。
 """
@@ -16,10 +20,13 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
+from landoc.netinfo import local_ips
 from landoc.people import dump_people_csv, merge_people, parse_people_table
 
 ROSTER_NAME = "roster.csv"
@@ -85,6 +92,46 @@ def roster_url(registry_url: str) -> str:
     if not base:
         raise RosterError("还没配登记中心地址（config.json 的 registry_url）")
     return f"{base}/{ROSTER_NAME}"
+
+
+def center_host(registry_url: str) -> str:
+    """从中心地址里取出主机名；认不出返回空串。"""
+    raw = (registry_url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "http://" + raw
+    try:
+        return (urlparse(raw).hostname or "").strip()
+    except ValueError:
+        return ""
+
+
+def is_center_machine(registry_url: str, *, ips=None) -> bool:
+    """这台机器是不是登记中心那台——**只有它能改中心名单**。
+
+    判据和中心的发布鉴权一致（见 `netinfo.local_ips()`）：中心地址里的主机名正是本机
+    某个地址，就是中心机器。地址写的是主机名时解析一次再比。
+    认不出来（没配中心、解析失败）一律当"不是"，宁可少给一个按钮，也不让同事误以为
+    自己能改全部门的名单。
+    """
+    host = center_host(registry_url)
+    if not host:
+        return False
+    local = frozenset(ips) if ips is not None else local_ips()
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return True
+    except ValueError:
+        if host.lower() == "localhost":
+            return True
+    if host in local:
+        return True
+    try:
+        resolved = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return bool(resolved & local)
 
 
 def format_roster(roster: Roster) -> str:

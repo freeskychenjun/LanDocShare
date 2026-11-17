@@ -39,6 +39,23 @@ def test_roster_url_requires_registry():
     assert "登记中心" in str(info.value)
 
 
+def test_center_host_parsing():
+    assert roster.center_host("http://10.91.1.197:8767") == "10.91.1.197"
+    assert roster.center_host("10.91.1.197:8767/") == "10.91.1.197"
+    assert roster.center_host("") == ""
+
+
+def test_is_center_machine_only_on_the_registry_host():
+    # 中心地址就是本机地址 → 管理员机器，能发布
+    assert roster.is_center_machine("http://127.0.0.1:8767") is True
+    assert roster.is_center_machine("http://localhost:8767") is True
+    assert roster.is_center_machine("http://10.91.1.197:8767", ips={"10.91.1.197"}) is True
+    # 同事的机器：中心在别人那里 → 只能拉取，不给发布
+    assert roster.is_center_machine("http://10.91.1.197:8767", ips={"10.91.1.50"}) is False
+    # 没配中心 / 认不出 → 当"不是"
+    assert roster.is_center_machine("") is False
+
+
 def test_validate_entry_normalises_and_rejects():
     assert roster.validate_entry("  陈鋆 ", "", "") == ("陈鋆", "", "")
     assert roster.validate_entry("郑泽锋", " 10.91.1.206 ", " 规划一所 ") == (

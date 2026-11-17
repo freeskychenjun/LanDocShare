@@ -297,12 +297,19 @@ def _cmd_people(args) -> int:
         cfg.save()
 
     if args.publish is not None:
+        target = cfg.registry_url or args.publish
         try:
-            payload = roster.publish_roster(cfg.registry_url or args.publish, book.copy())
+            payload = roster.publish_roster(target, book.copy())
         except roster.RosterError as exc:
             print(f"[错误] {exc}", file=sys.stderr)
+            if "403" in str(exc):
+                print(
+                    "       名单只由管理员（登记中心那台机器）维护；"
+                    "同事用 people --pull 同步中心名单即可。",
+                    file=sys.stderr,
+                )
             return 2
-        print(f"[发布] 已发布 {payload.get('count', '?')} 人到 {cfg.registry_url or args.publish}")
+        print(f"[发布] 已发布 {payload.get('count', '?')} 人到 {target}")
 
     if args.export:
         from landoc.people import dump_people_csv
