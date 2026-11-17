@@ -71,6 +71,17 @@ def test_start_binds_port_and_records_it(tmp_path):
         app.stop()
 
 
+def test_start_reports_existing_docs_before_first_scan(tmp_path):
+    """已建好的库启动后状态窗口就该显示真实篇数，别等下一轮扫描（否则像没建库）。"""
+    app = make_app(tmp_path, index=FakeIndex(total=13), idle_check=lambda: False)
+    app.start()
+    try:
+        assert app.status.phase == "serving"
+        assert app.status.doc_count == 13
+    finally:
+        app.stop()
+
+
 def test_batches_run_only_while_idle_and_notify_once(tmp_path):
     calls: list[int] = []
     notes: list[str] = []

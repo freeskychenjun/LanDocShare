@@ -97,7 +97,14 @@ class LibraryApp:
             self.index.set_meta("port", str(actual))
         except Exception:  # noqa: BLE001 - 端口写不进去不影响服务
             pass
-        self._update(phase="serving", port=actual)
+        # 启动时先把现有篇数/上次扫描显示出来：已经建好的库不会立刻触发转换，
+        # 不初始化的话状态窗口会一直显示"0 篇 / 还没扫过"，看着像没建库。
+        try:
+            total = self.index.stats().get("total", 0)
+            state = pipeline._read_state(self.cfg)
+            self._update(phase="serving", port=actual, doc_count=total, last_scan=state.get("last_scan_ts", ""))
+        except Exception:  # noqa: BLE001 - 读不到就用默认值，别拦住启动
+            self._update(phase="serving", port=actual)
         self._spawn(self.httpd.serve_forever, "landoc-server")
         self._spawn(self._worker, "landoc-worker")
 
