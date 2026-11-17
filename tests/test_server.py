@@ -219,3 +219,29 @@ def test_health_reports_last_scan(running):
     client, _, _ = running
     payload = client.json("/api/health")
     assert "last_scan" in payload
+
+
+def test_snippet_tokens_from_config_is_honored(tmp_path: Path):
+    """make_server 必须把 cfg.snippet_tokens 传给 Index：改配置不能静默不生效。"""
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    cfg = Config(name="库", lib_dir=lib_dir, allow_cidrs=["127.0.0.1"], snippet_tokens=8)
+    index = Index(cfg.db_path, md_root=cfg.md_dir)
+    index.upsert(
+        "a.md", "长文", "docx", "/s/a.docx", 10, 1.0, "开头" * 200 + "马斯京根法河道洪水演算" + "结尾" * 200
+    )
+    index.commit()
+
+    httpd = make_server(cfg, port=0)  # 不传 index：走"按配置自建"的那条路
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        payload = client.json("/api/search?q=" + urllib.parse.quote("马斯京根"))
+        snippet = payload["results"][0]["snippet"]
+        assert "<<马斯京根>>" in snippet
+        assert len(snippet) < 45  # 窗口 48 时这里会是 ~110 字
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

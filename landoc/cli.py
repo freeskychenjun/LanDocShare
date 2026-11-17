@@ -46,6 +46,17 @@ def _find_acrobat_tool_dir() -> Path | None:
     return None
 
 
+def _storage_policy(cfg) -> str:
+    """一句话说清当前存了什么（库主人最关心的隐私开关）。"""
+    content = (
+        "全文进索引"
+        if getattr(cfg, "store_content", True)
+        else f"只存前 {pipeline.SNIPPET_ONLY_CHARS} 字"
+    )
+    markdown = "落 md 副本" if getattr(cfg, "render_md", True) else "不落 md"
+    return f"{content} / {markdown}"
+
+
 def _cmd_init(args) -> int:
     lib_dir = Path(args.lib_dir)
     lib_dir.mkdir(parents=True, exist_ok=True)
@@ -67,11 +78,16 @@ def _cmd_init(args) -> int:
         tool_dir = _find_acrobat_tool_dir()
     if tool_dir is not None:
         cfg.acrobat_tool_dir = tool_dir
+    if args.store_content is not None:
+        cfg.store_content = args.store_content
+    if args.render_md is not None:
+        cfg.render_md = args.render_md
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
     print(f"     共享目录 {len(cfg.folders)} 个：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"     允许网段：{', '.join(cfg.allow_cidrs)}")
+    print(f"     存储策略：{_storage_policy(cfg)}")
     if cfg.acrobat_tool_dir:
         print(f"     加密 PDF 兜底工具：{cfg.acrobat_tool_dir}")
     return 0
@@ -134,6 +150,7 @@ def _cmd_status(args) -> int:
     print(f"文档数：{stats['total']}")
     print(f"共享目录：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"允许网段：{', '.join(cfg.allow_cidrs)}")
+    print(f"存储策略：{_storage_policy(cfg)}")
     print(f"上次扫描：{state.get('last_scan_ts', '（从未）')}")
     return 0
 
@@ -161,6 +178,18 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--acrobat-tool-dir",
         help="加密 PDF 兜底工具目录（内含 acrobat.exe）；不给则自动探测已知路径",
+    )
+    init.add_argument(
+        "--store-content",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否把全文写进索引（--no-store-content 只存每篇前 1000 字）；不给则沿用现有配置",
+    )
+    init.add_argument(
+        "--render-md",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否在 md/ 留 Markdown 副本（--no-render-md 不落盘）；不给则沿用现有配置",
     )
     init.set_defaults(func=_cmd_init)
 

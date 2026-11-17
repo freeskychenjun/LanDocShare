@@ -19,6 +19,13 @@ class Config:
 
     folders 是库主人手动多选的共享目录；allow_cidrs 是允许访问的来源网段，
     默认只对规划院内网开放；allow_people 是可选叠加的"姓名 → IP"名单。
+
+    store_content / render_md 是"收紧共享"的两个隐私开关（设计 §6.6，默认都开）：
+    - store_content=True 全文进索引；False 只存前 1000 字（`pipeline.SNIPPET_ONLY_CHARS`），
+      检索与片段都只在这 1000 字里命中，超出部分等于没有共享；
+    - render_md=True 在 `md/` 留一份 Markdown 副本（`/api/tables` 优先读它）；
+      False 不落副本，表格改从索引里的正文抽（正文被上面那个开关截断时表格也可能截断）。
+    改开关后重跑 `convert` 就会按新策略收紧/补齐已有文档。
     """
 
     name: str

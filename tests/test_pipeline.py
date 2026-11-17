@@ -11,6 +11,8 @@ from landoc.config import Config
 
 ENCRYPTED_HEADER = bytes.fromhex("17da5fa01633cd9a")
 
+LONG_MD = "乐平水利枢纽工程概况。" * 200  # 远超 SNIPPET_ONLY_CHARS，用来区分"全文"与"片段"
+
 
 class StubIndex:
     """与 Task 7 的真 `Index` 同签名的最小替身（见 ledger 的 pre-flight ruling）。"""
@@ -323,3 +325,61 @@ def test_office_session_reuses_one_instance(monkeypatch):
         for _ in range(3):
             office_bridge.extract_wordopenxml(Path("x.docx"), session=session)
     assert dispatches["n"] == 1
+
+
+# ============ 收紧共享开关（store_content / render_md，设计 §6.6）============
+
+def test_store_content_off_keeps_only_snippet_in_index(cfg, monkeypatch):
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    cfg.store_content = False
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    assert index.rows
+    assert all(len(row["content"]) == pipeline.SNIPPET_ONLY_CHARS for row in index.rows)
+    # md 副本仍是全文：那份是留给库主人自己看的，不进索引、不经服务端
+    md = Path(cfg.md_dir) / "成果" / "plain.docx.md"
+    assert md.read_text(encoding="utf-8").endswith(LONG_MD)
+
+
+def test_render_md_off_writes_no_copy_but_keeps_index(cfg, monkeypatch):
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    cfg.render_md = False
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    assert index.rows and index.rows[0]["content"] == LONG_MD
+    assert list(Path(cfg.md_dir).rglob("*.md")) == []
+
+
+def test_turning_render_md_off_clears_old_copies(cfg, monkeypatch):
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    pipeline.run(cfg, index=StubIndex())
+    assert list(Path(cfg.md_dir).rglob("*.md"))
+    cfg.render_md = False
+    pipeline.run(cfg, index=StubIndex())
+    assert list(Path(cfg.md_dir).rglob("*.md")) == []
+
+
+def test_turning_render_md_back_on_restores_copies(cfg, monkeypatch):
+    """开关翻回来时，未改动的文档也要补回 md，否则"不落 md"会永久留空。"""
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    cfg.render_md = False
+    pipeline.run(cfg, index=StubIndex())
+    assert list(Path(cfg.md_dir).rglob("*.md")) == []
+    cfg.render_md = True
+    report = pipeline.run(cfg, index=StubIndex())
+    assert report.converted == 2
+    assert list(Path(cfg.md_dir).rglob("*.md"))
+
+
+def test_store_content_off_tightens_existing_rows_on_rescan(cfg, monkeypatch):
+    """真 Index：关闭后才重扫，旧的全文字段必须收紧 —— 隐私开关不能只对新文件生效。"""
+    from landoc.index import Index
+
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    index = Index(cfg.db_path, md_root=cfg.md_dir)
+    pipeline.run(cfg, index=index)
+    assert index.content_length("成果/plain.docx.md") > pipeline.SNIPPET_ONLY_CHARS
+    cfg.store_content = False
+    report = pipeline.run(cfg, index=index)
+    assert report.converted == 2
+    assert index.content_length("成果/plain.docx.md") == pipeline.SNIPPET_ONLY_CHARS

@@ -95,6 +95,24 @@ def like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _safe_md_path(md_root: Path, rel: str) -> Path | None:
+    """把索引里的 rel_path 映射成 md 目录下的绝对路径；越界返回 None。
+
+    索引内容由转换器产出，正常不会越界；但 `/api/tables` 的 path 是外部输入，
+    只校验"在索引里"挡不住被污染的索引（`..`、盘符、绝对路径），故这里再规范化一次。
+    """
+    parts = [p for p in (rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or ":" in p for p in parts):
+        return None
+    try:
+        root = Path(md_root).resolve()
+        target = root.joinpath(*parts).resolve()
+        target.relative_to(root)
+    except (OSError, ValueError):  # 路径非法（超长、非法字符）或跳出 md 目录
+        return None
+    return target
+
+
 class Index:
     """一个资料库的索引。线程内各持有自己的连接（服务端多线程访问）。"""
 
@@ -177,6 +195,16 @@ class Index:
     def get_content(self, rel_path: str) -> str | None:
         row = self.conn.execute(
             "SELECT content FROM documents WHERE rel_path = ?", (rel_path,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def content_length(self, rel_path: str) -> int | None:
+        """索引里已存正文的字数；没有这条记录时返回 None。
+
+        转换器用它判断 `store_content=False` 的旧行是否已经收紧（见 `pipeline.run`）。
+        """
+        row = self.conn.execute(
+            "SELECT length(content) FROM documents WHERE rel_path = ?", (rel_path,)
         ).fetchone()
         return row[0] if row else None
 
@@ -301,13 +329,15 @@ class Index:
         return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
 
     def tables(self, rel_path: str, max_bytes: int = 300_000) -> list[dict] | None:
-        """返回该文档内的全部表格（GFM + HTML）。路径必须存在于索引，否则 None。"""
+        """返回该文档内的全部表格（GFM + HTML）。路径必须存在于索引且不越界，否则 None。"""
         rel = (rel_path or "").replace("\\", "/").strip().lstrip("/")
         if not rel:
             return None
         if not self.conn.execute("SELECT 1 FROM documents WHERE rel_path = ?", (rel,)).fetchone():
             return None
-        path = Path(self.md_root).joinpath(*rel.split("/"))
+        path = _safe_md_path(Path(self.md_root), rel)
+        if path is None:  # 索引被污染（含 .. / 盘符）时宁可当作"不在库里"
+            return None
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

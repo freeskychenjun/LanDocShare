@@ -6,13 +6,16 @@
 - 一批文档共用同一个 Office 会话（`OfficeSession`），不然每篇白付 6~9 秒启动；
 - 单篇失败只记账，不中断整批；失败的也记账，避免每轮重付超时；
 - 增量靠源文件 mtime+size（`state.json`），源文件被移出共享目录 = 撤回共享 → 连 md 与索引一起清；
-- 检查点在 `finally` 写，断电/中断后能接着干。
+- 检查点在 `finally` 写，断电/中断后能接着干；
+- `store_content` / `render_md`（设计 §6.6 的收紧开关）在落盘这一步生效：不落 md 就删掉旧副本，
+  只存片段就把写进索引的正文截到 `SNIPPET_ONLY_CHARS`（开关翻转后靠"未收紧/缺副本"触发重扫）。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -29,6 +32,10 @@ PDF_EXTS = {".pdf"}
 SKIP_EXTS = {".xls", ".xlsx", ".et"}
 
 MAX_ATTEMPTS = 3  # 同一份文件连续失败超过这个次数就不再自动重试
+
+# store_content=False 时只把每篇的前 1000 字写进索引（设计 §6.6 "仅存片段"）。
+# 代价是超出这段的正文搜不到 —— 这正是该开关的隐私语义，不要"顺手补全"。
+SNIPPET_ONLY_CHARS = 1000
 
 
 @dataclass
@@ -54,6 +61,18 @@ def _top_name(folder: Path) -> str:
 def _md_rel(rel: str) -> str:
     """md 相对路径：保留原扩展名，避免 `报告.docx` 与 `报告.pdf` 互相覆盖。"""
     return rel + ".md"
+
+
+def _within_snippet_cap(index, rel: str) -> bool:
+    """`store_content=False` 时，索引里的旧行是否已经收紧到前 1000 字。
+
+    替身 index 没有 `content_length` → 视为已收紧（隐私开关只在真库上需要生效）。
+    """
+    length_of = getattr(index, "content_length", None)
+    if length_of is None:
+        return True
+    length = length_of(_md_rel(rel))
+    return length is not None and length <= SNIPPET_ONLY_CHARS
 
 
 def _is_ooxml(path: Path) -> bool:
@@ -175,6 +194,11 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
     processed = 0
     writer_session = None
     ppt_session = None
+    render_md = getattr(cfg, "render_md", True)
+    store_content = getattr(cfg, "store_content", True)
+    if not render_md:
+        # 不落 md：上一轮留下的副本是明文全文，必须清掉，否则这个开关等于没开
+        shutil.rmtree(Path(cfg.md_dir), ignore_errors=True)
     docs = _iter_docs(cfg.folders)
 
     def _drop_session(kind: str) -> None:
@@ -204,8 +228,14 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                 continue
 
             known = files.get(rel)
+            # 重新打开"落 md"、或副本被手工删掉时，要补回一份（只是重转这一篇）
+            md_missing = render_md and not (Path(cfg.md_dir) / _md_rel(rel)).exists()
             unchanged = bool(
-                known and known.get("mtime") == stat.st_mtime and known.get("size") == stat.st_size
+                known
+                and known.get("mtime") == stat.st_mtime
+                and known.get("size") == stat.st_size
+                and not md_missing
+                and (store_content or _within_snippet_cap(index, rel))
             )
             if unchanged:
                 report.skip("unchanged")
@@ -319,7 +349,8 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                 continue
 
             try:
-                _write_md(cfg, rel, md, str(path))
+                if render_md:
+                    _write_md(cfg, rel, md, str(path))
                 index.upsert(
                     _md_rel(rel),
                     Path(rel).stem,
@@ -327,7 +358,7 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                     str(path),
                     stat.st_size,
                     stat.st_mtime,
-                    md,
+                    md if store_content else md[:SNIPPET_ONLY_CHARS],
                 )
             except OSError:
                 report.failed.append((rel, "write_failed"))

@@ -265,7 +265,13 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(cfg, index: Index | None = None, port: int | None = None) -> ThreadingHTTPServer:
     """构造服务实例（不启动）；port 传 0 可让系统分配空闲端口。"""
-    index = index or Index(Path(cfg.db_path))
+    # 配置必须显式传下去：Index 的默认值（48 / db 同级的 md）只是碰巧和默认配置一致，
+    # 靠默认值会在用户改了 snippet_tokens 后静默不生效。
+    index = index or Index(
+        Path(cfg.db_path),
+        snippet_tokens=getattr(cfg, "snippet_tokens", 48),
+        md_root=getattr(cfg, "md_dir", None),
+    )
     handler = type("BoundHandler", (Handler,), {})
     handler.index = index
     handler.config = cfg

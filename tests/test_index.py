@@ -88,6 +88,23 @@ def test_tables_rejects_path_outside_index(idx: Index):
     assert idx.tables("../etc/passwd") is None
 
 
+def test_tables_rejects_traversal_even_when_index_has_it(idx: Index):
+    """索引被污染（rel_path 含 ..）时，/api/tables 也不能读到库外文件。"""
+    idx.upsert("../outside.md", "越界", "docx", "/s/x.docx", 10, 1.0, "| a | b |\n|---|---|\n| 1 | 2 |")
+    assert idx.tables("../outside.md") is None
+
+
+def test_tables_traversal_check_normalizes_backslashes(idx: Index):
+    idx.upsert("../../Windows/win.ini", "越界", "docx", "/s/x.docx", 10, 1.0, "| a | b |")
+    assert idx.tables("..\\..\\Windows\\win.ini") is None
+
+
+def test_content_length_reports_stored_chars(idx: Index):
+    idx.upsert("a.md", "a", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽")
+    assert idx.content_length("a.md") == 6
+    assert idx.content_length("missing.md") is None
+
+
 def test_tables_falls_back_to_stored_content(idx: Index):
     idx.upsert("d.md", "d", "docx", "/s/d.docx", 10, 1.0, "| x | y |\n|---|---|\n| 1 | 2 |")
     tables = idx.tables("d.md")

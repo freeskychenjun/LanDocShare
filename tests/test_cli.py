@@ -106,3 +106,24 @@ def test_init_preserves_existing_settings(tmp_path: Path):
     assert reloaded.allow_cidrs == ["127.0.0.1"]
     assert reloaded.acrobat_tool_dir == tmp_path / "tool"
     assert set(reloaded.folders) == {a, b}
+
+
+def test_init_tightens_privacy_switches(tmp_path: Path):
+    """设计 §6.6 的收紧开关：init 能设，也能翻回去，且重跑不带开关时不打回默认。"""
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--no-store-content", "--no-render-md"])
+    cfg = Config.load(lib)
+    assert cfg.store_content is False and cfg.render_md is False
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    assert Config.load(lib).store_content is False
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--store-content", "--render-md"])
+    cfg = Config.load(lib)
+    assert cfg.store_content is True and cfg.render_md is True
+
+
+def test_status_reports_storage_policy(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--no-store-content"])
+    cli.main(["status", "--lib-dir", str(lib)])
+    out = capsys.readouterr().out
+    assert "存储策略：只存前 1000 字 / 落 md 副本" in out
