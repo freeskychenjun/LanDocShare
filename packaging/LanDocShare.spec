@@ -11,7 +11,11 @@ from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 - PyInstaller 注入
 
-datas = [(str(ROOT / "landoc" / "web" / "index.html"), "landoc/web")]
+datas = [
+    (str(ROOT / "landoc" / "web" / "index.html"), "landoc/web"),
+    # 状态窗口标题栏要用它
+    (str(ROOT / "packaging" / "landoc.ico"), "landoc"),
+]
 # jieba 的词典是数据文件，不显式收进来打包后就分词失败
 datas += collect_data_files("jieba")
 

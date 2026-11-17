@@ -15,6 +15,7 @@ from pathlib import Path
 from landoc import __version__, pipeline, probe
 from landoc.config import Config
 from landoc.index import Index
+from landoc.netinfo import lan_ip
 
 
 # 二期 registry 中心（设计 §7）固定在 8767，库端顺延端口时必须跳过它，
@@ -181,14 +182,7 @@ def _cmd_status(args) -> int:
 
 
 def _lan_ip() -> str:
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("10.255.255.255", 1))  # 不实际发包，只让系统选内网路由
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
+    return lan_ip()
 
 
 def build_parser() -> argparse.ArgumentParser:

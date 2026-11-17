@@ -17,6 +17,8 @@ from PIL import Image, ImageDraw
 from landoc import __version__, autostart
 from landoc.app import LibraryApp, AppStatus
 from landoc.config import Config
+from landoc.netinfo import lan_ip
+from landoc.panel import StatusPanel
 
 MUTEX_NAME = "Local\\LanDocShare-single-instance"
 ERROR_ALREADY_EXISTS = 183
@@ -72,12 +74,20 @@ def make_icon_image(size: int = 64) -> Image.Image:
 
 
 class TrayApp:
-    def __init__(self, cfg: Config, *, open_page_on_start: bool = True) -> None:
+    def __init__(self, cfg: Config, *, show_panel_on_start: bool = True) -> None:
         self.cfg = cfg
         self.icon = None
-        self.open_page_on_start = open_page_on_start
+        self.show_panel_on_start = show_panel_on_start
         self.app = LibraryApp(
             cfg, on_status=self._on_status, on_notify=self._on_notify
+        )
+        self.panel = StatusPanel(
+            cfg,
+            self.app,
+            lan_ip=lan_ip(),
+            on_open_page=self._open_page,
+            on_update=self._update_now,
+            on_toggle_share=self._toggle_share,
         )
 
     # ---- pystray 回调 ----
@@ -98,6 +108,9 @@ class TrayApp:
 
     def _open_page(self) -> None:
         webbrowser.open(self.app.local_url())
+
+    def _show_panel(self) -> None:
+        self.panel.show()
 
     def _update_now(self) -> None:
         self.app.update_now()
@@ -127,6 +140,7 @@ class TrayApp:
             pass
 
     def _quit(self) -> None:
+        self.panel.close()
         self.app.stop()
         if self.icon is not None:
             self.icon.stop()
@@ -137,7 +151,8 @@ class TrayApp:
         return pystray.Menu(
             pystray.MenuItem(lambda item: self.app.status.summary(), None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("打开库主页", self._open_page, default=True),
+            pystray.MenuItem("显示状态窗口", self._show_panel, default=True),
+            pystray.MenuItem("打开库主页", self._open_page),
             pystray.MenuItem("立即更新", self._update_now),
             pystray.MenuItem(
                 "暂停共享", self._toggle_share, checked=lambda item: self.app.paused
@@ -163,9 +178,9 @@ class TrayApp:
             self._menu(),
         )
         self.app.start()
-        # 托盘没有主窗口，不主动给个东西的话用户会以为没启动：第一次开页 + 一条气泡
-        if self.open_page_on_start:
-            threading.Timer(0.5, self._open_page).start()
+        # 托盘没有主窗口，不主动给个东西的话用户会以为没启动：第一次就弹状态窗口
+        if self.show_panel_on_start:
+            self.panel.show()
         threading.Timer(1.5, self._announce).start()
         self.icon.run()
 
@@ -173,7 +188,7 @@ class TrayApp:
         if self.icon is None:
             return
         try:
-            self.icon.notify("已在托盘运行；双击图标打开检索页", "LanDocShare")
+            self.icon.notify("已在托盘运行；双击图标打开状态窗口", "LanDocShare")
         except Exception:  # noqa: BLE001 - 气泡被系统关掉也不影响使用
             pass
 
@@ -270,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         webbrowser.open(url)
         return 0
 
-    TrayApp(cfg, open_page_on_start=not args.autostart).run()
+    TrayApp(cfg, show_panel_on_start=not args.autostart).run()
     return 0
 
 
