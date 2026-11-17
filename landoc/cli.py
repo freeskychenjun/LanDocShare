@@ -206,6 +206,7 @@ def _people_summary(cfg) -> str:
 
 
 def _cmd_people(args) -> int:
+    from landoc import roster
     from landoc.people import dump_people_csv, load_people_csv, merge_people
 
     cfg = Config.load(Path(args.lib_dir))
@@ -247,9 +248,27 @@ def _cmd_people(args) -> int:
         print(f"[名单] {name} → {current[name] or '（不登记 IP，需报姓名）'}")
         changed = True
 
+    if args.pull is not None:
+        try:
+            _text, incoming = roster.fetch_roster(cfg.registry_url or args.pull)
+            current, note = roster.apply_pull(current, incoming, replace=args.replace)
+            print(f"[拉取] {note}")
+            changed = True
+        except roster.RosterError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 2
+
     if changed:
         cfg.allow_people = current
         cfg.save()
+
+    if args.publish is not None:
+        try:
+            payload = roster.publish_roster(cfg.registry_url or args.publish, dict(current))
+        except roster.RosterError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 2
+        print(f"[发布] 已发布 {payload.get('count', '?')} 人到 {cfg.registry_url or args.publish}")
 
     if args.export:
         Path(args.export).write_text(dump_people_csv(current), encoding="utf-8-sig")
@@ -351,6 +370,20 @@ def build_parser() -> argparse.ArgumentParser:
     people_cmd.add_argument("--set", metavar="姓名=IP", help="新增/修改一条；IP 留空表示必须报姓名")
     people_cmd.add_argument("--remove", metavar="姓名", help="删除一条")
     people_cmd.add_argument("--export", metavar="PATH", help="导出成 CSV（以后给客户端分发）")
+    people_cmd.add_argument(
+        "--pull",
+        nargs="?",
+        const="",
+        metavar="URL",
+        help="从登记中心拉取名单（默认用库配置里的 registry_url）",
+    )
+    people_cmd.add_argument(
+        "--publish",
+        nargs="?",
+        const="",
+        metavar="URL",
+        help="把名单发布到登记中心（默认用库配置里的 registry_url）",
+    )
     people_cmd.set_defaults(func=_cmd_people)
 
     registry_cmd = sub.add_parser("registry", help="启动登记中心（让同事们互相发现彼此的库）")

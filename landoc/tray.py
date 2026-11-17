@@ -19,6 +19,7 @@ from landoc.app import LibraryApp, AppStatus
 from landoc.config import Config
 from landoc.netinfo import lan_ip
 from landoc.panel import StatusPanel
+from landoc.roster_ui import RosterWindow
 
 MUTEX_NAME = "Local\\LanDocShare-single-instance"
 ERROR_ALREADY_EXISTS = 183
@@ -88,7 +89,9 @@ class TrayApp:
             on_open_page=self._open_page,
             on_update=self._update_now,
             on_toggle_share=self._toggle_share,
+            on_open_roster=self._show_roster,
         )
+        self.roster = RosterWindow(cfg, on_saved=self._roster_saved)
 
     # ---- pystray 回调 ----
     def _on_status(self, status: AppStatus) -> None:
@@ -111,6 +114,18 @@ class TrayApp:
 
     def _show_panel(self) -> None:
         self.panel.show()
+
+    def _show_roster(self) -> None:
+        self.roster.show()
+
+    def _roster_saved(self) -> None:
+        """名单改完：状态窗口的"共享范围"要及时反映人数变化。"""
+        self.panel.show()
+        if self.icon is not None:
+            try:
+                self.icon.notify("授权名单已更新，立即生效", "LanDocShare")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _update_now(self) -> None:
         self.app.update_now()
@@ -162,6 +177,7 @@ class TrayApp:
 
     def _quit(self) -> None:
         self.panel.close()
+        self.roster.close()
         self.app.stop()
         if self.icon is not None:
             self.icon.stop()
@@ -176,6 +192,7 @@ class TrayApp:
             pystray.MenuItem("打开库主页", self._open_page),
             pystray.MenuItem("立即更新", self._update_now),
             pystray.MenuItem("修改建库设置…", self._edit_library),
+            pystray.MenuItem("授权名单…", self._show_roster),
             pystray.MenuItem(
                 "暂停共享", self._toggle_share, checked=lambda item: self.app.paused
             ),

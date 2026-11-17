@@ -139,7 +139,7 @@
 
 ### 6.1 运行形态
 - **PyInstaller `--onedir`**（不用 onefile：避免每次启动解压几十 MB、也方便 COM/资源定位），产物目录约 60–120 MB。
-- 托盘：`pystray` + `Pillow`；菜单项：`显示状态窗口 / 打开库主页（浏览器）/ 我的库（篇数·最后更新）/ 立即重建索引 / 暂停共享 / 权限设置 / 开机自启（勾选）/ 查看日志 / 退出`。
+- 托盘：`pystray` + `Pillow`；菜单项：`显示状态窗口 / 打开库主页（浏览器）/ 我的库（篇数·最后更新）/ 立即重建索引 / 修改建库设置… / 授权名单… / 暂停共享 / 权限设置 / 开机自启（勾选）/ 查看日志 / 退出`。
 - **状态窗口**（实施补充，2026-11-17）：托盘之外再给一个 tkinter 小窗，显示状态 / 篇数 / 共享范围 / 服务地址 / 上次扫描，带"打开检索页 / 立即更新 / 暂停共享 / 复制地址"；关窗只隐藏，双击托盘图标再打开；`--autostart` 模式不弹窗。
 - **开机自启**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（不需要管理员）。软件自身单实例（命名互斥量），重复启动时唤起已运行实例的窗口。
 - **无需管理员**：唯一需要提权的是首次加防火墙规则；失败时降级为"提示手动执行命令"，不阻塞建库。
@@ -236,7 +236,9 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 - 安全：只接受 `10.91.0.0/16` 来源；不接受来自客户端自报的 IP（用连接对端 IP）；不做鉴权（内容只有元数据，泄露无害）。
 - 客户端缓存：skill 把上次拿到的库清单写 `~/.pi/skills/lan-lib-search/cache_libraries.json`（24 h）；中心不可用时用它 + 逐库 `/api/health` 探活。
 
-> **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。`/download` 与 `/skill.zip` 本轮未做，留到分发阶段。
+> **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。
+
+> **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（网段内任何人可取）。说明页展示"已发布 N 人 · 更新于 …"。库软件侧由 `landoc/roster.py`（拉取/发布/CSV 校验/排序）与 `landoc/roster_ui.py`（授权名单窗口：增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 并即时生效；命令行等价物 `people --pull` / `people --publish`。
 
 
 ---

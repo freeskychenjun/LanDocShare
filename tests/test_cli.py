@@ -236,3 +236,53 @@ def test_init_records_registry_url(tmp_path: Path):
     lib = tmp_path / "lib"
     cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://10.91.1.197:8767"])
     assert Config.load(lib).registry_url == "http://10.91.1.197:8767"
+
+
+def _roster_center(tmp_path: Path):
+    import threading
+
+    from landoc.registry import RegistryStore, make_registry_server
+
+    httpd = make_registry_server(
+        RegistryStore(tmp_path / "registry.json"),
+        port=0,
+        allow_cidrs=["127.0.0.1"],
+        roster_path=tmp_path / "roster.csv",
+        roster_admin_ips={"127.0.0.1"},
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return f"http://127.0.0.1:{httpd.server_address[1]}", httpd, thread
+
+
+def test_people_publish_and_pull_via_cli(tmp_path: Path):
+    lib = tmp_path / "lib"
+    base, httpd, thread = _roster_center(tmp_path)
+    try:
+        cli.main(
+            [
+                "init",
+                "--lib-dir",
+                str(lib),
+                "--name",
+                "库",
+                "--registry-url",
+                base,
+            ]
+        )
+        cli.main(["people", "--lib-dir", str(lib), "--set", "陈鋆=10.91.1.197"])
+        assert cli.main(["people", "--lib-dir", str(lib), "--publish"]) == 0
+        assert (tmp_path / "roster.csv").exists()
+
+        # 换一个库，拉取中心名单
+        other = tmp_path / "other"
+        cfg = Config.load(lib)
+        cfg.lib_dir = other
+        cfg.allow_people = {}
+        cfg.save()
+        assert cli.main(["people", "--lib-dir", str(other), "--pull"]) == 0
+        assert Config.load(other).allow_people == {"陈鋆": "10.91.1.197"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)

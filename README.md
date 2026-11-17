@@ -117,6 +117,22 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip
 - `GET /download`：流式发库软件 zip（不整包读内存）；没放包时返回 404 + 中文提示，说明页上也显示"暂未放好"而不是死链。
 - 升级提示：`/libraries` 带 `latest_version`，每个库带自己的 `version`；`query.py libs` 会把落后的库列一行（"N 个库版本落后，最新 0.2.0：陈鋆、老王"）。
 
+## 授权名单（客户端界面，按 IP 认人）
+
+「谁能查我」不再只靠向导里那张表：托盘菜单 **授权名单…** 或状态窗口的 **授权名单** 按钮，打开一个表格窗口，增删改都在里面完成，保存即生效（服务不用重启）。
+
+- **按 IP 放行，姓名只作备注**：来源 IP 命中名单 → 放行，审计日志里记那条的姓名；姓名对不上 IP 也不会拒（除非那人专门登记了 IP）。
+- **IP 留空 = 这个人要报姓名才放行**（给 IP 会变的人用）；`127.0.0.1` 永远放行，本机调试不会被自己挡住。
+- 界面里还能 **导入 CSV / 导出 CSV…**，双击一行就能改；名单人数会实时反映到状态窗口的"共享范围"。
+- **从中心拉取… / 发布到中心**：库主人把全部门名单发布到登记中心（`POST /roster`，**只接受中心所在那台机器**，同事改不了全院名单），其他库在窗口里点"从中心拉取…"就能拿到，选合并（同名以中心为准）或整体替换。中心把它存成 `<state-dir>/roster.csv`，说明页会显示"部门授权名单已发布：N 人"，也提供 `GET /roster.csv` 直接下载。
+
+命令行等价物（脚本/批量用）：
+
+```bash
+python -m landoc.cli people --lib-dir D:\MyLib --pull      # 从 config 里的 registry_url 拉取
+python -m landoc.cli people --lib-dir D:\MyLib --publish   # 发布到中心（同样只认中心那台机器）
+```
+
 ## 客户端 skill（`skill/lan-lib-search/`）
 
 同事不用装库软件，拿到这个 skill 就能"全院一起查"：
@@ -187,7 +203,9 @@ landoc/
   wizard.py        建库向导（tkinter 单屏）
   panel.py         状态窗口（tkinter，关窗=隐藏）
   netinfo.py       内网地址探测（CLI 与状态窗口共用）
-  registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）
+  registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）+ 分发入口 + 名单发布
+  roster.py        授权名单：本地增删/排序、与中心之间的发布与拉取
+  roster_ui.py     授权名单窗口（tkinter，增删改 / 导入导出 / 与中心同步）
   tray.py          托盘入口 + 单实例互斥量（也是打包入口）
 
 skill/lan-lib-search/

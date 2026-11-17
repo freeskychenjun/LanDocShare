@@ -95,6 +95,7 @@ class StatusPanel:
         on_open_page=None,
         on_update=None,
         on_toggle_share=None,
+        on_open_roster=None,
     ) -> None:
         self.cfg = cfg
         self.app = app
@@ -102,6 +103,7 @@ class StatusPanel:
         self.on_open_page = on_open_page
         self.on_update = on_update
         self.on_toggle_share = on_toggle_share
+        self.on_open_roster = on_open_roster
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -135,8 +137,8 @@ class StatusPanel:
         self._root = root
         root.title(f"LanDocShare · {self.cfg.name}")
         rows = status_rows(self.cfg, self.app.status, lan_ip=self.lan_ip or "127.0.0.1")
-        root.geometry("520x360" if len(rows) > 5 else "520x330")
-        root.minsize(460, 300)
+        root.geometry("580x360" if len(rows) > 5 else "580x330")
+        root.minsize(520, 300)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         icon = _icon_path()
         if icon is not None:
@@ -169,8 +171,9 @@ class StatusPanel:
         ttk.Button(buttons, text="立即更新", command=self._update_now).pack(side="left", padx=6)
         self._share_button = ttk.Button(buttons, text="暂停共享", command=self._toggle_share)
         self._share_button.pack(side="left")
-        ttk.Button(buttons, text="复制地址", command=self._copy_address).pack(side="left", padx=6)
-        ttk.Button(buttons, text="隐藏", command=root.withdraw).pack(side="left")
+        ttk.Button(buttons, text="授权名单", command=self._open_roster).pack(side="left", padx=6)
+        ttk.Button(buttons, text="复制地址", command=self._copy_address).pack(side="left")
+        ttk.Button(buttons, text="隐藏", command=root.withdraw).pack(side="left", padx=6)
 
         self._copy_hint = ttk.Label(frame, text="", foreground="#2f7d32")
         self._copy_hint.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
@@ -239,6 +242,10 @@ class StatusPanel:
         if self.on_toggle_share is not None:
             self.on_toggle_share()
         self._refresh()
+
+    def _open_roster(self) -> None:
+        if self.on_open_roster is not None:
+            self.on_open_roster()
 
     def _copy_address(self) -> None:
         root = self._root
