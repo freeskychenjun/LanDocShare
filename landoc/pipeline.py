@@ -33,9 +33,12 @@ SKIP_EXTS = {".xls", ".xlsx", ".et"}
 
 MAX_ATTEMPTS = 3  # 同一份文件连续失败超过这个次数就不再自动重试
 
-# store_content=False 时只把每篇的前 1000 字写进索引（设计 §6.6 "仅存片段"）。
-# 代价是超出这段的正文搜不到 —— 这正是该开关的隐私语义，不要"顺手补全"。
-SNIPPET_ONLY_CHARS = 1000
+# store_content=False 时保留的正文前缀（设计 §6.6 "仅存片段"）。取值越大越保检索召回，
+# 越小越防"整库明文被拷走"；本库的取舍是召回优先，默认给足 20000 字（多数简报/汇报/规程
+# 能整篇留下），单个库也能用 `init --snippet-only-chars` 再调。
+# 注意：截断之外的正文搜不到 —— 这是该开关的固有代价，不要"顺手补全"。
+DEFAULT_SNIPPET_ONLY_CHARS = 20000
+MIN_SNIPPET_ONLY_CHARS = 200  # 再小就等于"只能搜标题"，没有意思
 
 
 @dataclass
@@ -63,8 +66,25 @@ def _md_rel(rel: str) -> str:
     return rel + ".md"
 
 
-def _within_snippet_cap(index, rel: str) -> bool:
-    """`store_content=False` 时，索引里的旧行是否已经收紧到前 1000 字。
+def snippet_cap(cfg) -> int:
+    """当前库"仅存片段"的前缀长度；配置缺失/太小/非法时退回默认值。"""
+    try:
+        cap = int(getattr(cfg, "snippet_only_chars", DEFAULT_SNIPPET_ONLY_CHARS))
+    except (TypeError, ValueError):
+        return DEFAULT_SNIPPET_ONLY_CHARS
+    return cap if cap >= MIN_SNIPPET_ONLY_CHARS else DEFAULT_SNIPPET_ONLY_CHARS
+
+
+def _prefix(md: str, cap: int) -> str:
+    """截到 cap 字，尽量停在行边界，免得把表格行/段落切成两半。"""
+    if len(md) <= cap:
+        return md
+    cut = md.rfind("\n", 0, cap)
+    return md[:cut] if cut > cap // 2 else md[:cap]
+
+
+def _within_snippet_cap(index, rel: str, cap: int) -> bool:
+    """`store_content=False` 时，索引里的旧行是否已经收紧到 cap 字以内。
 
     替身 index 没有 `content_length` → 视为已收紧（隐私开关只在真库上需要生效）。
     """
@@ -72,7 +92,7 @@ def _within_snippet_cap(index, rel: str) -> bool:
     if length_of is None:
         return True
     length = length_of(_md_rel(rel))
-    return length is not None and length <= SNIPPET_ONLY_CHARS
+    return length is not None and length <= cap
 
 
 def _is_ooxml(path: Path) -> bool:
@@ -196,6 +216,7 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
     ppt_session = None
     render_md = getattr(cfg, "render_md", True)
     store_content = getattr(cfg, "store_content", True)
+    cap = snippet_cap(cfg)
     if not render_md:
         # 不落 md：上一轮留下的副本是明文全文，必须清掉，否则这个开关等于没开
         shutil.rmtree(Path(cfg.md_dir), ignore_errors=True)
@@ -235,7 +256,7 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                 and known.get("mtime") == stat.st_mtime
                 and known.get("size") == stat.st_size
                 and not md_missing
-                and (store_content or _within_snippet_cap(index, rel))
+                and (store_content or _within_snippet_cap(index, rel, cap))
             )
             if unchanged:
                 report.skip("unchanged")
@@ -358,7 +379,7 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                     str(path),
                     stat.st_size,
                     stat.st_mtime,
-                    md if store_content else md[:SNIPPET_ONLY_CHARS],
+                    md if store_content else _prefix(md, cap),
                 )
             except OSError:
                 report.failed.append((rel, "write_failed"))

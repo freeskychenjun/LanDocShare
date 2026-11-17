@@ -11,7 +11,7 @@ from landoc.config import Config
 
 ENCRYPTED_HEADER = bytes.fromhex("17da5fa01633cd9a")
 
-LONG_MD = "乐平水利枢纽工程概况。" * 200  # 远超 SNIPPET_ONLY_CHARS，用来区分"全文"与"片段"
+LONG_MD = "乐平水利枢纽工程概况。" * 200  # 远超片段上限，用来区分"全文"与"片段"
 
 
 class StubIndex:
@@ -332,10 +332,12 @@ def test_office_session_reuses_one_instance(monkeypatch):
 def test_store_content_off_keeps_only_snippet_in_index(cfg, monkeypatch):
     monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
     cfg.store_content = False
+    cfg.snippet_only_chars = 1000
     index = StubIndex()
     pipeline.run(cfg, index=index)
     assert index.rows
-    assert all(len(row["content"]) == pipeline.SNIPPET_ONLY_CHARS for row in index.rows)
+    assert all(len(row["content"]) == 1000 for row in index.rows)
+    assert all(LONG_MD.startswith(row["content"]) for row in index.rows)
     # md 副本仍是全文：那份是留给库主人自己看的，不进索引、不经服务端
     md = Path(cfg.md_dir) / "成果" / "plain.docx.md"
     assert md.read_text(encoding="utf-8").endswith(LONG_MD)
@@ -376,10 +378,37 @@ def test_store_content_off_tightens_existing_rows_on_rescan(cfg, monkeypatch):
     from landoc.index import Index
 
     monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (LONG_MD, "direct"))
+    cfg.snippet_only_chars = 1000
     index = Index(cfg.db_path, md_root=cfg.md_dir)
     pipeline.run(cfg, index=index)
-    assert index.content_length("成果/plain.docx.md") > pipeline.SNIPPET_ONLY_CHARS
+    assert index.content_length("成果/plain.docx.md") > 1000
     cfg.store_content = False
     report = pipeline.run(cfg, index=index)
     assert report.converted == 2
-    assert index.content_length("成果/plain.docx.md") == pipeline.SNIPPET_ONLY_CHARS
+    assert index.content_length("成果/plain.docx.md") == 1000
+
+
+def test_snippet_cap_defaults_to_generous_and_clamps_tiny(cfg):
+    """召回优先：默认给足 20000 字；配置里塞个没意义的极小值就退回默认。"""
+    assert pipeline.DEFAULT_SNIPPET_ONLY_CHARS == 20000
+    assert pipeline.snippet_cap(cfg) == 20000
+    cfg.snippet_only_chars = 5000
+    assert pipeline.snippet_cap(cfg) == 5000
+    cfg.snippet_only_chars = 10
+    assert pipeline.snippet_cap(cfg) == 20000
+    cfg.snippet_only_chars = "不是数字"
+    assert pipeline.snippet_cap(cfg) == 20000
+
+
+def test_prefix_cuts_at_line_boundary(cfg, monkeypatch):
+    """截断停在整行末尾，别把表格行切成两半（碎片表格会污染 /api/tables）。"""
+    body = "\n".join(f"| 行{i} | 值{i} |" for i in range(80))
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: (body, "direct"))
+    cfg.store_content = False
+    cfg.snippet_only_chars = 300
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    content = index.rows[0]["content"]
+    assert 0 < len(content) <= 300
+    assert content.endswith("|")
+    assert body.startswith(content)

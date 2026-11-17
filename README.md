@@ -39,11 +39,15 @@ curl --get "http://<内网IP>:8766/api/tables" --data-urlencode "path=成果/乐
 收紧共享（隐私开关，默认都开；`init` 时一次设好，之后 `status` 会显示当前策略）：
 
 ```bash
-# 只把每篇前 1000 字写进索引（检索/片段只在这 1000 字内命中，超出部分等于没共享）
+# 只把每篇前 20000 字写进索引（检索/片段只在这段内命中，超出部分等于没共享）
 python -m landoc init --lib-dir D:\MyLib --name "我的资料库" --no-store-content
+# 嫌 20000 不够保召回就调大（≥200；越大越保检索，越少防"整库明文被拷走"）
+python -m landoc init --lib-dir D:\MyLib --name "我的资料库" --no-store-content --snippet-only-chars 50000
 # 不落 md 副本（表格改从索引正文里抽；关掉后重跑 convert 会清掉旧副本）
 python -m landoc init --lib-dir D:\MyLib --name "我的资料库" --no-render-md
 ```
+
+本机的取舍是**召回优先、外泄控制放松**，所以 `snippet_only_chars` 默认给足 20000 字，多数简报/汇报/规程可整篇留下；真要收紧再往下调。但要知道这开关换的正是召回：截断之外的正文搜不到、表格也可能只在 md 副本里完整（`--no-render-md` 时以正文为准）。
 
 改完开关重跑 `convert` 就会按新策略收紧已有文档；把 `--render-md` 打开再跑会补回副本。
 
@@ -60,7 +64,7 @@ python -m landoc init --lib-dir D:\MyLib --name "我的资料库" --no-render-md
 | `.doc/.ppt/.dps/.wps` 为什么也走 COM | 这些是 OLE 容器，python-docx/python-pptx 不认；判据是"是否加密 或 不是 zip" | `pipeline.convert_one` |
 | 中文检索为什么用 trigram | jieba 分词边界对不上就零命中（查"马斯京根"vs 索引里"马斯京根法"）；trigram 做子串匹配 | `index.build_match_query` |
 | 2 字查询（"乐平""洪水"） | 低于 trigram 最小长度，改走 `instr` 子串扫描 | `index._like_search` |
-| 想"只共享片段、不落盘" | `--no-store-content` 只把前 1000 字写进索引（超出部分搜不到是刻意的）；`--no-render-md` 不落 md 副本、清掉旧副本 | `pipeline.run` / `Config` |
+| 想"只共享片段、不落盘" | `--no-store-content` 只把前 `snippet_only_chars` 字（默认 20000，可调）写进索引（超出部分搜不到是刻意的）；`--no-render-md` 不落 md 副本、清掉旧副本 | `pipeline.run` / `Config` |
 
 ## 实测基准（本机，Python 3.14 / WPS + Office 2019）
 

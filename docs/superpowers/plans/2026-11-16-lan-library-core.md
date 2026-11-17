@@ -76,7 +76,7 @@ D:\AICoding\LanDocShare\
 
 **Interfaces:**
 - Produces:
-  - `landoc.config.Config`（dataclass）字段：`name: str`、`lib_dir: Path`、`folders: list[Path]`、`allow_cidrs: list[str]`、`allow_people: dict[str,str]`、`port: int = 8766`、`snippet_tokens: int = 48`、`store_content: bool = True`、`render_md: bool = True`
+  - `landoc.config.Config`（dataclass）字段：`name: str`、`lib_dir: Path`、`folders: list[Path]`、`allow_cidrs: list[str]`、`allow_people: dict[str,str]`、`port: int = 8766`、`snippet_tokens: int = 48`、`store_content: bool = True`、`snippet_only_chars: int = 20000`、`render_md: bool = True`
   - `Config.load(lib_dir: Path) -> Config`、`Config.save(self) -> None`（原子写 `config.json`）
   - `landoc.probe.classify(path: Path) -> str`，返回 `"plain" | "encrypted" | "blocked"`
   - `landoc.probe.sample_report(folders: list[Path], n: int = 200) -> dict`，返回 `{"sampled": int, "plain": int, "encrypted": int, "blocked": int, "has_office": bool, "has_acrobat": bool}`

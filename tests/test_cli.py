@@ -126,4 +126,25 @@ def test_status_reports_storage_policy(tmp_path: Path, capsys):
     cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--no-store-content"])
     cli.main(["status", "--lib-dir", str(lib)])
     out = capsys.readouterr().out
-    assert "存储策略：只存前 1000 字 / 落 md 副本" in out
+    assert "存储策略：只存前 20000 字 / 落 md 副本" in out
+
+
+def test_init_sets_and_keeps_snippet_only_chars(tmp_path: Path, capsys):
+    """片段长度可调（召回优先的旋钮）；重跑不带参数时不能被打回默认。"""
+    lib = tmp_path / "lib"
+    cli.main(
+        ["init", "--lib-dir", str(lib), "--name", "库", "--no-store-content", "--snippet-only-chars", "8000"]
+    )
+    assert Config.load(lib).snippet_only_chars == 8000
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    assert Config.load(lib).snippet_only_chars == 8000
+    cli.main(["status", "--lib-dir", str(lib)])
+    assert "存储策略：只存前 8000 字 / 落 md 副本" in capsys.readouterr().out
+
+
+def test_init_rejects_uselessly_small_snippet_chars(tmp_path: Path):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["init", "--lib-dir", str(tmp_path / "lib"), "--name", "库", "--snippet-only-chars", "10"])
+    assert exc.value.code == 2

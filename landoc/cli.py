@@ -51,10 +51,22 @@ def _storage_policy(cfg) -> str:
     content = (
         "全文进索引"
         if getattr(cfg, "store_content", True)
-        else f"只存前 {pipeline.SNIPPET_ONLY_CHARS} 字"
+        else f"只存前 {pipeline.snippet_cap(cfg)} 字"
     )
     markdown = "落 md 副本" if getattr(cfg, "render_md", True) else "不落 md"
     return f"{content} / {markdown}"
+
+
+def _snippet_chars(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("要一个整数") from None
+    if value < pipeline.MIN_SNIPPET_ONLY_CHARS:
+        raise argparse.ArgumentTypeError(
+            f"至少 {pipeline.MIN_SNIPPET_ONLY_CHARS} 字（再小就只能搜标题，没有意义）"
+        )
+    return value
 
 
 def _cmd_init(args) -> int:
@@ -80,6 +92,8 @@ def _cmd_init(args) -> int:
         cfg.acrobat_tool_dir = tool_dir
     if args.store_content is not None:
         cfg.store_content = args.store_content
+    if args.snippet_only_chars is not None:
+        cfg.snippet_only_chars = args.snippet_only_chars
     if args.render_md is not None:
         cfg.render_md = args.render_md
     cfg.save()
@@ -183,7 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--store-content",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="是否把全文写进索引（--no-store-content 只存每篇前 1000 字）；不给则沿用现有配置",
+        help="是否把全文写进索引（--no-store-content 只存每篇前 N 字，N 见 --snippet-only-chars）；不给则沿用现有配置",
+    )
+    init.add_argument(
+        "--snippet-only-chars",
+        type=_snippet_chars,
+        default=None,
+        metavar="N",
+        help="--no-store-content 时保留的正文前缀字数（默认 20000；越大越保检索召回）；不给则沿用现有配置",
     )
     init.add_argument(
         "--render-md",
