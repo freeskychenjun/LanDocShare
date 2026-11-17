@@ -115,7 +115,12 @@ async function api(path, params) {
   if (state.name) url.searchParams.set('name', state.name);
   const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
   if (resp.status === 401) {
-    const asked = prompt('这个库需要登记姓名，请输入你的名字：', state.name || '');
+    let reason = '';
+    try { reason = (await resp.clone().json()).error || ''; } catch (e) { /* 非 JSON 就按通用提示 */ }
+    const hint = reason === 'ip mismatch for name'
+      ? '这个姓名登记的 IP 不是这台机器。核对一下姓名，或请库主人更新名单：'
+      : '这个库需要登记姓名，请输入你的名字：';
+    const asked = prompt(hint, state.name || '');
     if (asked) { state.name = asked.trim(); localStorage.setItem('landoc_name', state.name); return api(path, params); }
     throw new Error('需要姓名');
   }

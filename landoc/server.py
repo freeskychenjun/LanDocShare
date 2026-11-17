@@ -223,6 +223,8 @@ class Handler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "doc_count": self.index.stats()["total"],
                     "allow_cidrs": list(getattr(self.config, "allow_cidrs", []) or []),
+                    # 只暴露"要不要报姓名"，不暴露名单本身（谁在名单里是库主人的事）
+                    "name_required": bool(getattr(self.config, "allow_people", None)),
                     "port": self.server.server_address[1],
                 }
             )

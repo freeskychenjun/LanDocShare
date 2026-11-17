@@ -34,6 +34,14 @@ def test_status_rows_mark_paused_and_empty_scan(tmp_path):
     assert rows["文档"] == "0 篇"
 
 
+def test_status_rows_show_roster_instead_of_cidrs(tmp_path):
+    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
+    cfg.allow_people = {"陈鋆": "10.91.1.197", "张三": ""}
+    status = AppStatus(phase="serving", doc_count=13, port=8768)
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["共享范围"] == "仅指定名单（2 人）"
+
+
 def test_phase_text_does_not_repeat_counts(tmp_path):
     cfg = _cfg(tmp_path)
     status = AppStatus(phase="serving", doc_count=13, last_scan="2026-11-17 17:39", port=8768)

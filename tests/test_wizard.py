@@ -72,3 +72,42 @@ def test_apply_config_keeps_storage_policy(tmp_path):
     # 存储策略不归向导管，不能被重开向导冲掉
     assert target.store_content is False
     assert target.snippet_only_chars == 5000
+
+
+def test_build_config_people_scope_keeps_roster(tmp_path):
+    cfg = wizard.build_config(
+        "小库",
+        [tmp_path],
+        wizard.SCOPE_PEOPLE,
+        tmp_path / "lib",
+        people={"陈鋆": "10.91.1.197", "张三": ""},
+    )
+    assert cfg.allow_cidrs == ["10.91.0.0/16"]  # 先过网段，再核姓名
+    assert cfg.allow_people == {"陈鋆": "10.91.1.197", "张三": ""}
+
+
+def test_build_config_ignores_roster_when_scope_is_lan(tmp_path):
+    cfg = wizard.build_config(
+        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", people={"陈鋆": "10.91.1.197"}
+    )
+    assert cfg.allow_people == {}
+
+
+def test_validate_person_rules():
+    cidrs = wizard.SCOPE_CIDRS[wizard.SCOPE_PEOPLE]
+    assert wizard.validate_person("", "10.91.1.197", cidrs) == "姓名不能为空"
+    assert "不要带" in wizard.validate_person("陈=鋆", "", cidrs)
+    assert "不是合法的 IP" in wizard.validate_person("陈鋆", "10.91.1", cidrs)
+    assert wizard.validate_person("陈鋆", "", cidrs) is None
+    assert wizard.validate_person("陈鋆", "10.91.1.197", cidrs) is None
+    assert "不在允许的网段" in wizard.validate_person("陈鋆", "192.168.1.9", cidrs)
+
+
+def test_apply_config_copies_people(tmp_path):
+    target = wizard.build_config("旧名", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
+    source = wizard.build_config(
+        "新名", [tmp_path], wizard.SCOPE_PEOPLE, tmp_path / "lib", people={"陈鋆": "10.91.1.197"}
+    )
+    wizard.apply_config(target, source)
+    assert target.allow_people == {"陈鋆": "10.91.1.197"}
+    assert target.allow_cidrs == ["10.91.0.0/16"]

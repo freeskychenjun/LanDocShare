@@ -277,13 +277,13 @@ def main(argv: list[str] | None = None) -> int:
 
     lib_dir = Path(args.lib_dir) if args.lib_dir else _default_lib_dir()
     cfg = None
-    if not args.wizard:
-        try:
-            cfg = Config.load(lib_dir)
-        except (OSError, ValueError):
-            cfg = None
-    if cfg is None:
-        cfg = run_wizard(lib_dir)
+    try:
+        cfg = Config.load(lib_dir)
+    except (OSError, ValueError):
+        cfg = None
+    if args.wizard or cfg is None:
+        # --wizard 强制重开：有旧配置就预填，省得库主人重填一遍
+        cfg = run_wizard(lib_dir, current=cfg)
         if cfg is None:
             print("已取消：没有建库", file=sys.stderr)
             return 1

@@ -51,8 +51,11 @@ def status_rows(
 ) -> list[PanelRow]:
     """窗口里显示哪几行（纯函数，方便单测）。"""
     actual_port = port if port is not None else status.port
+    people = getattr(cfg, "allow_people", None) or {}
     if status.paused:
         scope = "已暂停（本机之外都访问不到）"
+    elif people:
+        scope = f"仅指定名单（{len(people)} 人）"
     elif cfg.allow_cidrs:
         scope = "、".join(cfg.allow_cidrs)
     else:

@@ -77,6 +77,26 @@ def test_wizard_cancel_exits_nonzero(tmp_path, monkeypatch):
     assert tray.main(["--lib-dir", str(tmp_path / "lib")]) == 1
 
 
+def test_wizard_flag_prefills_existing_config(tmp_path, monkeypatch):
+    from landoc import wizard
+
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    Config(name="老库", lib_dir=lib_dir, folders=[tmp_path]).save()
+    seen = {}
+
+    def fake_wizard(path, parent=None, **kwargs):
+        seen.update(kwargs)
+        return Config(name="改过", lib_dir=lib_dir, allow_cidrs=["127.0.0.1"])
+
+    monkeypatch.setattr(wizard, "run_wizard", fake_wizard)
+    started = _isolate_main(monkeypatch, tmp_path)
+
+    assert tray.main(["--lib-dir", str(lib_dir), "--wizard"]) == 0
+    assert seen["current"] is not None and seen["current"].name == "老库"
+    assert started["cfg"].name == "改过"
+
+
 def test_existing_config_skips_wizard(tmp_path, monkeypatch):
     from landoc import wizard
 

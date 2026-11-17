@@ -167,6 +167,26 @@ def test_unknown_name_is_401_when_allowlist_used(lib):
         httpd.server_close()
 
 
+def test_meta_says_name_required_but_not_who(lib):
+    cfg, index = lib
+    cfg.allow_people = {"陈鋆": "127.0.0.1"}
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    host, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        assert client.get("/api/meta")[0] == 401
+        status, raw = client.get("/api/meta?name=" + urllib.parse.quote("陈鋆"))
+        assert status == 200
+        body = json.loads(raw)
+        assert body["name_required"] is True
+        assert "陈鋆" not in raw
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_rate_limit_returns_429(lib, monkeypatch):
     cfg, index = lib
     httpd = make_server(cfg, index=index, port=0)
