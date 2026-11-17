@@ -173,7 +173,9 @@ def convert_one(path: Path, ext: str, encrypted: bool, cfg, writer_session=None,
 
     if ext in PDF_EXTS:
         result = pdf_conv.pdf_to_text(path, cfg=cfg)
-        if result.via == "skipped":
+        # 扫描件取不到文本层时 pdf_to_text 不标 skipped，但正文本就是空白；
+        # 记 no_text_layer 比记 empty_text 更能说明"这是图片型 PDF，一期不 OCR"。
+        if result.via == "skipped" or result.reason:
             raise RuntimeError(result.reason or "pdf_skipped")
         return result.text, result.via
 

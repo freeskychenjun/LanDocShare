@@ -228,6 +228,25 @@ def test_write_failure_does_not_abort_batch(cfg, flat_opc, monkeypatch):
     assert any(reason == "write_failed" for _, reason in report.failed)
 
 
+def test_scanned_pdf_is_recorded_as_no_text_layer(cfg, docs_dir, flat_opc, monkeypatch):
+    """扫描件没有文本层：失败原因要说清楚，别糊成 empty_text。"""
+    # 同目录里的假密文 docx 会走真 COM，这里给个替身，测试只关心那条 PDF
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    (docs_dir / "扫描件.pdf").write_bytes(b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n")
+    monkeypatch.setattr(
+        pipeline.pdf_conv,
+        "pdf_to_text",
+        lambda path, cfg=None, **k: pipeline.pdf_conv.PDFResult(
+            "\n\n\n", "pymupdf", "no_text_layer"
+        ),
+    )
+    report = pipeline.run(cfg, index=StubIndex())
+    assert ("成果/扫描件.pdf", "no_text_layer") in report.failed
+    assert all(reason != "empty_text" for _, reason in report.failed)
+
+
 def test_same_stem_different_ext_kept_apart(cfg, docs_dir, flat_opc, monkeypatch):
     """I2: 同时存在 报告.docx 与 报告.pdf 时，两篇都要留。"""
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
