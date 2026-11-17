@@ -34,15 +34,24 @@ class PasswordProtected(RuntimeError):
 
 
 def _dispatch_office():
-    """依次尝试 WPS Writer 与 MS Word，返回可用的 Application 对象。"""
+    """依次尝试 WPS Writer 与 MS Word，返回可用的 Application 对象。
+
+    上一个实例刚退出时 DispatchEx 偶发失败，所以每个 ProgID 重试一次。
+    """
     import win32com.client as wc  # 延迟导入：非 Windows 环境也能 import 本模块
 
     last: Exception | None = None
     for progid in OFFICE_PROGIDS:
-        try:
-            app = wc.DispatchEx(progid)
-        except Exception as exc:  # noqa: BLE001 - COM 异常类型五花八门
-            last = exc
+        app = None
+        for attempt in range(2):
+            try:
+                app = wc.DispatchEx(progid)
+                break
+            except Exception as exc:  # noqa: BLE001 - COM 异常类型五花八门
+                last = exc
+                if attempt == 0:
+                    threading.Event().wait(1.5)
+        if app is None:
             continue
         try:
             app.Visible = False
@@ -169,6 +178,14 @@ def _has_password_dialog(pids: set[int]) -> bool:
     return found["hit"]
 
 
+def _quit_quietly(app) -> None:
+    """让 Office 自己退出；WPS 关掉最后一个文档后再 Quit 会抛 RPC 失败，忽略即可。"""
+    try:
+        app.Quit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class OfficeSession:
     """复用同一个 Office 实例处理一批文档。
 
@@ -246,12 +263,22 @@ class OfficeSession:
         return self.call(job, timeout)
 
     def close(self) -> None:
+        # 先请 Office 自己退出：硬杀会留下"文档恢复"弹窗，下次自动化就起不来了
+        if not self._dead and self._app is not None:
+            try:
+                self.call(lambda session: _quit_quietly(session.app()), timeout=10)
+            except Exception:  # noqa: BLE001 - Quit 抛 RPC 失败是 WPS 的常态
+                pass
         try:
             self._queue.put(None)
             self._thread.join(timeout=5)
         except RuntimeError:
             pass
-        # 只杀本会话新起的 Office 进程，不动库主人自己开着的窗口
+        # 给它 2 秒自己退干净，只清真正残留的、且是本会话新起的进程
+        for _ in range(4):
+            if not (_office_pids() - self._before):
+                break
+            threading.Event().wait(0.5)
         _kill_office_processes(_office_pids() - self._before)
 
     def __enter__(self) -> "OfficeSession":

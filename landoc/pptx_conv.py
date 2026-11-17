@@ -65,10 +65,18 @@ def _dispatch_ppt():
 
     last: Exception | None = None
     for progid in PPT_PROGIDS:
-        try:
-            app = wc.DispatchEx(progid)
-        except Exception as exc:  # noqa: BLE001
-            last = exc
+        app = None
+        for attempt in range(2):
+            try:
+                app = wc.DispatchEx(progid)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                if attempt == 0:
+                    import threading
+
+                    threading.Event().wait(1.5)
+        if app is None:
             continue
         try:
             app.DisplayAlerts = 0
