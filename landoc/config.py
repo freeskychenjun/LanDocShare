@@ -28,6 +28,9 @@ class Config:
     snippet_only_chars 是 store_content=False 时的前缀长度：越大越保检索召回，越小越防
     "整库明文被拷走"。本机的取舍是**召回优先**，所以默认给到 20000 字（多数简报/汇报/规程
     可整篇保留），而不是一个抠搜的小数字。改开关后重跑 `convert` 就会按新策略收紧/补齐已有文档。
+
+    registry_url 是登记中心地址（如 `http://10.91.1.197:8767`）：非空时库软件每 60 s
+    心跳一次，中心据此下发"谁在线、谁的库有多少篇"；留空则只在本机局域网里被发现。
     """
 
     name: str
@@ -36,6 +39,7 @@ class Config:
     allow_cidrs: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOW_CIDRS))
     allow_people: dict[str, str] = field(default_factory=dict)
     port: int = 8766
+    registry_url: str = ""
     snippet_tokens: int = 48
     store_content: bool = True
     snippet_only_chars: int = 20000

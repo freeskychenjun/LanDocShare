@@ -79,6 +79,43 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 - **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`，双击回落 `D:\MyLib` 或开向导。
 - **包体**：约 175 MB（onedir）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
 
+## 登记中心（P2，8767）
+
+让同事们**互相发现**对方的库：一台常开机器跑登记中心，各库每 60 s 报一次"我在线、我有多少篇"。
+
+```bash
+# 在常开的那台机器上（本机就是 10.91.1.197）
+python -m landoc.registry --port 8767            # 或 python -m landoc.cli registry
+# 也可用打包版：LanDocShare.exe registry --port 8767
+
+# 让某个库去登记（写进它的 config.json；之后每次启动/每 60 s 自动心跳）
+python -m landoc.cli init --lib-dir D:\MyLib --name 陈鋆的资料库 --folder D:\资料 ^
+    --registry-url http://10.91.1.197:8767
+```
+
+- `POST /register`：库端心跳（`{name, lib_name, port, doc_count, version}`）。**IP 取连接对端，不信自报**；只接受 `10.91.0.0/16`（`--allow-cidrs` 可改）。返回 `latest_version` 与 `upgrade`。
+- `GET /libraries`：在线清单（5 分钟内有心跳 = 在线，30 分钟无心跳 = 移除）；`GET /health`：中心自身状态。
+- 数据落盘 `~/.landoc-registry/registry.json`（`--state-dir` 可改，原子写），重启不丢。
+- 开机自启：`LanDocShare.exe registry --install-autostart`（写 `HKCU\...\Run` 的 `LanDocShare-registry` 值，不需要管理员；`--remove-autostart` 撤销）。它与库软件自己的自启值是两条，互不影响。
+- 只需要元数据，中心挂了不影响各库自身检索。
+
+## 客户端 skill（`skill/lan-lib-search/`）
+
+同事不用装库软件，拿到这个 skill 就能"全院一起查"：
+
+```bash
+python skill/lan-lib-search/scripts/query.py libs                 # 谁在线、各多少篇
+python skill/lan-lib-search/scripts/query.py search 马斯京根        # 并发 12 路，每库超时 2 s
+python skill/lan-lib-search/scripts/query.py search 玉田水库 --lib 陈鋆
+python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试目录/xxx.docx.md"
+```
+
+- **只用标准库**，Python 3.8+ 直接跑；没有 Python 时按 `SKILL.md` 里的 curl 命令逐库查、AI 合并。
+- 合并规则：各库 score 先归一到本库最佳，再乘库级权重（`config.json` 的 `weights`），同库保持原序，取前 20。
+- 中心连不上时用 24 h 缓存 + 逐库 `/api/health` 探活；某个库没响应只记脚注"在线 X/Y 个库返回结果"。
+- 输出按库分组，每条都带**库主人 + 相对路径 + 命中片段**；只给片段和表格，不给原文、不给下载。
+
+
 ## 关键机制（都来自实测，别按直觉改）
 
 | 现象 | 机制 | 实现位置 |
@@ -132,5 +169,10 @@ landoc/
   wizard.py        建库向导（tkinter 单屏）
   panel.py         状态窗口（tkinter，关窗=隐藏）
   netinfo.py       内网地址探测（CLI 与状态窗口共用）
+  registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）
   tray.py          托盘入口 + 单实例互斥量（也是打包入口）
+
+skill/lan-lib-search/
+  SKILL.md             给 AI 助手的用法说明（触发词、流程、无 Python 时的 curl 降级）
+  scripts/query.py     客户端查询：拉名单 → 并发 fan-out → 归一化合并 → 按库分组输出
 ```

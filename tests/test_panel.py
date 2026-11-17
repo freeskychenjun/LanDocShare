@@ -42,6 +42,24 @@ def test_status_rows_show_roster_instead_of_cidrs(tmp_path):
     assert rows["共享范围"] == "仅指定名单（2 人）"
 
 
+def test_status_rows_show_registry_when_configured(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.registry_url = "http://10.91.1.197:8767"
+    status = AppStatus(phase="serving", doc_count=13, port=8768, registry="已登记 2026-11-17 20:18:11")
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["登记中心"] == "已登记 2026-11-17 20:18:11"
+
+    status.registry = ""
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["登记中心"] == "等待心跳…"
+
+
+def test_status_rows_hide_registry_when_not_configured(tmp_path):
+    cfg = _cfg(tmp_path)
+    rows = {row.label for row in status_rows(cfg, AppStatus(), lan_ip="10.91.1.197")}
+    assert "登记中心" not in rows
+
+
 def test_phase_text_does_not_repeat_counts(tmp_path):
     cfg = _cfg(tmp_path)
     status = AppStatus(phase="serving", doc_count=13, last_scan="2026-11-17 17:39", port=8768)

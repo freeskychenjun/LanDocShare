@@ -60,13 +60,16 @@ def status_rows(
         scope = "、".join(cfg.allow_cidrs)
     else:
         scope = "仅本机（没有允许的网段）"
-    return [
+    rows = [
         PanelRow("状态", phase_text(status)),
         PanelRow("文档", f"{status.doc_count} 篇"),
         PanelRow("共享范围", scope),
         PanelRow("服务地址", f"http://{lan_ip}:{actual_port}/"),
         PanelRow("上次扫描", status.last_scan or "还没扫过"),
     ]
+    if getattr(cfg, "registry_url", ""):
+        rows.append(PanelRow("登记中心", status.registry or "等待心跳…"))
+    return rows
 
 
 def _icon_path() -> Path | None:
@@ -131,7 +134,8 @@ class StatusPanel:
         root = tk.Tk()
         self._root = root
         root.title(f"LanDocShare · {self.cfg.name}")
-        root.geometry("520x330")
+        rows = status_rows(self.cfg, self.app.status, lan_ip=self.lan_ip or "127.0.0.1")
+        root.geometry("520x360" if len(rows) > 5 else "520x330")
         root.minsize(460, 300)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         icon = _icon_path()
@@ -150,7 +154,7 @@ class StatusPanel:
         title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
         row = 1
-        for item in status_rows(self.cfg, self.app.status, lan_ip=self.lan_ip or "127.0.0.1"):
+        for item in rows:
             ttk.Label(frame, text=item.label, foreground="#666").grid(
                 row=row, column=0, sticky="w", pady=2
             )

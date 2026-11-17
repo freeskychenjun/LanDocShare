@@ -236,6 +236,9 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 - 安全：只接受 `10.91.0.0/16` 来源；不接受来自客户端自报的 IP（用连接对端 IP）；不做鉴权（内容只有元数据，泄露无害）。
 - 客户端缓存：skill 把上次拿到的库清单写 `~/.pi/skills/lan-lib-search/cache_libraries.json`（24 h）；中心不可用时用它 + 逐库 `/api/health` 探活。
 
+> **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。`/download` 与 `/skill.zip` 本轮未做，留到分发阶段。
+
+
 ---
 
 ## 8. 客户端 skill（`lan-lib-search`）
@@ -257,6 +260,9 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 - 部分库超时**不报错**，用"在线 X/Y 个库返回结果"的脚注交代清楚。
 - 单次查询词 ≤ 3–4 个；命中率低时提示换更短的词（沿用现有 skill 的话术）。
 - 输出**必须**带"来自谁的库 + 文档路径"，便于线下溯源（不提供原文）。
+
+> **实施补充（2026-11-17）**：落地为 `skill/lan-lib-search/`（`SKILL.md` + `scripts/query.py`，仅标准库）。四个命令：`libs` / `search` / `tables` / `whoami`。因为授权已改成**按 IP 放行**（§6.2 实施补充），姓名不再是必填——`identity.txt` 只在库返回 `401 name required` 时才需要（`whoami --set 姓名`）；`401 ip not registered` 直接提示"让库主人把 IP 加进名单"，不猜名字。`config.json` 支持 `{"registry": "..."}` 与 `{"weights": {"陈鋆": 1.3}}`，环境变量 `LANLIB_REGISTRY` 优先级最高。无 Python 时的 curl 降级路径直接写进 `SKILL.md`，由 AI 逐库查后自行合并。
+
 
 ---
 

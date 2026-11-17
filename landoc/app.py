@@ -6,14 +6,25 @@
 
 from __future__ import annotations
 
+import json
 import threading
+import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
+from landoc import __version__
 from landoc import idle as idle_module
 from landoc import pipeline
 from landoc.cli import pick_port
 from landoc.config import Config
+
+
+def _post_json(url: str, payload: dict, timeout: float = 3.0) -> dict:
+    """POST 一段 JSON 并读回响应；失败抛异常，由调用方决定吞不吞。"""
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - 地址来自本机配置
+        return json.loads(resp.read().decode("utf-8") or "{}")
 
 
 @dataclass
@@ -25,6 +36,7 @@ class AppStatus:
     port: int = 0
     paused: bool = False
     converted: int = 0  # 本次空闲窗口里转换成功的篇数
+    registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
 
     def summary(self) -> str:
         if self.phase == "converting":
@@ -55,6 +67,8 @@ class LibraryApp:
         idle_minutes: float = 5.0,
         on_status: Callable[[AppStatus], None] | None = None,
         on_notify: Callable[[str], None] | None = None,
+        poster: Callable[[str, dict], dict] | None = None,
+        heartbeat_seconds: float = 60.0,
     ) -> None:
         self.cfg = cfg
         self.index = index
@@ -67,6 +81,9 @@ class LibraryApp:
         self._poll = poll_seconds
         self._on_status = on_status
         self._on_notify = on_notify
+        self._poster = poster or _post_json
+        self._heartbeat_seconds = heartbeat_seconds
+        self.last_register: dict | None = None
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -107,6 +124,8 @@ class LibraryApp:
             self._update(phase="serving", port=actual)
         self._spawn(self.httpd.serve_forever, "landoc-server")
         self._spawn(self._worker, "landoc-worker")
+        if str(getattr(self.cfg, "registry_url", "") or "").strip():
+            self._spawn(self._heartbeat, "landoc-heartbeat")
 
     def _spawn(self, target, name: str) -> None:
         thread = threading.Thread(target=target, name=name, daemon=True)
@@ -208,6 +227,31 @@ class LibraryApp:
     def _wait(self, seconds: float) -> None:
         self._wake.wait(seconds)
         self._wake.clear()
+
+    # ---- 登记中心心跳 ----
+    def _register_payload(self) -> dict:
+        status = self.status
+        return {
+            "name": self.cfg.name,
+            "lib_name": self.cfg.name,
+            "port": status.port or self.cfg.port,
+            "doc_count": status.doc_count,
+            "version": __version__,
+        }
+
+    def _heartbeat(self) -> None:
+        """每 60 s 向登记中心报一次"我在线、我有多少篇"；中心挂了不影响检索。"""
+        url = str(self.cfg.registry_url).strip().rstrip("/") + "/register"
+        while not self._stop.is_set():
+            try:
+                reply = self._poster(url, self._register_payload())
+                self.last_register = reply
+                stamp = str((reply or {}).get("server_time") or "")
+                self._update(registry=f"已登记 {stamp}".strip())
+            except Exception:  # noqa: BLE001 - 中心不可达就跳过这一轮
+                self.last_register = None
+                self._update(registry="连不上登记中心")
+            self._stop.wait(self._heartbeat_seconds)
 
     def _idle(self) -> bool:
         try:

@@ -138,3 +138,46 @@ def test_stop_shuts_down_server(tmp_path):
     app.start()
     app.stop()
     assert app.status.phase == "stopped"
+
+
+def test_heartbeat_registers_with_registry(tmp_path):
+    calls: list[tuple[str, dict]] = []
+
+    def poster(url, payload):
+        calls.append((url, dict(payload)))
+        return {"ok": True, "server_time": "2026-11-17 20:18:11"}
+
+    app = make_app(
+        tmp_path,
+        index=FakeIndex(total=13),
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18080),
+        poster=poster,
+        heartbeat_seconds=0.05,
+    )
+    app.cfg.registry_url = "http://10.91.1.197:8767/"
+    app.start()
+    try:
+        assert wait_for(lambda: calls)
+        url, payload = calls[0]
+        assert url == "http://10.91.1.197:8767/register"
+        assert payload["name"] == "测试库"
+        assert payload["doc_count"] == 13
+        assert payload["port"] == 18080
+        assert payload["version"]
+        assert app.last_register["ok"] is True
+        assert wait_for(lambda: app.status.registry.startswith("已登记"))
+        assert "2026-11-17 20:18:11" in app.status.registry
+    finally:
+        app.stop()
+
+
+def test_no_heartbeat_without_registry_url(tmp_path):
+    calls: list[tuple[str, dict]] = []
+    app = make_app(tmp_path, idle_check=lambda: False, poster=lambda url, payload: calls.append((url, payload)) or {})
+    app.start()
+    try:
+        time.sleep(0.1)
+        assert calls == []
+    finally:
+        app.stop()

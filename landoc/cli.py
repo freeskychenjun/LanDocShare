@@ -116,12 +116,16 @@ def _cmd_init(args) -> int:
             print(f"[错误] {error}", file=sys.stderr)
             return 2
         cfg.allow_cidrs = cidrs
+    if args.registry_url is not None:
+        cfg.registry_url = args.registry_url.strip()
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
     print(f"     共享目录 {len(cfg.folders)} 个：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"     允许网段：{', '.join(cfg.allow_cidrs)}")
     print(f"     存储策略：{_storage_policy(cfg)}")
+    if cfg.registry_url:
+        print(f"     登记中心：{cfg.registry_url}")
     if cfg.acrobat_tool_dir:
         print(f"     加密 PDF 兜底工具：{cfg.acrobat_tool_dir}")
     return 0
@@ -186,6 +190,7 @@ def _cmd_status(args) -> int:
     print(f"允许网段：{', '.join(cfg.allow_cidrs)}")
     print(f"允许名单：{_people_summary(cfg)}")
     print(f"存储策略：{_storage_policy(cfg)}")
+    print(f"登记中心：{cfg.registry_url or '（未登记，同事只能靠手动地址发现）'}")
     print(f"上次扫描：{state.get('last_scan_ts', '（从未）')}")
     return 0
 
@@ -311,6 +316,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="是否在 md/ 留 Markdown 副本（--no-render-md 不落盘）；不给则沿用现有配置",
     )
+    init.add_argument(
+        "--registry-url",
+        default=None,
+        metavar="URL",
+        help="登记中心地址（如 http://10.91.1.197:8767）；给了才会每 60 s 心跳登记，不给则保持原值",
+    )
     init.set_defaults(func=_cmd_init)
 
     probe_cmd = sub.add_parser("probe", help="抽样体检：明/密/受阻比例")
@@ -341,7 +352,32 @@ def build_parser() -> argparse.ArgumentParser:
     people_cmd.add_argument("--remove", metavar="姓名", help="删除一条")
     people_cmd.add_argument("--export", metavar="PATH", help="导出成 CSV（以后给客户端分发）")
     people_cmd.set_defaults(func=_cmd_people)
+
+    registry_cmd = sub.add_parser("registry", help="启动登记中心（让同事们互相发现彼此的库）")
+    registry_cmd.add_argument("--port", type=int, default=None, help="默认 8767")
+    registry_cmd.add_argument("--state-dir", default=None, help="registry.json 放哪，默认 ~/.landoc-registry")
+    registry_cmd.add_argument("--allow-cidrs", default=None, help="允许来源网段，逗号分隔（默认 10.91.0.0/16）")
+    registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run）后退出")
+    registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
+    registry_cmd.set_defaults(func=_cmd_registry)
     return parser
+
+
+def _cmd_registry(args) -> int:
+    from landoc import registry
+
+    argv: list[str] = []
+    if args.port is not None:
+        argv += ["--port", str(args.port)]
+    if args.state_dir:
+        argv += ["--state-dir", args.state_dir]
+    if args.allow_cidrs:
+        argv += ["--allow-cidrs", args.allow_cidrs]
+    if args.install_autostart:
+        argv += ["--install-autostart"]
+    if args.remove_autostart:
+        argv += ["--remove-autostart"]
+    return registry.main(argv)
 
 
 def main(argv: list[str] | None = None) -> int:

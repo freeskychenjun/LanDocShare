@@ -228,7 +228,7 @@ def _existing_port(cfg: Config) -> int:
     return cfg.port
 
 
-CLI_COMMANDS = frozenset({"init", "probe", "convert", "serve", "status"})
+CLI_COMMANDS = frozenset({"init", "probe", "convert", "serve", "status", "people", "registry"})
 
 LAST_LIB_MARKER = (
     Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "LanDocShare" / "last_lib.txt"

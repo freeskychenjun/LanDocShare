@@ -216,3 +216,23 @@ def test_status_reports_people_summary(tmp_path: Path, capsys):
     cli.main(["people", "--lib-dir", str(lib), "--set", "陈鋆=10.91.1.197"])
     cli.main(["status", "--lib-dir", str(lib)])
     assert "允许名单：1 人，按 IP 放行（姓名仅备注）" in capsys.readouterr().out
+
+
+def test_registry_command_forwards_flags(monkeypatch):
+    from landoc import registry
+
+    seen: dict = {}
+
+    def fake_main(argv):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(registry, "main", fake_main)
+    assert cli.main(["registry", "--port", "8790", "--install-autostart"]) == 0
+    assert seen["argv"] == ["--port", "8790", "--install-autostart"]
+
+
+def test_init_records_registry_url(tmp_path: Path):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://10.91.1.197:8767"])
+    assert Config.load(lib).registry_url == "http://10.91.1.197:8767"

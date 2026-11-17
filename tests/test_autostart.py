@@ -49,3 +49,19 @@ def test_command_line_for_source_run(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.setattr(sys, "executable", r"C:\Python314\python.exe")
     assert autostart.command_line() == r'"C:\Python314\python.exe" -m landoc.tray --autostart'
+
+
+def test_registry_command_line_for_frozen_exe(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Apps\LanDocShare\LanDocShare.exe")
+    assert autostart.registry_command_line(8767) == r'"C:\Apps\LanDocShare\LanDocShare.exe" registry --port 8767'
+
+
+def test_registry_entry_is_separate_from_library_entry(run_key):
+    autostart.enable('"C:\\Apps\\LanDocShare\\LanDocShare.exe" --autostart', name=autostart.VALUE_NAME)
+    autostart.enable('"C:\\Apps\\LanDocShare\\LanDocShare.exe" registry --port 8767', name=autostart.REGISTRY_VALUE_NAME)
+    assert autostart.is_enabled() is True
+    assert autostart.registry_enabled() is True
+    autostart.disable(name=autostart.REGISTRY_VALUE_NAME)
+    assert autostart.registry_enabled() is False
+    assert autostart.is_enabled() is True  # 删中心那条不影响库自己那条

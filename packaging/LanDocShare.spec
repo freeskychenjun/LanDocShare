@@ -29,6 +29,7 @@ hiddenimports = [
     "PIL._tkinter_finder",
     "tkinter.filedialog",
     "tkinter.messagebox",
+    "landoc.registry",
 ]
 
 # 这台开发机上装了很多与库软件无关的重型包（torch/cv2/scipy/…）。PyInstaller 的
