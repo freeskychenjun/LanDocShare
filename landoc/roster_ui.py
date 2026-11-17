@@ -1,6 +1,6 @@
-"""授权名单管理窗口：库主人自己维护"谁能查"，并能和登记中心对账。
+"""授权名单管理窗口：库主人自己维护"谁能查"（姓名 / IP / 部门），并能和登记中心对账。
 
-为什么单独一个窗口而不是塞进状态面板：名单要加人、改 IP、和中心同步，
+为什么单独一个窗口而不是塞进状态面板：名单要加人、改 IP、标部门、和中心同步，
 是个"表格 + 按钮"的活；状态面板只负责"一眼看清现在什么状态"。
 
 线程模型同 `panel.StatusPanel`：tkinter 只在窗口线程里跑，托盘线程只往队列塞
@@ -46,7 +46,7 @@ class RosterWindow:
         self._root = None
         self._tree = None
         self._status = None
-        self._people: dict[str, str] = {}
+        self._roster: roster.Roster = roster.Roster()
         self._dirty = False
         self._busy = False
 
@@ -72,8 +72,8 @@ class RosterWindow:
         root = tk.Tk()
         self._root = root
         root.title(f"授权名单 · {self.cfg.name}")
-        root.geometry("640x520")
-        root.minsize(560, 420)
+        root.geometry("700x520")
+        root.minsize(620, 420)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         icon = _icon_path()
         if icon is not None:
@@ -93,7 +93,7 @@ class RosterWindow:
         )
         ttk.Label(
             frame,
-            text="按 IP 放行；姓名只用于日志好看。IP 留空 = 这个人要报姓名才放行。",
+            text="按 IP 放行；姓名只用于日志好看，部门只用于分组查看。IP 留空 = 这个人要报姓名才放行。",
             foreground="#666",
         ).grid(row=1, column=0, sticky="w", pady=(0, 8))
 
@@ -102,12 +102,14 @@ class RosterWindow:
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
         self._tree = ttk.Treeview(
-            table, columns=("name", "ip"), show="headings", selectmode="browse", height=14
+            table, columns=("name", "ip", "dept"), show="headings", selectmode="browse", height=14
         )
         self._tree.heading("name", text="姓名")
         self._tree.heading("ip", text="IP")
-        self._tree.column("name", width=160, anchor="w")
-        self._tree.column("ip", width=180, anchor="w")
+        self._tree.heading("dept", text="部门 / 备注")
+        self._tree.column("name", width=140, anchor="w")
+        self._tree.column("ip", width=150, anchor="w")
+        self._tree.column("dept", width=220, anchor="w")
         self._tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table, orient="vertical", command=self._tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -180,25 +182,25 @@ class RosterWindow:
 
     # ---------------------------------------------------------- 数据
     def _reload(self) -> None:
-        people = getattr(self.cfg, "allow_people", None) or {}
-        self._people = dict(people)
+        self._roster = roster.Roster.from_config(self.cfg)
         self._dirty = False
         self._render()
-        self._say(
-            f"共 {len(self._people)} 人；改完点「保存并使生效」"
-            if self._people
-            else "名单为空：现在按允许的网段放行"
-        )
+        if not self._roster:
+            self._say("名单为空：现在按允许的网段放行")
+            return
+        depts = len({*self._roster.departments.values()})
+        extra = f"，{depts} 个部门" if depts else ""
+        self._say(f"共 {len(self._roster)} 人{extra}；改完点「保存并使生效」")
 
     def _render(self) -> None:
         tree = self._tree
         if tree is None:
             return
         tree.delete(*tree.get_children())
-        for row, (name, ip) in enumerate(roster.sorted_entries(self._people)):
-            tree.insert("", "end", iid=str(row), values=(name, ip or "（留空）"))
+        for row, (name, ip, dept) in enumerate(roster.sorted_entries(self._roster)):
+            tree.insert("", "end", iid=str(row), values=(name, ip or "（留空）", dept or "—"))
 
-    def _selected(self) -> tuple[str, str] | None:
+    def _selected(self) -> tuple[str, str, str] | None:
         tree = self._tree
         if tree is None:
             return None
@@ -207,7 +209,8 @@ class RosterWindow:
             return None
         values = tree.item(selection[0], "values")
         ip = "" if values[1] == "（留空）" else str(values[1])
-        return str(values[0]), ip
+        dept = "" if values[2] == "—" else str(values[2])
+        return str(values[0]), ip, dept
 
     def _say(self, text: str) -> None:
         if self._status is not None:
@@ -219,7 +222,9 @@ class RosterWindow:
             self._status.configure(foreground="#b45309" if busy else "#666")
 
     # ---------------------------------------------------------- 编辑
-    def _ask_entry(self, title: str, name: str = "", ip: str = "") -> tuple[str, str] | None:
+    def _ask_entry(
+        self, title: str, name: str = "", ip: str = "", dept: str = ""
+    ) -> tuple[str, str, str] | None:
         import tkinter as tk
         from tkinter import messagebox, ttk
 
@@ -236,30 +241,38 @@ class RosterWindow:
 
         ttk.Label(frame, text="姓名").grid(row=0, column=0, sticky="w", pady=3)
         name_var = tk.StringVar(value=name)
-        name_entry = ttk.Entry(frame, textvariable=name_var, width=26)
+        name_entry = ttk.Entry(frame, textvariable=name_var, width=28)
         name_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
         ttk.Label(frame, text="IP（可留空）").grid(row=1, column=0, sticky="w", pady=3)
         ip_var = tk.StringVar(value=ip)
-        ttk.Entry(frame, textvariable=ip_var, width=26).grid(
+        ttk.Entry(frame, textvariable=ip_var, width=28).grid(
             row=1, column=1, sticky="w", padx=(8, 0), pady=3
         )
         ttk.Label(frame, text="留空表示这个人靠报姓名识别（IP 会变时用）", foreground="#888").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
 
-        result: dict[str, tuple[str, str] | None] = {"value": None}
+        ttk.Label(frame, text="部门 / 备注（可留空）").grid(row=3, column=0, sticky="w", pady=(8, 3))
+        dept_var = tk.StringVar(value=dept)
+        ttk.Entry(frame, textvariable=dept_var, width=28).grid(
+            row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 3)
+        )
+
+        result: dict[str, tuple[str, str, str] | None] = {"value": None}
 
         def confirm() -> None:
             try:
-                result["value"] = roster.validate_entry(name_var.get(), ip_var.get())
+                result["value"] = roster.validate_entry(
+                    name_var.get(), ip_var.get(), dept_var.get()
+                )
             except ValueError as exc:
                 messagebox.showerror(title, str(exc), parent=dialog)
                 return
             dialog.destroy()
 
         row = ttk.Frame(frame)
-        row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        row.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(row, text="取消", command=dialog.destroy).pack(side="right", padx=(6, 0))
         ttk.Button(row, text="确定", command=confirm).pack(side="right")
         name_entry.focus_set()
@@ -271,11 +284,13 @@ class RosterWindow:
         entry = self._ask_entry("添加")
         if entry is None:
             return
-        name, ip = entry
-        if name in self._people:
+        name, ip, dept = entry
+        if name in self._roster.people:
             self._say(f"「{name}」已经在名单里了")
             return
-        self._people[name] = ip
+        self._roster.people[name] = ip
+        if dept:
+            self._roster.departments[name] = dept
         self._dirty = True
         self._render()
         self._say(f"已添加 {name}，记得保存")
@@ -285,17 +300,22 @@ class RosterWindow:
         if selected is None:
             self._say("先选中一行")
             return
-        old_name, old_ip = selected
-        entry = self._ask_entry("修改", old_name, old_ip)
+        old_name, old_ip, old_dept = selected
+        entry = self._ask_entry("修改", old_name, old_ip, old_dept)
         if entry is None:
             return
-        name, ip = entry
-        if name != old_name and name in self._people:
+        name, ip, dept = entry
+        if name != old_name and name in self._roster.people:
             self._say(f"「{name}」已经在名单里了")
             return
         if name != old_name:
-            self._people.pop(old_name, None)
-        self._people[name] = ip
+            self._roster.people.pop(old_name, None)
+            self._roster.departments.pop(old_name, None)
+        self._roster.people[name] = ip
+        if dept:
+            self._roster.departments[name] = dept
+        else:
+            self._roster.departments.pop(name, None)
         self._dirty = True
         self._render()
         self._say(f"已修改 {name}，记得保存")
@@ -307,10 +327,11 @@ class RosterWindow:
         if selected is None:
             self._say("先选中一行")
             return
-        name, _ip = selected
+        name, _ip, _dept = selected
         if not messagebox.askyesno("删除", f"把「{name}」从名单里删掉？", parent=self._root):
             return
-        self._people.pop(name, None)
+        self._roster.people.pop(name, None)
+        self._roster.departments.pop(name, None)
         self._dirty = True
         self._render()
         self._say(f"已删除 {name}，记得保存")
@@ -321,7 +342,7 @@ class RosterWindow:
 
         path = filedialog.askopenfilename(
             parent=self._root,
-            title="导入名单 CSV（姓名,IP）",
+            title="导入名单 CSV（姓名,IP,部门）",
             filetypes=[("CSV / 文本", "*.csv *.txt"), ("所有文件", "*.*")],
         )
         if not path:
@@ -342,8 +363,8 @@ class RosterWindow:
         if not incoming:
             self._say("这个文件里没解析出人名")
             return
-        merged, note = roster.apply_pull(self._people, incoming)
-        self._people = merged
+        merged, note = roster.apply_pull(self._roster, incoming)
+        self._roster = merged
         self._dirty = True
         self._render()
         extra = f"；{len(warnings)} 条警告" if warnings else ""
@@ -361,11 +382,11 @@ class RosterWindow:
         if not path:
             return
         try:
-            Path(path).write_text(roster.format_roster(self._people), encoding="utf-8-sig")
+            Path(path).write_text(roster.format_roster(self._roster), encoding="utf-8-sig")
         except OSError as exc:
             messagebox.showerror("导出失败", str(exc), parent=self._root)
             return
-        self._say(f"已导出 {len(self._people)} 人到 {path}")
+        self._say(f"已导出 {len(self._roster)} 人到 {path}")
 
     # ---------------------------------------------------------- 中心同步
     def _pull(self) -> None:
@@ -389,8 +410,8 @@ class RosterWindow:
 
         def work() -> None:
             try:
-                _text, people = roster.fetch_roster(registry)
-                self._queue.put(("pulled", (people, replace)))
+                _text, incoming = roster.fetch_roster(registry)
+                self._queue.put(("pulled", (incoming, replace)))
             except roster.RosterError as exc:
                 self._queue.put(("error", str(exc)))
 
@@ -400,11 +421,11 @@ class RosterWindow:
         self._set_busy(False)
         incoming, replace = payload
         try:
-            merged, note = roster.apply_pull(self._people, incoming, replace=replace)
+            merged, note = roster.apply_pull(self._roster, incoming, replace=replace)
         except roster.RosterError as exc:
             self._say(str(exc))
             return
-        self._people = merged
+        self._roster = merged
         self._dirty = True
         self._render()
         self._say(f"{note}，记得保存")
@@ -420,12 +441,12 @@ class RosterWindow:
                 parent=self._root,
             )
             return
-        if not self._people:
+        if not self._roster:
             self._say("名单是空的，发布没有意义")
             return
         if not messagebox.askyesno(
             "发布名单",
-            f"把本地这份 {len(self._people)} 人的名单发布到登记中心？\n"
+            f"把本地这份 {len(self._roster)} 人的名单发布到登记中心？\n"
             "（只有中心所在机器能发布；其他同事会影响从中心拉到的名单）",
             parent=self._root,
         ):
@@ -435,7 +456,7 @@ class RosterWindow:
 
         def work() -> None:
             try:
-                payload = roster.publish_roster(registry, dict(self._people))
+                payload = roster.publish_roster(registry, self._roster.copy())
                 self._queue.put(("published", payload))
             except roster.RosterError as exc:
                 self._queue.put(("error", str(exc)))
@@ -444,15 +465,16 @@ class RosterWindow:
 
     # ---------------------------------------------------------- 保存
     def _save(self) -> None:
-        self.cfg.allow_people = {
-            name: ip for name, ip in self._people.items() if name.strip()
-        }
+        self._roster.to_config(self.cfg)
         try:
             self.cfg.save()
         except OSError as exc:
             self._say(f"保存失败：{exc}")
             return
         self._dirty = False
-        self._say(f"已保存（{len(self.cfg.allow_people)} 人），立即生效")
+        count = len(self.cfg.allow_people)
+        depts = len(self.cfg.people_departments)
+        extra = f"，{depts} 个部门" if depts else ""
+        self._say(f"已保存（{count} 人{extra}），立即生效")
         if self.on_saved is not None:
             self.on_saved()

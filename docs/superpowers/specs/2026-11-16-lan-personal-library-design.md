@@ -238,7 +238,9 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 
 > **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。
 
-> **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（网段内任何人可取）。说明页展示"已发布 N 人 · 更新于 …"。库软件侧由 `landoc/roster.py`（拉取/发布/CSV 校验/排序）与 `landoc/roster_ui.py`（授权名单窗口：增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 并即时生效；命令行等价物 `people --pull` / `people --publish`。
+> **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP,部门` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（网段内任何人可取）。说明页展示"已发布 N 人 + 部门分布 · 更新于 …"。库软件侧由 `landoc/roster.py`（`Roster` 把"人 + 部门"绑在一起；拉取/发布/CSV 校验/按部门排序）与 `landoc/roster_ui.py`（授权名单窗口：姓名/IP/部门三列、增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 与 `people_departments` 并即时生效；命令行等价物 `people --pull` / `--publish` / `--dept`。
+
+> **实施补充（2026-11-17，部门列）**：`Config.people_departments: {姓名: 部门/备注}` 只用于分组查看、不参与授权（授权仍只看 `allow_people` 里的 IP）。窗口按"部门 → IP"排序，没填部门的沉底；写入配置时会剔除已不在名单里的孤儿项；CSV 第三列可省，没有部门信息时导出仍是两列（老文件不受影响）。
 
 
 ---

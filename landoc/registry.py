@@ -307,16 +307,20 @@ class RegistryHandler(BaseHTTPRequestHandler):
 
     # ---- 名单 ----
     def _roster_state(self) -> dict | None:
-        """已发布名单的 (人数, 更新时间)；没发布或读不出来返回 None。"""
+        """已发布名单的 (人数, 更新时间, 部门分布)；没发布或读不出来返回 None。"""
         path = self.roster_path
         if path is None or not path.is_file():
             return None
         try:
-            people, _warnings = parse_roster(path.read_text(encoding="utf-8-sig"))
+            roster, _warnings = parse_roster(path.read_text(encoding="utf-8-sig"))
             stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
         except (OSError, ValueError):
             return None
-        return {"count": len(people), "updated": stamp}
+        return {
+            "count": len(roster),
+            "updated": stamp,
+            "departments": roster.department_counts(),
+        }
 
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 的命名约定
         parsed = urllib.parse.urlparse(self.path)
@@ -441,12 +445,18 @@ class RegistryHandler(BaseHTTPRequestHandler):
             else "<span class='btn off'>库软件包暂未放好</span>"
         )
         roster_state = self._roster_state()
-        roster_block = (
-            f"部门授权名单已发布：{roster_state['count']} 人（更新于 {html.escape(roster_state['updated'])}）"
-            f" · <a href='/roster.csv'>下载名单</a>"
-            if roster_state
-            else "部门授权名单还没发布（库主人发布后，各库可一键拉取）"
-        )
+        if roster_state:
+            dept_text = "、".join(
+                f"{html.escape(name)} {count}" for name, count in roster_state["departments"][:6]
+            )
+            extra = f"：{dept_text}" if dept_text else ""
+            roster_block = (
+                f"部门授权名单已发布：{roster_state['count']} 人{extra}"
+                f"（更新于 {html.escape(roster_state['updated'])}）"
+                f" · <a href='/roster.csv'>下载名单</a>"
+            )
+        else:
+            roster_block = "部门授权名单还没发布（库主人发布后，各库可一键拉取）"
         return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -544,19 +554,20 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
             return self._error(413, "名单太大（超过 1 MB）")
         raw = self.rfile.read(length)
         try:
-            people, warnings = parse_roster(decode_roster(raw))
+            roster, warnings = parse_roster(decode_roster(raw))
         except ValueError as exc:
             return self._error(400, str(exc))
-        if not people:
+        if not roster:
             return self._error(400, "名单是空的")
         self.roster_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.roster_path.with_suffix(".tmp")
-        tmp.write_text(format_roster(people), encoding="utf-8-sig")
+        tmp.write_text(format_roster(roster), encoding="utf-8-sig")
         os.replace(tmp, self.roster_path)
         return self._json(
             {
                 "ok": True,
-                "count": len(people),
+                "count": len(roster),
+                "departments": roster.department_counts(),
                 "warnings": warnings,
                 "server_time": _now_iso(),
                 "latest_version": LATEST_VERSION,

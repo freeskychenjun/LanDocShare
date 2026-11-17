@@ -286,3 +286,40 @@ def test_people_publish_and_pull_via_cli(tmp_path: Path):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=3)
+
+
+def test_people_dept_and_export_with_department(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    cli.main(["people", "--lib-dir", str(lib), "--set", "陈鋆=10.91.1.197"])
+    assert cli.main(["people", "--lib-dir", str(lib), "--dept", "陈鋆=规划一所"]) == 0
+    assert Config.load(lib).people_departments == {"陈鋆": "规划一所"}
+
+    out = tmp_path / "out.csv"
+    cli.main(["people", "--lib-dir", str(lib), "--export", str(out)])
+    text = out.read_text(encoding="utf-8-sig")
+    assert text.splitlines()[0] == "姓名,IP,部门"
+    assert "陈鋆,10.91.1.197,规划一所" in text
+
+    cli.main(["status", "--lib-dir", str(lib)])
+    assert "1 个部门" in capsys.readouterr().out
+
+    cli.main(["people", "--lib-dir", str(lib), "--dept", "陈鋆="])
+    assert Config.load(lib).people_departments == {}
+
+
+def test_people_csv_import_keeps_departments(tmp_path: Path):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    source = tmp_path / "roster.csv"
+    source.write_text("姓名,IP,部门\n陈鋆,10.91.1.197,规划一所\n", encoding="utf-8-sig")
+    assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(source)]) == 0
+    cfg = Config.load(lib)
+    assert cfg.allow_people == {"陈鋆": "10.91.1.197"}
+    assert cfg.people_departments == {"陈鋆": "规划一所"}
+    # --replace 时以 CSV 为准（部门也跟着替换）
+    source.write_text("姓名,IP,部门\n郑泽锋,10.91.1.206,水文所\n", encoding="utf-8-sig")
+    assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(source), "--replace"]) == 0
+    cfg = Config.load(lib)
+    assert cfg.allow_people == {"郑泽锋": "10.91.1.206"}
+    assert cfg.people_departments == {"郑泽锋": "水文所"}

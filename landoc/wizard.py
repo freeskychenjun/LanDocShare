@@ -16,6 +16,7 @@ from tkinter import filedialog
 
 from landoc import probe
 from landoc.config import Config
+from landoc.roster import MAX_DEPARTMENT_CHARS
 
 SCOPE_LAN = "lan"
 SCOPE_PEOPLE = "people"
@@ -154,6 +155,7 @@ def build_config(
     *,
     acrobat_tool_dir: str | None = None,
     people: dict[str, str] | None = None,
+    departments: dict[str, str] | None = None,
     cidrs: list[str] | None = None,
 ) -> Config:
     """把向导里的选择拼成 Config（纯函数，方便测试）。"""
@@ -164,16 +166,22 @@ def build_config(
     else:
         allowed = list(cidrs or SCOPE_CIDRS.get(scope, SCOPE_CIDRS[SCOPE_LAN]))
     allow_people: dict[str, str] = {}
+    people_departments: dict[str, str] = {}
     if scope == SCOPE_PEOPLE:
         for person, address in (people or {}).items():
             if (person or "").strip():
                 allow_people[person.strip()] = (address or "").strip()
+        for person, department in (departments or {}).items():
+            clean = _clean_department(department)
+            if person in allow_people and clean:
+                people_departments[person] = clean
     return Config(
         name=clean_name,
         lib_dir=Path(lib_dir),
         folders=[Path(f) for f in folders],
         allow_cidrs=allowed,
         allow_people=allow_people,
+        people_departments=people_departments,
         acrobat_tool_dir=acrobat_tool_dir or "",
     )
 
@@ -188,8 +196,17 @@ def apply_config(target: Config, source: Config) -> Config:
     target.folders = [Path(f) for f in source.folders]
     target.allow_cidrs = list(source.allow_cidrs)
     target.allow_people = dict(source.allow_people)
+    target.people_departments = dict(source.people_departments)
     target.acrobat_tool_dir = source.acrobat_tool_dir
     return target
+
+
+def _clean_department(text: str) -> str:
+    """部门/备注只做轻校验：去掉分隔符、压缩空白、限长。"""
+    clean = " ".join((text or "").split())
+    if any(ch in clean for ch in ",;\t"):
+        clean = clean.replace(",", "").replace(";", "").replace("\t", "")
+    return clean[:MAX_DEPARTMENT_CHARS]
 
 
 def run_wizard(
@@ -315,24 +332,36 @@ def run_wizard(
     people_frame = ttk.Frame(frame)
     people_frame.grid(row=7, column=1, columnspan=2, sticky="we", pady=(4, 0))
 
-    people_tree = ttk.Treeview(people_frame, columns=("name", "ip"), show="headings", height=3)
+    people_tree = ttk.Treeview(
+        people_frame, columns=("name", "ip", "dept"), show="headings", height=3
+    )
     people_tree.heading("name", text="姓名")
     people_tree.heading("ip", text="IP（可留空）")
-    people_tree.column("name", width=110)
-    people_tree.column("ip", width=130)
+    people_tree.heading("dept", text="部门/备注")
+    people_tree.column("name", width=90)
+    people_tree.column("ip", width=120)
+    people_tree.column("dept", width=120)
     people_tree.grid(row=0, column=0, columnspan=4, sticky="we")
     if current is not None:
         for person, address in current.allow_people.items():
-            people_tree.insert("", "end", values=(person, address))
+            department = (getattr(current, "people_departments", None) or {}).get(person, "")
+            people_tree.insert("", "end", values=(person, address, department))
 
     person_name = tk.StringVar()
     person_ip = tk.StringVar()
+    person_dept = tk.StringVar()
     ttk.Label(people_frame, text="姓名").grid(row=1, column=0, sticky="w", pady=(6, 0))
-    person_name_entry = ttk.Entry(people_frame, textvariable=person_name, width=10)
+    person_name_entry = ttk.Entry(people_frame, textvariable=person_name, width=8)
     person_name_entry.grid(row=1, column=1, sticky="w", pady=(6, 0))
     ttk.Label(people_frame, text="IP").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
-    person_ip_entry = ttk.Entry(people_frame, textvariable=person_ip, width=15)
+    person_ip_entry = ttk.Entry(people_frame, textvariable=person_ip, width=12)
     person_ip_entry.grid(row=1, column=3, sticky="w", pady=(6, 0))
+    ttk.Label(people_frame, text="部门").grid(row=2, column=0, sticky="w", pady=(4, 0))
+    person_dept_entry = ttk.Entry(people_frame, textvariable=person_dept, width=8)
+    person_dept_entry.grid(row=2, column=1, sticky="w", pady=(4, 0))
+    ttk.Label(people_frame, text="（都可留空）", foreground="#888").grid(
+        row=2, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=(4, 0)
+    )
 
     def current_cidrs() -> list[str]:
         cidrs, error = parse_cidrs(cidr_var.get())
@@ -341,6 +370,7 @@ def run_wizard(
     def add_person() -> None:
         label = person_name.get().strip()
         address = person_ip.get().strip()
+        department = _clean_department(person_dept.get())
         problem = validate_person(label, address, current_cidrs() or SCOPE_CIDRS[SCOPE_PEOPLE])
         if problem:
             messagebox.showwarning("名单没加进去", problem)
@@ -349,9 +379,10 @@ def run_wizard(
         if label in existing:
             messagebox.showwarning("名单没加进去", f"“{label}”已经在名单里了")
             return
-        people_tree.insert("", "end", values=(label, address))
+        people_tree.insert("", "end", values=(label, address, department))
         person_name.set("")
         person_ip.set("")
+        person_dept.set("")
 
     def remove_person() -> None:
         for item in people_tree.selection():
@@ -359,22 +390,23 @@ def run_wizard(
 
     person_name_entry.bind("<Return>", lambda event: add_person())
     person_ip_entry.bind("<Return>", lambda event: add_person())
+    person_dept_entry.bind("<Return>", lambda event: add_person())
     add_person_button = ttk.Button(people_frame, text="加入名单", command=add_person)
-    add_person_button.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    add_person_button.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
     remove_person_button = ttk.Button(people_frame, text="移除选中", command=remove_person)
-    remove_person_button.grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
+    remove_person_button.grid(row=3, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
     def import_csv() -> None:
-        from landoc.people import load_people_csv, merge_people
+        from landoc.people import load_people_table
 
         path = filedialog.askopenfilename(
-            title="导入名单（CSV：姓名,IP）",
+            title="导入名单（CSV：姓名,IP,部门）",
             filetypes=[("CSV 名单", "*.csv"), ("所有文件", "*.*")],
         )
         if not path:
             return
         try:
-            incoming, warnings = load_people_csv(Path(path))
+            incoming, departments, warnings = load_people_table(Path(path))
         except (OSError, ValueError) as exc:
             messagebox.showwarning("名单没导入", str(exc))
             return
@@ -382,20 +414,22 @@ def run_wizard(
             str(people_tree.item(item, "values")[0]).strip(): item
             for item in people_tree.get_children()
         }
-        _, notes = merge_people({}, incoming)
         for name, address in incoming.items():
+            values = (name, address, departments.get(name, ""))
             if name in existing:
-                people_tree.item(existing[name], values=(name, address))
+                people_tree.item(existing[name], values=values)
             else:
-                people_tree.insert("", "end", values=(name, address))
+                people_tree.insert("", "end", values=values)
         extra = f"（{len(warnings)} 条提示）" if warnings else ""
+        dept_count = len({*departments.values()}) if departments else 0
+        dept_note = f"，{dept_count} 个部门" if dept_count else ""
         messagebox.showinfo(
             "名单已导入",
-            f"共 {len(incoming)} 人{extra}\n" + "\n".join(notes[:3]) + "\n\n选「仅指定名单」后保存才生效。",
+            f"共 {len(incoming)} 人{dept_note}{extra}\n\n选「仅指定名单」后保存才生效。",
         )
 
     import_button = ttk.Button(people_frame, text="从 CSV 导入…", command=import_csv)
-    import_button.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    import_button.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
     def sync_people_state() -> None:
         enabled = scope_var.get() == SCOPE_PEOPLE
@@ -403,6 +437,7 @@ def run_wizard(
         for widget in (
             person_name_entry,
             person_ip_entry,
+            person_dept_entry,
             add_person_button,
             remove_person_button,
             import_button,
@@ -439,10 +474,15 @@ def run_wizard(
             messagebox.showwarning("还没选文件夹", "至少选一个要共享的文件夹。")
             return
         people: dict[str, str] = {}
+        departments: dict[str, str] = {}
         if scope_var.get() == SCOPE_PEOPLE:
             for item in people_tree.get_children():
-                person, address = people_tree.item(item, "values")
-                people[str(person).strip()] = str(address).strip()
+                person, address, department = people_tree.item(item, "values")
+                clean_person = str(person).strip()
+                people[clean_person] = str(address).strip()
+                clean_dept = _clean_department(str(department))
+                if clean_dept:
+                    departments[clean_person] = clean_dept
             if not people:
                 messagebox.showwarning(
                     "名单是空的", "选了“仅指定名单”，但一个人都没加——这样谁都查不了。"
@@ -462,6 +502,7 @@ def run_wizard(
             lib_dir,
             acrobat_tool_dir=str(tool) if tool else "",
             people=people,
+            departments=departments,
             cidrs=cidrs,
         )
         root.destroy()

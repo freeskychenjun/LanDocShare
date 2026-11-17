@@ -200,35 +200,40 @@ def _people_summary(cfg) -> str:
     if not people:
         return "（未启用：允许网段内谁都能查）"
     with_ip = sum(1 for ip in people.values() if str(ip or "").strip())
+    departments = getattr(cfg, "people_departments", None) or {}
+    depts = len({str(v).strip() for v in departments.values() if str(v or "").strip()})
+    extra = f"，{depts} 个部门" if depts else ""
     if with_ip == len(people):
-        return f"{len(people)} 人，按 IP 放行（姓名仅备注）"
-    return f"{len(people)} 人，按 IP 放行；其中 {len(people) - with_ip} 人没登记 IP、需报姓名"
+        return f"{len(people)} 人，按 IP 放行（姓名仅备注{extra}）"
+    return f"{len(people)} 人，按 IP 放行{extra}；其中 {len(people) - with_ip} 人没登记 IP、需报姓名"
 
 
 def _cmd_people(args) -> int:
     from landoc import roster
-    from landoc.people import dump_people_csv, load_people_csv, merge_people
+    from landoc.people import load_people_table
 
     cfg = Config.load(Path(args.lib_dir))
-    current = dict(cfg.allow_people)
+    book = roster.Roster.from_config(cfg)
     changed = False
 
     if args.csv:
         try:
-            incoming, warnings = load_people_csv(Path(args.csv))
+            people, departments, warnings = load_people_table(Path(args.csv))
         except (OSError, ValueError) as exc:
             print(f"[错误] 读不了名单：{exc}", file=sys.stderr)
             return 2
         for warning in warnings:
             print(f"[提示] {warning}")
-        current, notes = merge_people(current, incoming, replace=args.replace)
-        for note in notes:
-            print(f"[名单] {note}")
+        book, note = roster.apply_pull(
+            book, roster.Roster(people, departments), replace=args.replace, origin="CSV"
+        )
+        print(f"[名单] {note}")
         changed = True
 
     if args.remove:
-        if args.remove in current:
-            current.pop(args.remove)
+        if args.remove in book.people:
+            book.people.pop(args.remove)
+            book.departments.pop(args.remove, None)
             print(f"[名单] 移除 {args.remove}")
             changed = True
         else:
@@ -241,17 +246,46 @@ def _cmd_people(args) -> int:
             print("[错误] --set 要写成 姓名=IP", file=sys.stderr)
             return 2
         try:
-            current[name] = _clean_person_ip(ip)
+            _name, clean_ip, dept = roster.validate_entry(
+                name, ip, book.departments.get(name, "")
+            )
         except ValueError as exc:
             print(f"[错误] {exc}", file=sys.stderr)
             return 2
-        print(f"[名单] {name} → {current[name] or '（不登记 IP，需报姓名）'}")
+        book.people[_name] = clean_ip
+        if dept:
+            book.departments[_name] = dept
+        print(f"[名单] {_name} → {clean_ip or '（不登记 IP，需报姓名）'}")
         changed = True
+
+    if args.dept:
+        name, _, dept = args.dept.partition("=")
+        name = name.strip()
+        if not name:
+            print("[错误] --dept 要写成 姓名=部门；部门留空表示清掉", file=sys.stderr)
+            return 2
+        if name not in book.people:
+            print(f"[提示] 名单里没有 {name}；先用 --set 或 --csv 把人加进来")
+        else:
+            try:
+                _name, _ip, clean_dept = roster.validate_entry(
+                    name, book.people.get(name, ""), dept
+                )
+            except ValueError as exc:
+                print(f"[错误] {exc}", file=sys.stderr)
+                return 2
+            if clean_dept:
+                book.departments[_name] = clean_dept
+                print(f"[名单] {_name} 的部门 → {clean_dept}")
+            else:
+                book.departments.pop(_name, None)
+                print(f"[名单] 清掉 {_name} 的部门")
+            changed = True
 
     if args.pull is not None:
         try:
             _text, incoming = roster.fetch_roster(cfg.registry_url or args.pull)
-            current, note = roster.apply_pull(current, incoming, replace=args.replace)
+            book, note = roster.apply_pull(book, incoming, replace=args.replace)
             print(f"[拉取] {note}")
             changed = True
         except roster.RosterError as exc:
@@ -259,38 +293,37 @@ def _cmd_people(args) -> int:
             return 2
 
     if changed:
-        cfg.allow_people = current
+        book.to_config(cfg)
         cfg.save()
 
     if args.publish is not None:
         try:
-            payload = roster.publish_roster(cfg.registry_url or args.publish, dict(current))
+            payload = roster.publish_roster(cfg.registry_url or args.publish, book.copy())
         except roster.RosterError as exc:
             print(f"[错误] {exc}", file=sys.stderr)
             return 2
         print(f"[发布] 已发布 {payload.get('count', '?')} 人到 {cfg.registry_url or args.publish}")
 
     if args.export:
-        Path(args.export).write_text(dump_people_csv(current), encoding="utf-8-sig")
-        print(f"[导出] {args.export}（{len(current)} 人）")
+        from landoc.people import dump_people_csv
 
-    if not current:
+        Path(args.export).write_text(
+            dump_people_csv(book.people, book.departments), encoding="utf-8-sig"
+        )
+        print(f"[导出] {args.export}（{len(book)} 人）")
+
+    if not book:
         print("名单为空：允许网段内谁都能查。")
         return 0
-    print(f"共 {len(current)} 人（按 IP 授权，姓名只作备注）：")
-    for name, ip in current.items():
-        print(f"  {(ip or '—').ljust(16)} {name}")
+    counts = book.department_counts()
+    dept_line = "、".join(f"{name} {count}" for name, count in counts) if counts else ""
+    print(f"共 {len(book)} 人（按 IP 授权，姓名只作备注）：")
+    for name, ip, dept in roster.sorted_entries(book):
+        print(f"  {(ip or '—').ljust(16)} {name.ljust(8)} {dept or ''}")
+    if dept_line:
+        print(f"部门分布：{dept_line}")
     print("改动即时生效：下一请求就按新名单校验（服务不用重启）。")
     return 0
-
-
-def _clean_person_ip(raw: str) -> str:
-    import ipaddress
-
-    text = (raw or "").strip()
-    if not text:
-        return ""
-    return str(ipaddress.ip_address(text))
 
 
 def _lan_ip() -> str:
@@ -363,11 +396,14 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--lib-dir", required=True)
     status.set_defaults(func=_cmd_status)
 
-    people_cmd = sub.add_parser("people", help="查看/维护允许名单（姓名 → IP）")
+    people_cmd = sub.add_parser("people", help="查看/维护允许名单（姓名 → IP → 部门）")
     people_cmd.add_argument("--lib-dir", required=True)
-    people_cmd.add_argument("--csv", help="从 CSV 导入名单（列：姓名,IP，可有表头）")
-    people_cmd.add_argument("--replace", action="store_true", help="以 CSV 为准整体替换，而不是合并")
+    people_cmd.add_argument("--csv", help="从 CSV 导入名单（列：姓名,IP,部门，部门可省，可有表头）")
+    people_cmd.add_argument("--replace", action="store_true", help="以 CSV/中心为准整体替换，而不是合并")
     people_cmd.add_argument("--set", metavar="姓名=IP", help="新增/修改一条；IP 留空表示必须报姓名")
+    people_cmd.add_argument(
+        "--dept", metavar="姓名=部门", help="给某人标部门/备注（部门留空表示清掉）"
+    )
     people_cmd.add_argument("--remove", metavar="姓名", help="删除一条")
     people_cmd.add_argument("--export", metavar="PATH", help="导出成 CSV（以后给客户端分发）")
     people_cmd.add_argument(

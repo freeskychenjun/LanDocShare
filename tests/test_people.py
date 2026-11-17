@@ -9,6 +9,7 @@ from landoc.people import (
     load_people_csv,
     merge_people,
     parse_people_csv,
+    parse_people_table,
 )
 
 
@@ -66,3 +67,30 @@ def test_merge_replace_follows_incoming_only():
     )
     assert merged == {"陈鋆": "10.91.1.197", "杨欢": "10.91.5.238"}
     assert any("移除 1 人" in note for note in notes)
+
+
+def test_parse_people_table_reads_department_column():
+    text = "姓名,IP,部门\n陈鋆,10.91.1.197,规划一所\n郑泽锋,10.91.1.206,水文所\n老王,,\n"
+    people, departments, warnings = parse_people_table(text)
+    assert people == {"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206", "老王": ""}
+    assert departments == {"陈鋆": "规划一所", "郑泽锋": "水文所"}
+    assert warnings == []
+
+
+def test_dump_people_csv_adds_department_only_when_present():
+    two = dump_people_csv({"陈鋆": "10.91.1.197"})
+    assert two.splitlines()[0] == "姓名,IP"
+
+    three = dump_people_csv({"陈鋆": "10.91.1.197"}, {"陈鋆": "规划一所"})
+    assert three.splitlines()[0] == "姓名,IP,部门"
+    assert "陈鋆,10.91.1.197,规划一所" in three
+
+
+def test_people_csv_roundtrip_keeps_departments():
+    people = {"陈鋆": "10.91.1.197", "老王": ""}
+    departments = {"陈鋆": "规划一所"}
+    again_people, again_departments, _ = parse_people_table(
+        dump_people_csv(people, departments)
+    )
+    assert again_people == people
+    assert again_departments == departments

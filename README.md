@@ -123,14 +123,17 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip
 
 - **按 IP 放行，姓名只作备注**：来源 IP 命中名单 → 放行，审计日志里记那条的姓名；姓名对不上 IP 也不会拒（除非那人专门登记了 IP）。
 - **IP 留空 = 这个人要报姓名才放行**（给 IP 会变的人用）；`127.0.0.1` 永远放行，本机调试不会被自己挡住。
-- 界面里还能 **导入 CSV / 导出 CSV…**，双击一行就能改；名单人数会实时反映到状态窗口的"共享范围"。
-- **从中心拉取… / 发布到中心**：库主人把全部门名单发布到登记中心（`POST /roster`，**只接受中心所在那台机器**，同事改不了全院名单），其他库在窗口里点"从中心拉取…"就能拿到，选合并（同名以中心为准）或整体替换。中心把它存成 `<state-dir>/roster.csv`，说明页会显示"部门授权名单已发布：N 人"，也提供 `GET /roster.csv` 直接下载。
+- **部门 / 备注列**（`Config.people_departments`，`{姓名: 部门}`）：只用于分组查看，不参与授权。表格按部门聚在一起、部门内按 IP 排序，没填部门的沉底；窗口里能直接给某人填"规划一所""水文所"这类简称，也可在 CSV 的第三列带上。状态窗口和命令行会显示"6 个部门"这种统计。
+- 界面里还能 **导入 CSV / 导出 CSV…**（列：`姓名,IP,部门`，部门可省），双击一行就能改；名单人数会实时反映到状态窗口的"共享范围"。
+- **从中心拉取… / 发布到中心**：库主人把全部门名单发布到登记中心（`POST /roster`，**只接受中心所在那台机器**，同事改不了全院名单），其他库在窗口里点"从中心拉取…"就能拿到，选合并（同名以中心为准）或整体替换。中心把它存成 `<state-dir>/roster.csv`，说明页会显示"部门授权名单已发布：37 人：规划一所 12、水文所 8…"，也提供 `GET /roster.csv` 直接下载。
 
 命令行等价物（脚本/批量用）：
 
 ```bash
-python -m landoc.cli people --lib-dir D:\MyLib --pull      # 从 config 里的 registry_url 拉取
-python -m landoc.cli people --lib-dir D:\MyLib --publish   # 发布到中心（同样只认中心那台机器）
+python -m landoc.cli people --lib-dir D:\MyLib --pull                # 从 config 里的 registry_url 拉取
+python -m landoc.cli people --lib-dir D:\MyLib --publish             # 发布到中心（同样只认中心那台机器）
+python -m landoc.cli people --lib-dir D:\MyLib --dept 陈鋆=规划一所    # 给某人标部门（部门留空 = 清掉）
+python -m landoc.cli people --lib-dir D:\MyLib                       # 查看（按部门分组、末尾给部门分布）
 ```
 
 ## 客户端 skill（`skill/lan-lib-search/`）

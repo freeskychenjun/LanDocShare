@@ -18,7 +18,8 @@ class Config:
     """一个资料库的配置。
 
     folders 是库主人手动多选的共享目录；allow_cidrs 是允许访问的来源网段，
-    默认只对规划院内网开放；allow_people 是可选叠加的"姓名 → IP"名单。
+    默认只对规划院内网开放；allow_people 是可选叠加的"姓名 → IP"名单；
+    people_departments 是同一批人的"姓名 → 部门/备注"，只用于分组查看，不参与授权。
 
     store_content / render_md 是"收紧共享"的两个隐私开关（设计 §6.6，默认都开）：
     - store_content=True 全文进索引；False 只存前 `snippet_only_chars` 字，检索与片段都只在这段里命中；
@@ -38,6 +39,7 @@ class Config:
     folders: list[Path] = field(default_factory=list)
     allow_cidrs: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOW_CIDRS))
     allow_people: dict[str, str] = field(default_factory=dict)
+    people_departments: dict[str, str] = field(default_factory=dict)
     port: int = 8766
     registry_url: str = ""
     snippet_tokens: int = 48

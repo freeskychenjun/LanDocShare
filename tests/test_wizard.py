@@ -137,3 +137,55 @@ def test_apply_config_copies_people(tmp_path):
     wizard.apply_config(target, source)
     assert target.allow_people == {"陈鋆": "10.91.1.197"}
     assert target.allow_cidrs == ["10.91.0.0/16"]
+
+
+def test_build_config_keeps_departments_for_people_only(tmp_path):
+    cfg = build_config(
+        "库",
+        [tmp_path],
+        SCOPE_PEOPLE,
+        tmp_path / "lib",
+        people={"陈鋆": "10.91.1.197", "老王": ""},
+        departments={"陈鋆": "规划一所", "不相干的人": "水文所"},
+    )
+    assert cfg.people_departments == {"陈鋆": "规划一所"}
+
+
+def test_apply_config_copies_departments(tmp_path):
+    source = build_config(
+        "库",
+        [tmp_path],
+        SCOPE_PEOPLE,
+        tmp_path / "lib",
+        people={"陈鋆": "10.91.1.197"},
+        departments={"陈鋆": "规划一所"},
+    )
+    target = Config(name="旧", lib_dir=tmp_path / "old")
+    apply_config(target, source)
+    assert target.people_departments == {"陈鋆": "规划一所"}
+
+
+def test_build_config_keeps_departments_for_people_only(tmp_path):
+    cfg = wizard.build_config(
+        "库",
+        [tmp_path],
+        wizard.SCOPE_PEOPLE,
+        tmp_path / "lib",
+        people={"陈鋆": "10.91.1.197", "老王": ""},
+        departments={"陈鋆": "规划一所", "不相干的人": "水文所"},
+    )
+    assert cfg.people_departments == {"陈鋆": "规划一所"}
+
+
+def test_apply_config_copies_departments(tmp_path):
+    source = wizard.build_config(
+        "库",
+        [tmp_path],
+        wizard.SCOPE_PEOPLE,
+        tmp_path / "lib",
+        people={"陈鋆": "10.91.1.197"},
+        departments={"陈鋆": "规划一所"},
+    )
+    target = wizard.Config(name="旧", lib_dir=tmp_path / "old")
+    wizard.apply_config(target, source)
+    assert target.people_departments == {"陈鋆": "规划一所"}
