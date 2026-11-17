@@ -269,7 +269,7 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 
 | 编号 | 要验证什么 | 验收标准 |
 |---|---|---|
-| S1 | PyInstaller 在 Python 3.14 上打包可用（含 `win32com`、`jieba` 词典、`pymupdf`、`pystray`） | 打包后的 exe 双击能跑；能 COM 转换一份加密 docx 并写出 md；托盘图标出现 |
+| S1 | PyInstaller 在 Python 3.14 上打包可用（含 `win32com`、`jieba` 词典、`pymupdf`、`pystray`） | ✅ **已完成**（2026-11-17）：`packaging/LanDocShare.spec` onedir 打包 173 MB；打包后的 `LanDocShare-debug.exe` 能 `status`、能 COM 转换加密 docx（"乐平"报告 35,919 字 / 51 KB md）、`--headless` 起服务后 `/`、`/api/health`、`/api/search`、`/api/tables` 全通；托盘图标出现在通知区 |
 | S2 | 装了 Adobe Acrobat 的机器上，PDF 文本如何进入 python | ✅ **已完成**（2026-11-17，本机 Acrobat DC）：`AcroExch.PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、文本干净、无临时明文副本；已在 `pdf_conv._acrobat_text` 实现并有真机用例 |
 | S3 | Word 2019 打开加密 PDF 的稳定性（第 3.4 的表里那条 ⚠） | 无人工点击前提下完成转换、无残留对话框、文本可用；否则明确记录"不作为产品路径" |
 | S4 | 非管理员身份下防火墙规则失败时的降级体验 | 提示清晰、可一键复制命令、服务仍可本机自测 |

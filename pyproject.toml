@@ -9,8 +9,14 @@ dependencies = [
     "python-pptx",
     "pymupdf",
     "pywin32",
+    "pystray",
+    "Pillow",
     "pytest",
 ]
+
+[project.optional-dependencies]
+# 打包用：只有出安装包的那台机器需要
+build = ["pyinstaller>=6.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

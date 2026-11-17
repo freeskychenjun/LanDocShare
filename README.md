@@ -6,7 +6,7 @@
 - 设计：`docs/superpowers/specs/2026-11-16-lan-personal-library-design.md`
 - 计划：`docs/superpowers/plans/2026-11-16-lan-library-core.md`
 
-本仓库只含一期核心（转换 + 索引 + 检索服务）。托盘程序、开机自启、PyInstaller 打包、登记中心（registry）、客户端技能 `lan-lib-search` 属于二期。
+本仓库含一期核心（转换 + 索引 + 检索服务）和二期第一批：托盘程序、开机自启、空闲门控、PyInstaller 打包。登记中心（registry）与客户端技能 `lan-lib-search` 还没做。
 
 ## 快速开始
 
@@ -52,6 +52,23 @@ python -m landoc init --lib-dir D:\MyLib --name "我的资料库" --no-render-md
 本机的取舍是**召回优先、外泄控制放松**，所以 `snippet_only_chars` 默认给足 20000 字，多数简报/汇报/规程可整篇留下；真要收紧再往下调。但要知道这开关换的正是召回：截断之外的正文搜不到、表格也可能只在 md 副本里完整（`--no-render-md` 时以正文为准）。
 
 改完开关重跑 `convert` 就会按新策略收紧已有文档；把 `--render-md` 打开再跑会补回副本。
+
+## 托盘与打包（P1）
+
+```bash
+# 源码方式跑托盘（调参时用）
+python -m landoc.tray --lib-dir D:\MyLib
+
+# 出包（onedir；产物 dist\LanDocShare\LanDocShare.exe，另有 -debug.exe 带控制台）
+python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
+```
+
+双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的页面打开。托盘菜单：状态 / 打开库主页 / 立即更新 / 暂停共享 / 权限设置 / 开机自启 / 查看日志 / 退出。
+
+- **单实例**：命名互斥量 `Local\LanDocShare-single-instance`。
+- **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
+- **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`，双击回落 `D:\MyLib` 或开向导。
+- **包体**：约 175 MB（onedir）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
 
 ## 关键机制（都来自实测，别按直觉改）
 
@@ -99,4 +116,9 @@ landoc/
   index.py         FTS5 索引（trigram + 短查询兜底 + 表格抽取）
   server.py        只读检索服务（CIDR 权限 / 限流 / 审计）
   cli.py           命令行入口
+  app.py           托盘背后的调度：起服务 + 空闲时增量转换 + 暂停/恢复共享
+  idle.py          空闲判定（GetLastInputInfo / 锁屏检测）
+  autostart.py     开机自启（HKCU Run 键）
+  wizard.py        建库向导（tkinter 单屏）
+  tray.py          托盘入口 + 单实例互斥量（也是打包入口）
 ```
