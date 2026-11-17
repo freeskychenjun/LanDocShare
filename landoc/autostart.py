@@ -10,11 +10,14 @@ VALUE_NAME = "LanDocShare"
 
 
 def command_line() -> str:
-    """打包后就是 exe 自己；源码运行时用 `python -m landoc.tray`。"""
+    """打包后就是 exe 自己；源码运行时用 `python -m landoc.tray`。
+
+    带 `--autostart`：开机自启时不自动弹浏览器，只在托盘待着（否则每次开机都抢一个标签页）。
+    """
     exe = sys.executable
     if getattr(sys, "frozen", False):
-        return f'"{exe}"'
-    return f'"{exe}" -m landoc.tray'
+        return f'"{exe}" --autostart'
+    return f'"{exe}" -m landoc.tray --autostart'
 
 
 def is_enabled() -> bool:

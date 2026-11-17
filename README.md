@@ -65,6 +65,9 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 
 双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的页面打开。托盘菜单：状态 / 打开库主页 / 立即更新 / 暂停共享 / 权限设置 / 开机自启 / 查看日志 / 退出。
 
+- **没有主窗口**：界面就是浏览器里的检索页。所以启动后会主动打开一次页面（开机自启的 `--autostart` 模式不抢浏览器，只驻留托盘），并在通知区弹一条"已在托盘运行"的提示。
+- Win11 会把新图标收进任务栏的 `^` 溢出区：点开 `^`，把纸页图标拖到任务栏上就常驻了。
+
 - **单实例**：命名互斥量 `Local\LanDocShare-single-instance`。
 - **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
 - **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`，双击回落 `D:\MyLib` 或开向导。

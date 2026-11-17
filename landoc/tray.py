@@ -72,9 +72,10 @@ def make_icon_image(size: int = 64) -> Image.Image:
 
 
 class TrayApp:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, *, open_page_on_start: bool = True) -> None:
         self.cfg = cfg
         self.icon = None
+        self.open_page_on_start = open_page_on_start
         self.app = LibraryApp(
             cfg, on_status=self._on_status, on_notify=self._on_notify
         )
@@ -162,7 +163,19 @@ class TrayApp:
             self._menu(),
         )
         self.app.start()
+        # 托盘没有主窗口，不主动给个东西的话用户会以为没启动：第一次开页 + 一条气泡
+        if self.open_page_on_start:
+            threading.Timer(0.5, self._open_page).start()
+        threading.Timer(1.5, self._announce).start()
         self.icon.run()
+
+    def _announce(self) -> None:
+        if self.icon is None:
+            return
+        try:
+            self.icon.notify("已在托盘运行；双击图标打开检索页", "LanDocShare")
+        except Exception:  # noqa: BLE001 - 气泡被系统关掉也不影响使用
+            pass
 
 
 def _existing_port(cfg: Config) -> int:
@@ -219,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="landoc-tray", description="LanDocShare 托盘程序")
     parser.add_argument("--lib-dir", default=None, help="库目录（默认用上次的库）")
     parser.add_argument("--wizard", action="store_true", help="强制重开建库向导")
+    parser.add_argument(
+        "--autostart", action="store_true", help="开机自启模式：只驻留托盘，不自动打开页面"
+    )
     parser.add_argument("--headless", action="store_true", help="不显示托盘，只起服务与调度（排错用）")
     args = parser.parse_args(argv)
 
@@ -254,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         webbrowser.open(url)
         return 0
 
-    TrayApp(cfg).run()
+    TrayApp(cfg, open_page_on_start=not args.autostart).run()
     return 0
 
 

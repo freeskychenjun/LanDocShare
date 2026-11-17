@@ -42,10 +42,10 @@ def test_set_enabled_uses_flag(run_key):
 def test_command_line_for_frozen_exe(monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", r"C:\Apps\LanDocShare\LanDocShare.exe")
-    assert autostart.command_line() == r'"C:\Apps\LanDocShare\LanDocShare.exe"'
+    assert autostart.command_line() == r'"C:\Apps\LanDocShare\LanDocShare.exe" --autostart'
 
 
 def test_command_line_for_source_run(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.setattr(sys, "executable", r"C:\Python314\python.exe")
-    assert autostart.command_line() == r'"C:\Python314\python.exe" -m landoc.tray'
+    assert autostart.command_line() == r'"C:\Python314\python.exe" -m landoc.tray --autostart'
