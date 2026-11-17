@@ -15,6 +15,8 @@ datas = [
     (str(ROOT / "landoc" / "web" / "index.html"), "landoc/web"),
     # 状态窗口标题栏要用它
     (str(ROOT / "packaging" / "landoc.ico"), "landoc"),
+    # 登记中心的 /skill.zip 现场打包要用这份模板（设计 §9 分发）
+    (str(ROOT / "skill" / "lan-lib-search"), "skill/lan-lib-search"),
 ]
 # jieba 的词典是数据文件，不显式收进来打包后就分词失败
 datas += collect_data_files("jieba")

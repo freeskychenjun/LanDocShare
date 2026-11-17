@@ -6,7 +6,7 @@
 - 设计：`docs/superpowers/specs/2026-11-16-lan-personal-library-design.md`
 - 计划：`docs/superpowers/plans/2026-11-16-lan-library-core.md`
 
-本仓库含一期核心（转换 + 索引 + 检索服务）和二期第一批：托盘程序、开机自启、空闲门控、PyInstaller 打包。登记中心（registry）与客户端技能 `lan-lib-search` 还没做。
+本仓库含一期核心（转换 + 索引 + 检索服务）和二期：托盘程序、开机自启、空闲门控、PyInstaller 打包、登记中心（registry，8767）、客户端技能 `lan-lib-search`，以及 `http://<中心>:8767/` 的一页式分发（下载库软件 / 下载写好地址的 skill 包）。
 
 ## 快速开始
 
@@ -98,6 +98,24 @@ python -m landoc.cli init --lib-dir D:\MyLib --name 陈鋆的资料库 --folder 
 - 数据落盘 `~/.landoc-registry/registry.json`（`--state-dir` 可改，原子写），重启不丢。
 - 开机自启：`LanDocShare.exe registry --install-autostart`（写 `HKCU\...\Run` 的 `LanDocShare-registry` 值，不需要管理员；`--remove-autostart` 撤销）。它与库软件自己的自启值是两条，互不影响。
 - 只需要元数据，中心挂了不影响各库自身检索。
+
+## 分发（P2，`/` 一页装完）
+
+登记中心同时是**分发入口**：同事打开 `http://10.91.1.197:8767/` 就能下载，不用谁手工发文件、填地址。
+
+```bash
+# 1) 打包库软件 zip（PyInstaller 之后跑一次；产物默认 distribution/LanDocShare.zip）
+python packaging/make_package.py
+
+# 2) 起中心时告诉它包在哪（不给就在 exe 同目录、distribution/ 下自动找）
+LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip
+# 公网/DNS 场景可加 --advertise http://landoc.example:8767，默认按请求 Host 推断
+```
+
+- `GET /`：说明页（三步上手 + 在线库表 + 两个下载按钮）。
+- `GET /skill.zip`：**现场生成**客户端 skill 包，里面 `scripts/config.json` 写好了本中心地址——同事解压到 skills 目录即可用，无需配置；`query.py` 读配置的顺序是「环境变量 > 用户目录 > 包内」。
+- `GET /download`：流式发库软件 zip（不整包读内存）；没放包时返回 404 + 中文提示，说明页上也显示"暂未放好"而不是死链。
+- 升级提示：`/libraries` 带 `latest_version`，每个库带自己的 `version`；`query.py libs` 会把落后的库列一行（"N 个库版本落后，最新 0.2.0：陈鋆、老王"）。
 
 ## 客户端 skill（`skill/lan-lib-search/`）
 

@@ -36,6 +36,9 @@ TAKE = 20
 TIMEOUT = 2.0
 WORKERS = 12
 
+# 中心在 /libraries 里告诉我们"最新版本是多少"，用来提示哪些库该升级
+_LATEST: dict[str, str] = {"version": ""}
+
 
 # ---------------------------------------------------------------- 位置与配置
 def script_dir() -> Path:
@@ -77,6 +80,7 @@ def fetch_libraries() -> tuple[list[dict], str]:
     try:
         payload = _get_json(registry_url() + "/libraries", timeout=3.0)
         libraries = payload.get("libraries", [])
+        _LATEST["version"] = str(payload.get("latest_version") or "")
         cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return libraries, "registry"
     except (OSError, ValueError, urllib.error.URLError):
@@ -86,10 +90,23 @@ def fetch_libraries() -> tuple[list[dict], str]:
     except (OSError, ValueError):
         return [], "none"
     libraries = cached.get("libraries", [])
+    _LATEST["version"] = str(cached.get("latest_version") or "")
     for lib in libraries:  # 缓存里的"在线"会过期，逐库探活一次
         if lib.get("online", True):
             lib["online"] = _health_ok(lib.get("url", ""))
     return libraries, "cache+health"
+
+
+def upgrade_note(libraries: list[dict]) -> str:
+    """哪些库的版本比中心公布的最新版旧 —— 一行提示，不打断查询。"""
+    latest = _LATEST.get("version") or ""
+    if not latest:
+        return ""
+    stale = [lib for lib in libraries if lib.get("version") and lib["version"] != latest]
+    if not stale:
+        return ""
+    names = "、".join(sorted({str(lib.get("name") or lib.get("ip") or "?") for lib in stale}))
+    return f"（{len(stale)} 个库版本落后，最新 {latest}：{names}；提醒库主人升级）"
 
 
 def _health_ok(url: str, timeout: float = 1.5) -> bool:
@@ -205,6 +222,9 @@ def print_libraries(libraries: list[dict], source: str) -> None:
             age_text = "，已离线"
         print(f"  {mark} {lib.get('name') or '未命名'} · {lib.get('lib_name', '')} · {lib.get('doc_count', 0)} 篇{age_text}")
         print(f"     {lib.get('url', '')}")
+    note = upgrade_note(libraries)
+    if note:
+        print(note)
 
 
 def print_results(query: str, merged: list[dict], found: list[dict], libraries: list[dict]) -> None:
@@ -239,7 +259,13 @@ def print_results(query: str, merged: list[dict], found: list[dict], libraries: 
 def cmd_libs(args) -> int:
     libraries, source = fetch_libraries()
     if args.json:
-        print(json.dumps({"source": source, "libraries": libraries}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"source": source, "latest_version": _LATEST.get("version", ""), "libraries": libraries},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     else:
         print_libraries(libraries, source)
     return 0 if libraries else 3

@@ -357,6 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
     registry_cmd.add_argument("--port", type=int, default=None, help="默认 8767")
     registry_cmd.add_argument("--state-dir", default=None, help="registry.json 放哪，默认 ~/.landoc-registry")
     registry_cmd.add_argument("--allow-cidrs", default=None, help="允许来源网段，逗号分隔（默认 10.91.0.0/16）")
+    registry_cmd.add_argument("--package-zip", default=None, help="库软件 zip 路径（/download 用）")
+    registry_cmd.add_argument("--advertise", default=None, help="对外公布的中心地址，默认按请求 Host 推断")
     registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run）后退出")
     registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
     registry_cmd.set_defaults(func=_cmd_registry)
@@ -373,6 +375,10 @@ def _cmd_registry(args) -> int:
         argv += ["--state-dir", args.state_dir]
     if args.allow_cidrs:
         argv += ["--allow-cidrs", args.allow_cidrs]
+    if args.package_zip:
+        argv += ["--package-zip", args.package_zip]
+    if args.advertise:
+        argv += ["--advertise", args.advertise]
     if args.install_autostart:
         argv += ["--install-autostart"]
     if args.remove_autostart:

@@ -272,6 +272,12 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 - 升级：`GET /api/health` 里带 `version`；中心在 `/libraries` 响应里带回 `latest_version`；软件启动时比对，提示"有新版本，点此更新"（下载 zip → 替换目录 → 重启自身）。不做静默强制更新。
 - skill 包：由中心 `/skill.zip` 动态生成（把中心地址写进模板），同事只装一次；也可静态包 + 地址可配置。
 
+> **实施补充（2026-11-17）**：落地为登记中心的三个入口，包体与 skill 模板都不进仓库。
+> - `GET /` 改成说明页（三步上手 + 在线库表 + 下载按钮），原 JSON 说明挪到 `/api/info`；
+> - `GET /download` 流式发 `--package-zip` 指定的 zip（默认依次找 exe 同目录、仓库 `distribution/`、环境变量 `LANDOC_PACKAGE_ZIP`），未放包时 404 + 中文提示，说明页上也不给死链；打包脚本 `packaging/make_package.py` 把 `dist/LanDocShare/` 压成 `distribution/LanDocShare.zip`（`distribution/` 已 gitignore）；
+> - `GET /skill.zip` 现场读 `skill/lan-lib-search/` 模板（打包后从 `_MEIPASS/skill/lan-lib-search` 读，spec 里已 add-data），写入 `scripts/config.json = {"registry": "<本中心地址>"}`；地址优先 `--advertise`，否则取请求 `Host`，所以同事换 IP/域名访问也拿到对的地址；
+> - 升级提示只做"提示"不做自动更新：`/libraries` 的 `latest_version` 与各库 `version` 比对，`query.py libs` 打一行"N 个库版本落后"。真正替换目录仍由人来做（设计 §9 原意）。
+
 ---
 
 ## 10. 待验证（spike 清单与验收）

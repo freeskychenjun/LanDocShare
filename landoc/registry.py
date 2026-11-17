@@ -8,6 +8,13 @@
 - `GET /libraries` 在线清单（5 分钟内有心跳 = 在线；30 分钟无心跳 = 移除）；
 - `GET /health` 中心自身状态。
 
+设计 §9（分发）：
+- `GET /` 给同事一页说明：在线库清单 + 两个下载入口；
+- `GET /download` 流式发库软件 zip（`--package-zip` 指定，默认在 exe 目录/仓库 distribution/ 找）；
+- `GET /skill.zip` 现场生成客户端 skill 包，里面带写好本中心地址的 `scripts/config.json`，
+  同事解压到自己的 skills 目录就能用，不用手填地址；
+- `/api/health` 与 `/libraries` 带 version / latest_version，客户端据此提示升级。
+
 安全：只接受允许网段来源；**IP 一律取连接对端，不信客户端自报**；
 不做鉴权（内容只有元数据，泄露无害）。
 """
@@ -15,12 +22,16 @@
 from __future__ import annotations
 
 import argparse
+import html
 import ipaddress
 import json
 import os
+import shutil
+import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,6 +44,59 @@ ONLINE_TTL = 300.0  # 5 分钟内有心跳 = 在线
 FORGET_TTL = 1800.0  # 30 分钟没心跳 = 从清单里移除
 MAX_BODY = 64 * 1024
 LATEST_VERSION = __version__
+SKILL_DIR_NAME = "lan-lib-search"
+PACKAGE_NAME = "LanDocShare.zip"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def skill_root() -> Path:
+    """skill 模板目录：源码在仓库里，打包后在 _MEIPASS/skill。"""
+    frozen = getattr(sys, "frozen", False)
+    base = Path(getattr(sys, "_MEIPASS", "")) if frozen else _repo_root()
+    return base / "skill" / SKILL_DIR_NAME
+
+
+def default_package_zip() -> Path | None:
+    """库软件 zip 的候选位置：exe 同目录 → exe 上一级（onedir 的旁边）→ 仓库 distribution/。"""
+    env = os.environ.get("LANDOC_PACKAGE_ZIP")
+    if env:
+        return Path(env)
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates = [
+        exe_dir / PACKAGE_NAME,
+        exe_dir.parent / PACKAGE_NAME,
+        _repo_root() / "distribution" / PACKAGE_NAME,
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def build_skill_zip(registry_url: str) -> bytes:
+    """把 skill 模板打成一个 zip，附上写好中心地址的 config.json。"""
+    root = skill_root()
+    if not root.is_dir():
+        raise FileNotFoundError(f"skill 模板不存在：{root}")
+    import io
+
+    buffer = io.BytesIO()
+    config = json.dumps({"registry": registry_url.rstrip("/")}, ensure_ascii=False).encode("utf-8")
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            arcname = f"{SKILL_DIR_NAME}/{path.relative_to(root).as_posix()}"
+            info = zipfile.ZipInfo(arcname, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, path.read_bytes())
+        info = zipfile.ZipInfo(f"{SKILL_DIR_NAME}/scripts/config.json", date_time=(2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(info, config)
+    return buffer.getvalue()
 
 
 def _now_iso(ts: float | None = None) -> str:
@@ -159,18 +223,22 @@ def _cidr_allowed(ip: str, cidrs) -> bool:
 class RegistryHandler(BaseHTTPRequestHandler):
     store: RegistryStore = None  # type: ignore[assignment]
     allow_cidrs: list[str] = DEFAULT_CIDRS
+    package_zip: Path | None = None
+    advertise: str = ""
     server_version = "landoc-registry/0.1"
 
     def log_message(self, *args):  # 不刷 stderr，审计靠库端日志
         pass
 
     # ---- 响应 ----
-    def _send(self, code: int, body: bytes, content_type: str) -> None:
+    def _send(self, code: int, body: bytes, content_type: str, headers: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -180,8 +248,32 @@ class RegistryHandler(BaseHTTPRequestHandler):
     def _error(self, code: int, message: str) -> None:
         self._json({"error": message}, code)
 
+    def _html(self, markup: str, code: int = 200) -> None:
+        self._send(code, markup.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _send_file(self, path: Path) -> None:
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with path.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile, 256 * 1024)
+
     def _client_ip(self) -> str:
         return self.client_address[0]
+
+    def _base_url(self) -> str:
+        """同事该访问的中心地址：优先 --advertise，否则用请求的 Host。"""
+        if self.advertise:
+            return self.advertise.rstrip("/")
+        host = (self.headers.get("Host") or "").strip()
+        if host:
+            return f"http://{host}"
+        return f"http://{self._client_ip()}:{self.server.server_address[1]}"
 
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 的命名约定
         parsed = urllib.parse.urlparse(self.path)
@@ -190,12 +282,24 @@ class RegistryHandler(BaseHTTPRequestHandler):
         if not _cidr_allowed(ip, self.allow_cidrs):
             return self._error(403, "cidr not allowed")
         if route == "/":
+            return self._html(self._landing_html())
+        if route == "/api/info":
             return self._json(
                 {
                     "service": "landoc-registry",
                     "version": __version__,
+                    "latest_version": LATEST_VERSION,
                     "libraries": self.store.count(),
-                    "usage": ["POST /register", "GET /libraries", "GET /health"],
+                    "usage": [
+                        "GET /  说明页与下载入口",
+                        "GET /libraries",
+                        "GET /health",
+                        "GET /skill.zip  客户端 skill 包（带本中心地址）",
+                        "GET /download  库软件 zip",
+                        "POST /register",
+                    ],
+                    "skill_available": skill_root().is_dir(),
+                    "package_available": bool(self.package_zip and self.package_zip.is_file()),
                 }
             )
         if route == "/health":
@@ -220,7 +324,100 @@ class RegistryHandler(BaseHTTPRequestHandler):
                     "libraries": libs,
                 }
             )
+        if route == "/skill.zip":
+            try:
+                blob = build_skill_zip(self._base_url())
+            except OSError as exc:
+                return self._error(500, f"skill 打包失败：{exc}")
+            return self._send(
+                200,
+                blob,
+                "application/zip",
+                {"Content-Disposition": 'attachment; filename="lan-lib-search.zip"'},
+            )
+        if route == "/download":
+            path = self.package_zip
+            if path is None or not path.is_file():
+                return self._json(
+                    {
+                        "error": "package not available",
+                        "hint": f"库主人还没放好库软件包（{PACKAGE_NAME}）；可用 --package-zip 指定路径。",
+                    },
+                    404,
+                )
+            return self._send_file(path)
         return self._error(404, "not found")
+
+    # ---- 说明页 ----
+    def _landing_html(self) -> str:
+        base = self._base_url()
+        libs = self.store.libraries()
+        rows = []
+        for lib in libs:
+            state = "在线" if lib["online"] else "离线"
+            doc = f"{lib['doc_count']} 篇" if lib["doc_count"] else "—"
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(lib.get('name') or '未命名')}</td>"
+                f"<td>{html.escape(lib.get('url', ''))}</td>"
+                f"<td>{doc}</td>"
+                f"<td class='{'on' if lib['online'] else 'off'}'>{state}</td>"
+                "</tr>"
+            )
+        table = (
+            "<table><thead><tr><th>库主人</th><th>地址</th><th>篇数</th><th>状态</th></tr></thead><tbody>"
+            + ("".join(rows) or "<tr><td colspan='4' class='off'>还没有库登记上来</td></tr>")
+            + "</tbody></table>"
+        )
+        package_ok = bool(self.package_zip and self.package_zip.is_file())
+        package_block = (
+            "<a class='btn' href='/download'>下载库软件（zip）</a>"
+            if package_ok
+            else "<span class='btn off'>库软件包暂未放好</span>"
+        )
+        return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LanDocShare · 院内资料库登记中心</title>
+<style>
+:root{{--fg:#1f2328;--muted:#656d76;--line:#d0d7de;--bg:#f6f8fa;--accent:#1f6feb;}}
+@media (prefers-color-scheme:dark){{:root{{--fg:#e6edf3;--muted:#9198a1;--line:#30363d;--bg:#0d1117;--accent:#4493f8;}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;padding:40px 20px;font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}}
+main{{max-width:760px;margin:0 auto}}
+h1{{font-size:24px;margin:0 0 4px}}
+p.lead{{color:var(--muted);margin:0 0 24px}}
+.card{{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}}
+h2{{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.02em}}
+.btn{{display:inline-block;padding:8px 14px;border-radius:7px;background:var(--accent);color:#fff;text-decoration:none;font-size:14px}}
+.btn.off{{background:var(--line);color:var(--muted)}}
+table{{width:100%;border-collapse:collapse;font-size:14px}}
+th,td{{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}}
+th{{color:var(--muted);font-weight:600}}
+td.on{{color:#1a7f37}} td.off{{color:var(--muted)}}
+code{{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:13px}}
+ol{{margin:6px 0 0;padding-left:20px}} li{{margin:4px 0}}
+footer{{color:var(--muted);font-size:13px;margin-top:22px}}
+</style></head><body><main>
+<h1>LanDocShare · 院内资料库</h1>
+<p class="lead">每人一个资料库，只共享检索片段和表格，不提供原文下载。当前 {len(libs)} 个库，{sum(1 for l in libs if l['online'])} 个在线。</p>
+
+<div class="card"><h2>一、让同事能查到你的资料（库主人）</h2>
+<ol>
+<li>下载库软件并解压：{package_block}</li>
+<li>双击 <code>LanDocShare.exe</code>，跟着向导选一个文件夹、确认共享范围。</li>
+<li>登记中心地址已写死在软件里：<code>{html.escape(base)}</code>。启动后 60 秒内会出现在下表。</li>
+</ol></div>
+
+<div class="card"><h2>二、查全院资料（普通同事）</h2>
+<p>下载 skill 包 <a class="btn" href="/skill.zip">lan-lib-search.zip</a>，解压到自己的 skills 目录；或在 AI 助手里让它装这个 skill。之后直接问“谁那儿有玉田水库的资料”即可。</p>
+<p style="color:var(--muted);font-size:13px">包里已写好本中心地址 <code>{html.escape(base)}</code>，不用手工配置；没有 Python 的机器可以按 SKILL.md 里的 curl 办法查。</p></div>
+
+<div class="card"><h2>三、当前在线的库</h2>{table}</div>
+
+<footer>登记中心 v{html.escape(__version__)} · 5 分钟没心跳算离线 · 只收内网来源</footer>
+</main></body></html>
+"""
 
     def do_POST(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
@@ -254,11 +451,23 @@ class RegistryHandler(BaseHTTPRequestHandler):
         )
 
 
-def make_registry_server(store: RegistryStore, *, port: int = 0, allow_cidrs=None) -> ThreadingHTTPServer:
+def make_registry_server(
+    store: RegistryStore,
+    *,
+    port: int = 0,
+    allow_cidrs=None,
+    package_zip: Path | None = None,
+    advertise: str = "",
+) -> ThreadingHTTPServer:
     handler = type(
         "BoundRegistryHandler",
         (RegistryHandler,),
-        {"store": store, "allow_cidrs": list(allow_cidrs or DEFAULT_CIDRS)},
+        {
+            "store": store,
+            "allow_cidrs": list(allow_cidrs or DEFAULT_CIDRS),
+            "package_zip": Path(package_zip) if package_zip else None,
+            "advertise": advertise,
+        },
     )
     httpd = ThreadingHTTPServer(("0.0.0.0", port), handler)
     httpd.daemon_threads = True
@@ -270,6 +479,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--state-dir", default=str(Path.home() / ".landoc-registry"))
     parser.add_argument("--allow-cidrs", default=",".join(DEFAULT_CIDRS), help="允许来源网段，逗号分隔")
+    parser.add_argument("--package-zip", default=None, help="库软件 zip 的路径（默认在 exe 同目录或 distribution/ 找）")
+    parser.add_argument("--advertise", default="", help="对外公布的中心地址，如 http://10.91.1.197:8767（默认用请求 Host）")
     parser.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run），然后退出")
     parser.add_argument("--remove-autostart", action="store_true", help="删掉开机自启，然后退出")
     args = parser.parse_args(argv)
@@ -287,9 +498,18 @@ def main(argv: list[str] | None = None) -> int:
 
     cidrs = [part.strip() for part in args.allow_cidrs.split(",") if part.strip()]
     store = RegistryStore(Path(args.state_dir) / "registry.json")
-    httpd = make_registry_server(store, port=args.port, allow_cidrs=cidrs)
+    package = Path(args.package_zip) if args.package_zip else default_package_zip()
+    httpd = make_registry_server(
+        store,
+        port=args.port,
+        allow_cidrs=cidrs,
+        package_zip=package,
+        advertise=args.advertise,
+    )
     actual = httpd.server_address[1]
-    print(f"[OK] 登记中心已启动：http://0.0.0.0:{actual}/libraries （Ctrl+C 停止）")
+    print(f"[OK] 登记中心已启动：http://0.0.0.0:{actual}/ （说明页与下载入口）")
+    print(f"     库软件：{package if package and package.is_file() else '未找到（/download 会提示）'}")
+    print(f"     skill 包：{'可用' if skill_root().is_dir() else f'找不到模板 {skill_root()}'}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -100,3 +100,27 @@ def test_fetch_libraries_reports_none_without_cache(q, monkeypatch):
 def test_registry_url_env_wins(q, monkeypatch):
     monkeypatch.setenv("LANLIB_REGISTRY", "http://10.0.0.9:8767/")
     assert q.registry_url() == "http://10.0.0.9:8767"
+
+
+def test_upgrade_note_names_stale_libraries(q):
+    q._LATEST["version"] = "0.2.0"
+    libs = [
+        {"name": "陈鋆", "version": "0.1.0"},
+        {"name": "老王", "version": "0.2.0"},
+        {"name": "小李", "version": ""},  # 老版本没上报，不判定
+    ]
+    note = q.upgrade_note(libs)
+    assert "1 个库版本落后" in note and "陈鋆" in note and "老王" not in note
+
+    q._LATEST["version"] = "0.2.0"
+    assert q.upgrade_note([{"name": "老王", "version": "0.2.0"}]) == ""
+
+
+def test_script_dir_config_is_used_for_distribution(q, monkeypatch, tmp_path):
+    """分发包里 scripts/config.json 写了中心地址，用户不用手工配。"""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "config.json").write_text(json.dumps({"registry": "http://10.91.1.197:8767"}), encoding="utf-8")
+    monkeypatch.setattr(q, "script_dir", lambda: scripts)
+    assert q.load_config()["registry"] == "http://10.91.1.197:8767"
+    assert q.registry_url() == "http://10.91.1.197:8767"
