@@ -118,6 +118,27 @@ class TrayApp:
     def _toggle_share(self) -> None:
         self.app.toggle_share()
 
+    def _edit_library(self) -> None:
+        """改库名/文件夹/共享范围：向导在后台线程里开，改完当场生效。"""
+
+        def work() -> None:
+            from landoc.wizard import apply_config, run_wizard
+
+            chosen = run_wizard(self.cfg.lib_dir, save=False, current=self.cfg)
+            if chosen is None:
+                return
+            apply_config(self.cfg, chosen)
+            self.cfg.save()
+            self.app.update_now()
+            self.panel.show()
+            if self.icon is not None:
+                try:
+                    self.icon.notify("建库设置已更新；新的文件夹会在下一轮扫描时收录", "LanDocShare")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        threading.Thread(target=work, name="landoc-wizard", daemon=True).start()
+
     def _toggle_autostart(self) -> None:
         autostart.set_enabled(not autostart.is_enabled())
         if self.icon is not None:
@@ -154,6 +175,7 @@ class TrayApp:
             pystray.MenuItem("显示状态窗口", self._show_panel, default=True),
             pystray.MenuItem("打开库主页", self._open_page),
             pystray.MenuItem("立即更新", self._update_now),
+            pystray.MenuItem("修改建库设置…", self._edit_library),
             pystray.MenuItem(
                 "暂停共享", self._toggle_share, checked=lambda item: self.app.paused
             ),

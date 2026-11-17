@@ -41,3 +41,34 @@ def test_validate_folder_rejects_removable(tmp_path, monkeypatch):
 def test_validate_folder_accepts_local_fixed_drive(tmp_path, monkeypatch):
     monkeypatch.setattr(wizard, "_drive_type", lambda path: wizard.DRIVE_FIXED)
     assert wizard.validate_folder(tmp_path) is None
+
+
+def test_estimate_folders_counts_only_convertible_docs(tmp_path):
+    (tmp_path / "a.docx").write_bytes(b"x" * 100)
+    (tmp_path / "b.pdf").write_bytes(b"y" * 300)
+    (tmp_path / "note.txt").write_text("不算", encoding="utf-8")
+    estimate = wizard.estimate_folders([tmp_path])
+    assert estimate.docs == 2
+    assert estimate.size_bytes == 400
+    assert estimate.seconds > wizard._SECONDS_PER_ROUND
+    assert "2 篇" in estimate.describe()
+
+
+def test_estimate_folders_empty_folder_says_so(tmp_path):
+    estimate = wizard.estimate_folders([tmp_path])
+    assert estimate.docs == 0
+    assert "没扫到" in estimate.describe()
+
+
+def test_apply_config_keeps_storage_policy(tmp_path):
+    target = wizard.build_config("旧名", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
+    target.store_content = False
+    target.snippet_only_chars = 5000
+    source = wizard.build_config("新名", [tmp_path / "other"], wizard.SCOPE_LOCAL, tmp_path / "lib")
+    wizard.apply_config(target, source)
+    assert target.name == "新名"
+    assert target.folders == [tmp_path / "other"]
+    assert target.allow_cidrs == ["127.0.0.1"]
+    # 存储策略不归向导管，不能被重开向导冲掉
+    assert target.store_content is False
+    assert target.snippet_only_chars == 5000
