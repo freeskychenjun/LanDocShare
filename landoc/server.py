@@ -123,6 +123,47 @@ def _ip_allowed(ip: str, allow_cidrs) -> bool:
     return False
 
 
+def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | None, str | None]:
+    """名单授权：认 IP 为主，姓名只用来认人（可省）。
+
+    名单非空时三种情况：
+    - 来源 IP 命中名单里某条的 IP：直接放行，审计记那条的姓名（姓名是备注，不参与校验）；
+    - 报了姓名且该姓名登记了 IP：IP 必须一致（防冒名），否则 401；
+    - 报了姓名但该姓名没登记 IP：视为"IP 会变、必须报姓名"，放行。
+
+    返回 (审计用姓名, 拒绝原因)；拒绝原因非空表示不通过。
+    """
+    roster = {str(k).strip(): str(v or "").strip() for k, v in (people or {}).items()}
+    asked = (name or "").strip()
+    if not roster:
+        return asked or None, None
+    # 本机回环永远放行：主人自己用 127.0.0.1 调试、状态窗口自检都走这里，
+    # 否则开了名单后本机反而进不去（客户机的来源 IP 是真实网卡地址，不受影响）。
+    if ip in _LOOPBACK_IPS:
+        return asked or "本机", None
+
+    if asked:
+        if asked not in roster:
+            return asked, "name not registered"
+        expected = roster[asked]
+        if expected and expected != ip:
+            return asked, "ip mismatch for name"
+        return asked, None
+
+    for person, expected in roster.items():
+        if expected and expected == ip:
+            return person, None
+    return None, "ip not registered"
+
+
+_LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
+
+
+def _people_need_name(people) -> bool:
+    """名单里有人没登记 IP（只能靠报姓名识别）时才需要前端提示输入姓名。"""
+    return any(not str(ip or "").strip() for ip in (people or {}).values())
+
+
 class Handler(BaseHTTPRequestHandler):
     index: Index = None  # type: ignore[assignment]
     config = None
@@ -170,20 +211,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "cidr not allowed")
 
         people = getattr(self.config, "allow_people", None) or {}
-        if people:
-            name = (params.get("name") or "").strip()
-            if not name:
-                self._record(ip, None, route, 401)
-                return self._error(401, "name required")
-            if name not in people:
-                self._record(ip, name, route, 401)
-                return self._error(401, "name not registered")
-            expected = (people.get(name) or "").strip()
-            if expected and expected != ip:
-                self._record(ip, name, route, 401)
-                return self._error(401, "ip mismatch for name")
+        name, denial = authorize_person(people, ip, params.get("name"))
+        if denial:
+            self._record(ip, name, route, 401)
+            return self._error(401, denial)
 
-        name = (params.get("name") or "").strip() or None
         try:
             self._dispatch(route, params, ip, name)
         except Exception as exc:  # noqa: BLE001 - 任何异常都要变成可读错误
@@ -223,8 +255,8 @@ class Handler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "doc_count": self.index.stats()["total"],
                     "allow_cidrs": list(getattr(self.config, "allow_cidrs", []) or []),
-                    # 只暴露"要不要报姓名"，不暴露名单本身（谁在名单里是库主人的事）
-                    "name_required": bool(getattr(self.config, "allow_people", None)),
+                    # 只暴露"要不要报姓名"（名单里有没登记 IP 的人时才需要），不暴露名单本身
+                    "name_required": _people_need_name(getattr(self.config, "allow_people", None)),
                     "port": self.server.server_address[1],
                 }
             )

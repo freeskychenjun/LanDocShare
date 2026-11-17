@@ -12,6 +12,7 @@ import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from tkinter import filedialog
 
 from landoc import probe
 from landoc.config import Config
@@ -21,7 +22,7 @@ SCOPE_PEOPLE = "people"
 SCOPE_LOCAL = "local"
 SCOPE_CIDRS = {
     SCOPE_LAN: ["10.91.0.0/16"],
-    # 名单是在网段之上再叠一层：先过 10.91.0.0/16，再核"姓名 → IP"
+    # 名单是在网段之上再叠一层：先过网段，再认 IP（认不出 IP 时才看姓名）
     SCOPE_PEOPLE: ["10.91.0.0/16"],
     SCOPE_LOCAL: ["127.0.0.1"],
 }
@@ -127,6 +128,24 @@ def validate_person(name: str, ip: str, cidrs: list[str] | None = None) -> str |
     return f"{address} 不在允许的网段（{'、'.join(cidrs or [])}）里，这个人会连不上"
 
 
+def parse_cidrs(text: str) -> tuple[list[str], str | None]:
+    """把"10.91.0.0/16, 10.91.1.0/24"这类输入解析成规范网段列表。
+
+    返回 (网段列表, 错误说明)；空输入按默认网段处理。
+    """
+    raw = (text or "").replace("，", ",").replace(";", ",").replace(" ", ",")
+    parts = [part for part in (p.strip() for p in raw.split(",")) if part]
+    if not parts:
+        return list(SCOPE_CIDRS[SCOPE_LAN]), None
+    networks: list[str] = []
+    for part in parts:
+        try:
+            networks.append(str(ipaddress.ip_network(part, strict=False)))
+        except ValueError:
+            return [], f"“{part}” 不是网段（示例：10.91.0.0/16 或 10.91.1.0/24）"
+    return networks, None
+
+
 def build_config(
     name: str,
     folders: list[Path],
@@ -135,10 +154,15 @@ def build_config(
     *,
     acrobat_tool_dir: str | None = None,
     people: dict[str, str] | None = None,
+    cidrs: list[str] | None = None,
 ) -> Config:
     """把向导里的选择拼成 Config（纯函数，方便测试）。"""
     clean_name = (name or "").strip() or "我的资料库"
-    cidrs = list(SCOPE_CIDRS.get(scope, SCOPE_CIDRS[SCOPE_LAN]))
+    if scope == SCOPE_LOCAL:
+        # "仅本机"是硬语义，不接受外部网段
+        allowed = list(SCOPE_CIDRS[SCOPE_LOCAL])
+    else:
+        allowed = list(cidrs or SCOPE_CIDRS.get(scope, SCOPE_CIDRS[SCOPE_LAN]))
     allow_people: dict[str, str] = {}
     if scope == SCOPE_PEOPLE:
         for person, address in (people or {}).items():
@@ -148,7 +172,7 @@ def build_config(
         name=clean_name,
         lib_dir=Path(lib_dir),
         folders=[Path(f) for f in folders],
-        allow_cidrs=cidrs,
+        allow_cidrs=allowed,
         allow_people=allow_people,
         acrobat_tool_dir=acrobat_tool_dir or "",
     )
@@ -265,18 +289,31 @@ def run_wizard(
         elif list(current.allow_cidrs) == SCOPE_CIDRS[SCOPE_LOCAL]:
             default_scope = SCOPE_LOCAL
     scope_var = tk.StringVar(value=default_scope)
-    ttk.Radiobutton(frame, text="规划院内网 10.91.0.0/16（谁都能查）", variable=scope_var, value=SCOPE_LAN).grid(
+    ttk.Radiobutton(frame, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN).grid(
         row=3, column=1, columnspan=2, sticky="w"
     )
-    ttk.Radiobutton(frame, text="仅指定名单（姓名 + IP）", variable=scope_var, value=SCOPE_PEOPLE).grid(
+    ttk.Radiobutton(frame, text="仅指定名单（按 IP 放行，姓名仅备注）", variable=scope_var, value=SCOPE_PEOPLE).grid(
         row=4, column=1, columnspan=2, sticky="w"
     )
     ttk.Radiobutton(frame, text="仅本机", variable=scope_var, value=SCOPE_LOCAL).grid(
         row=5, column=1, columnspan=2, sticky="w"
     )
 
+    ttk.Label(frame, text="允许的网段").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    default_cidrs = "、".join(
+        current.allow_cidrs
+        if current is not None and list(current.allow_cidrs) != SCOPE_CIDRS[SCOPE_LOCAL]
+        else SCOPE_CIDRS[SCOPE_LAN]
+    )
+    cidr_var = tk.StringVar(value=default_cidrs.replace("、", ", "))
+    cidr_entry = ttk.Entry(frame, textvariable=cidr_var, width=28)
+    cidr_entry.grid(row=6, column=1, sticky="w", pady=(6, 0))
+    ttk.Label(frame, text="多个用逗号分隔", foreground="#666").grid(
+        row=6, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
+    )
+
     people_frame = ttk.Frame(frame)
-    people_frame.grid(row=6, column=1, columnspan=2, sticky="we", pady=(4, 0))
+    people_frame.grid(row=7, column=1, columnspan=2, sticky="we", pady=(4, 0))
 
     people_tree = ttk.Treeview(people_frame, columns=("name", "ip"), show="headings", height=3)
     people_tree.heading("name", text="姓名")
@@ -297,10 +334,14 @@ def run_wizard(
     person_ip_entry = ttk.Entry(people_frame, textvariable=person_ip, width=15)
     person_ip_entry.grid(row=1, column=3, sticky="w", pady=(6, 0))
 
+    def current_cidrs() -> list[str]:
+        cidrs, error = parse_cidrs(cidr_var.get())
+        return [] if error else cidrs
+
     def add_person() -> None:
         label = person_name.get().strip()
         address = person_ip.get().strip()
-        problem = validate_person(label, address, SCOPE_CIDRS[SCOPE_PEOPLE])
+        problem = validate_person(label, address, current_cidrs() or SCOPE_CIDRS[SCOPE_PEOPLE])
         if problem:
             messagebox.showwarning("名单没加进去", problem)
             return
@@ -323,6 +364,39 @@ def run_wizard(
     remove_person_button = ttk.Button(people_frame, text="移除选中", command=remove_person)
     remove_person_button.grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
+    def import_csv() -> None:
+        from landoc.people import load_people_csv, merge_people
+
+        path = filedialog.askopenfilename(
+            title="导入名单（CSV：姓名,IP）",
+            filetypes=[("CSV 名单", "*.csv"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            incoming, warnings = load_people_csv(Path(path))
+        except (OSError, ValueError) as exc:
+            messagebox.showwarning("名单没导入", str(exc))
+            return
+        existing = {
+            str(people_tree.item(item, "values")[0]).strip(): item
+            for item in people_tree.get_children()
+        }
+        _, notes = merge_people({}, incoming)
+        for name, address in incoming.items():
+            if name in existing:
+                people_tree.item(existing[name], values=(name, address))
+            else:
+                people_tree.insert("", "end", values=(name, address))
+        extra = f"（{len(warnings)} 条提示）" if warnings else ""
+        messagebox.showinfo(
+            "名单已导入",
+            f"共 {len(incoming)} 人{extra}\n" + "\n".join(notes[:3]) + "\n\n选「仅指定名单」后保存才生效。",
+        )
+
+    import_button = ttk.Button(people_frame, text="从 CSV 导入…", command=import_csv)
+    import_button.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
     def sync_people_state() -> None:
         enabled = scope_var.get() == SCOPE_PEOPLE
         state = "normal" if enabled else "disabled"
@@ -331,26 +405,32 @@ def run_wizard(
             person_ip_entry,
             add_person_button,
             remove_person_button,
+            import_button,
         ):
             widget.configure(state=state)
         people_tree.configure(selectmode="extended" if enabled else "none")
         people_hint.configure(
-            text="" if enabled else "选了“仅指定名单”才会生效；现在这份名单不会挡住任何人。"
+            text=(
+                "填了 IP 的机器打开网页就能查；没填 IP 的人（IP 会变）要报姓名才放行。"
+                if enabled
+                else "选了“仅指定名单”才会生效；现在这份名单不会挡住任何人。"
+            )
         )
+        cidr_entry.configure(state="disabled" if scope_var.get() == SCOPE_LOCAL else "normal")
 
     for radio in frame.winfo_children():
         if isinstance(radio, ttk.Radiobutton):
             radio.configure(command=sync_people_state)
 
     people_hint = ttk.Label(frame, text="", foreground="#a15c00")
-    people_hint.grid(row=7, column=1, columnspan=2, sticky="w")
+    people_hint.grid(row=8, column=1, columnspan=2, sticky="w")
 
     note = (
         "索引与 md 副本都是文档全文明文，只落在本机；\n"
         "对外只提供命中片段与表格，不提供全文或下载。"
     )
     ttk.Label(frame, text=note, foreground="#666").grid(
-        row=8, column=0, columnspan=3, sticky="w", pady=(10, 4)
+        row=9, column=0, columnspan=3, sticky="w", pady=(10, 4)
     )
 
     def confirm() -> None:
@@ -369,6 +449,12 @@ def run_wizard(
                 )
                 return
         tool = _find_acrobat_tool_dir()
+        cidrs = None
+        if scope_var.get() != SCOPE_LOCAL:
+            cidrs, cidr_error = parse_cidrs(cidr_var.get())
+            if cidr_error:
+                messagebox.showwarning("网段填得不对", cidr_error)
+                return
         result["config"] = build_config(
             name_var.get(),
             folders,
@@ -376,11 +462,12 @@ def run_wizard(
             lib_dir,
             acrobat_tool_dir=str(tool) if tool else "",
             people=people,
+            cidrs=cidrs,
         )
         root.destroy()
 
     actions = ttk.Frame(frame)
-    actions.grid(row=9, column=0, columnspan=3, sticky="e", pady=(12, 0))
+    actions.grid(row=10, column=0, columnspan=3, sticky="e", pady=(12, 0))
     ttk.Button(actions, text="取消", command=root.destroy).grid(row=0, column=0, padx=4)
     ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
         row=0, column=1

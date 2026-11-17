@@ -108,6 +108,14 @@ def _cmd_init(args) -> int:
         cfg.snippet_only_chars = args.snippet_only_chars
     if args.render_md is not None:
         cfg.render_md = args.render_md
+    if args.allow_cidrs is not None:
+        from landoc.wizard import parse_cidrs
+
+        cidrs, error = parse_cidrs(args.allow_cidrs)
+        if error:
+            print(f"[错误] {error}", file=sys.stderr)
+            return 2
+        cfg.allow_cidrs = cidrs
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
@@ -176,9 +184,89 @@ def _cmd_status(args) -> int:
     print(f"文档数：{stats['total']}")
     print(f"共享目录：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"允许网段：{', '.join(cfg.allow_cidrs)}")
+    print(f"允许名单：{_people_summary(cfg)}")
     print(f"存储策略：{_storage_policy(cfg)}")
     print(f"上次扫描：{state.get('last_scan_ts', '（从未）')}")
     return 0
+
+
+def _people_summary(cfg) -> str:
+    people = getattr(cfg, "allow_people", None) or {}
+    if not people:
+        return "（未启用：允许网段内谁都能查）"
+    with_ip = sum(1 for ip in people.values() if str(ip or "").strip())
+    if with_ip == len(people):
+        return f"{len(people)} 人，按 IP 放行（姓名仅备注）"
+    return f"{len(people)} 人，按 IP 放行；其中 {len(people) - with_ip} 人没登记 IP、需报姓名"
+
+
+def _cmd_people(args) -> int:
+    from landoc.people import dump_people_csv, load_people_csv, merge_people
+
+    cfg = Config.load(Path(args.lib_dir))
+    current = dict(cfg.allow_people)
+    changed = False
+
+    if args.csv:
+        try:
+            incoming, warnings = load_people_csv(Path(args.csv))
+        except (OSError, ValueError) as exc:
+            print(f"[错误] 读不了名单：{exc}", file=sys.stderr)
+            return 2
+        for warning in warnings:
+            print(f"[提示] {warning}")
+        current, notes = merge_people(current, incoming, replace=args.replace)
+        for note in notes:
+            print(f"[名单] {note}")
+        changed = True
+
+    if args.remove:
+        if args.remove in current:
+            current.pop(args.remove)
+            print(f"[名单] 移除 {args.remove}")
+            changed = True
+        else:
+            print(f"[提示] 名单里没有 {args.remove}")
+
+    if args.set:
+        name, _, ip = args.set.partition("=")
+        name = name.strip()
+        if not name:
+            print("[错误] --set 要写成 姓名=IP", file=sys.stderr)
+            return 2
+        try:
+            current[name] = _clean_person_ip(ip)
+        except ValueError as exc:
+            print(f"[错误] {exc}", file=sys.stderr)
+            return 2
+        print(f"[名单] {name} → {current[name] or '（不登记 IP，需报姓名）'}")
+        changed = True
+
+    if changed:
+        cfg.allow_people = current
+        cfg.save()
+
+    if args.export:
+        Path(args.export).write_text(dump_people_csv(current), encoding="utf-8-sig")
+        print(f"[导出] {args.export}（{len(current)} 人）")
+
+    if not current:
+        print("名单为空：允许网段内谁都能查。")
+        return 0
+    print(f"共 {len(current)} 人（按 IP 授权，姓名只作备注）：")
+    for name, ip in current.items():
+        print(f"  {(ip or '—').ljust(16)} {name}")
+    print("改动即时生效：下一请求就按新名单校验（服务不用重启）。")
+    return 0
+
+
+def _clean_person_ip(raw: str) -> str:
+    import ipaddress
+
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    return str(ipaddress.ip_address(text))
 
 
 def _lan_ip() -> str:
@@ -197,6 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--acrobat-tool-dir",
         help="加密 PDF 兜底工具目录（内含 acrobat.exe）；不给则自动探测已知路径",
+    )
+    init.add_argument(
+        "--allow-cidrs",
+        default=None,
+        metavar="CIDR[,CIDR…]",
+        help="允许访问的网段，逗号分隔（默认 10.91.0.0/16；想只给本院就填 10.91.1.0/24）；不给则沿用现有配置",
     )
     init.add_argument(
         "--store-content",
@@ -238,6 +332,15 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="查看库统计")
     status.add_argument("--lib-dir", required=True)
     status.set_defaults(func=_cmd_status)
+
+    people_cmd = sub.add_parser("people", help="查看/维护允许名单（姓名 → IP）")
+    people_cmd.add_argument("--lib-dir", required=True)
+    people_cmd.add_argument("--csv", help="从 CSV 导入名单（列：姓名,IP，可有表头）")
+    people_cmd.add_argument("--replace", action="store_true", help="以 CSV 为准整体替换，而不是合并")
+    people_cmd.add_argument("--set", metavar="姓名=IP", help="新增/修改一条；IP 留空表示必须报姓名")
+    people_cmd.add_argument("--remove", metavar="姓名", help="删除一条")
+    people_cmd.add_argument("--export", metavar="PATH", help="导出成 CSV（以后给客户端分发）")
+    people_cmd.set_defaults(func=_cmd_people)
     return parser
 
 

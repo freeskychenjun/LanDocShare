@@ -25,6 +25,10 @@ python -m landoc serve --lib-dir D:\MyLib
 
 # 看统计
 python -m landoc status --lib-dir D:\MyLib
+
+# 维护允许名单（姓名只作备注，真正按 IP 放行）：CSV 两列 姓名,IP
+python -m landoc people --lib-dir D:\MyLib --csv 名单.csv     # 合并导入
+python -m landoc people --lib-dir D:\MyLib                    # 看名单
 ```
 
 检索接口（只读，只给片段与表格，永不给全文/下载）：
@@ -66,7 +70,7 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的状态窗口打开。托盘菜单：显示状态窗口 / 打开库主页 / 立即更新 / 修改建库设置… / 暂停共享 / 权限设置 / 开机自启 / 查看日志 / 退出。
 
 - **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。
-- **「谁能查」三档**：规划院内网 10.91.0.0/16（谁都能查）/ **仅指定名单**（姓名 + IP，IP 可留空表示网段内任意 IP 但必须报姓名）/ 仅本机。名单是在网段之上再叠一层：先过 10.91.0.0/16，再核姓名；填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required: true`、不回名单本身。同事第一次打开检索页会被要求输入姓名（401 时认 `ip mismatch for name` 会给专门提示），名字记在浏览器 `localStorage`，也可用 `?name=陈鋆` 直接带进 URL。
+- **「谁能查」三档**：公司内网（默认网段 10.91.0.0/16，**可改**，如只给本院填 10.91.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：名单里填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；姓名的两种用途是①IP 会变的人可以不填 IP、只登记姓名，这时必须报姓名才放行；②日志里好看。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（只有存在"没登记 IP"的人时才是 true）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 10.91.1.0/24,10.91.10.0/24`。改名单**即时生效**，不用重启服务。
 - **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数、共享范围、服务地址、上次扫描，带「打开检索页 / 立即更新 / 暂停共享 / 复制地址」四个按钮。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
 - Win11 会把新图标收进任务栏的 `^` 溢出区：点开 `^`，把纸页图标拖到任务栏上就常驻了。
 
@@ -119,8 +123,9 @@ landoc/
   pdf_conv.py      pdf → 文本（pymupdf / Acrobat / 兜底临时副本）
   pipeline.py      扫描 → 分流 → 转换 → 落 md → 写索引 → 检查点
   index.py         FTS5 索引（trigram + 短查询兜底 + 表格抽取）
-  server.py        只读检索服务（CIDR 权限 / 限流 / 审计）
+  server.py        只读检索服务（CIDR 权限 / 名单按 IP 放行 / 限流 / 审计）
   cli.py           命令行入口
+  people.py        允许名单（姓名 → IP）的 CSV 解析、合并与导出
   app.py           托盘背后的调度：起服务 + 空闲时增量转换 + 暂停/恢复共享
   idle.py          空闲判定（GetLastInputInfo / 锁屏检测）
   autostart.py     开机自启（HKCU Run 键）

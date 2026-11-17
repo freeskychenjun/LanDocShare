@@ -87,6 +87,18 @@ def test_parser_rejects_unknown_command():
         cli.main(["nonsense"])
 
 
+def test_init_accepts_allow_cidrs(tmp_path: Path):
+    lib = tmp_path / "lib"
+    assert cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--allow-cidrs", "10.91.1.0/24"]) == 0
+    assert Config.load(lib).allow_cidrs == ["10.91.1.0/24"]
+
+
+def test_init_rejects_bad_allow_cidrs(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    assert cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--allow-cidrs", "10.91.1.0/99"]) == 2
+    assert not (lib / "config.json").exists()
+
+
 def test_init_accepts_acrobat_tool_dir(tmp_path: Path):
     """I8: 兜底工具目录必须有入口，否则 README 承诺的能力配不出来。"""
     lib = tmp_path / "lib"
@@ -156,3 +168,51 @@ def test_init_rejects_uselessly_small_snippet_chars(tmp_path: Path):
     with pytest.raises(SystemExit) as exc:
         cli.main(["init", "--lib-dir", str(tmp_path / "lib"), "--name", "库", "--snippet-only-chars", "10"])
     assert exc.value.code == 2
+
+
+def test_people_imports_csv_and_exports_back(tmp_path: Path, capsys):
+    """按 IP 授权的主路径：CSV 灌名单 → 导出可再分发。"""
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    csv_path = tmp_path / "名单.csv"
+    csv_path.write_text("姓名,IP\n陈鋆,10.91.1.197\n杨欢,10.91.5.238\n", encoding="utf-8")
+
+    assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)]) == 0
+    assert Config.load(lib).allow_people == {"陈鋆": "10.91.1.197", "杨欢": "10.91.5.238"}
+
+    export_path = tmp_path / "导出.csv"
+    assert cli.main(["people", "--lib-dir", str(lib), "--export", str(export_path)]) == 0
+    assert "陈鋆" in export_path.read_text(encoding="utf-8-sig")
+    out = capsys.readouterr().out
+    assert "共 2 人" in out
+
+
+def test_people_merge_keeps_existing_and_can_remove(tmp_path: Path):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    csv_path = tmp_path / "名单.csv"
+    csv_path.write_text("姓名,IP\n陈鋆,10.91.1.197\n", encoding="utf-8")
+    cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)])
+    cli.main(["people", "--lib-dir", str(lib), "--set", "张三="])
+    assert Config.load(lib).allow_people == {"陈鋆": "10.91.1.197", "张三": ""}
+    cli.main(["people", "--lib-dir", str(lib), "--remove", "陈鋆"])
+    assert Config.load(lib).allow_people == {"张三": ""}
+
+
+def test_people_rejects_bad_csv(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    csv_path = tmp_path / "坏.csv"
+    csv_path.write_text("姓名,IP\n陈鋆,10.91.1.999\n", encoding="utf-8")
+    assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)]) == 2
+    assert Config.load(lib).allow_people == {}
+
+
+def test_status_reports_people_summary(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    cli.main(["status", "--lib-dir", str(lib)])
+    assert "允许名单：（未启用：允许网段内谁都能查）" in capsys.readouterr().out
+    cli.main(["people", "--lib-dir", str(lib), "--set", "陈鋆=10.91.1.197"])
+    cli.main(["status", "--lib-dir", str(lib)])
+    assert "允许名单：1 人，按 IP 放行（姓名仅备注）" in capsys.readouterr().out

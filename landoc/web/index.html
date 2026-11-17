@@ -55,6 +55,7 @@
   dialog th { background:var(--bg); }
   dialog h4 { margin:0 0 6px; font-size:13px; color:var(--muted); font-weight:600; }
   footer { max-width:1120px; margin:0 auto; padding:0 20px 30px; color:var(--muted); font-size:12px; }
+  footer a { color:var(--muted); margin-left:8px; }
 </style>
 </head>
 <body>
@@ -78,7 +79,7 @@
     <section class="card" id="panel"><div class="empty">输入关键词开始检索，或从左侧目录进入。</div></section>
   </div>
 </main>
-<footer>只提供命中片段与表格，不提供全文或下载。库内容由库主人维护。</footer>
+<footer>只提供命中片段与表格，不提供全文或下载。库内容由库主人维护。<a href="#" id="whoami">换个名字</a></footer>
 <dialog id="dlg">
   <div class="head"><strong id="dlgtitle">表格</strong><button class="ghost" id="dlgclose" type="button">关闭</button></div>
   <div class="body" id="dlgbody"></div>
@@ -117,6 +118,10 @@ async function api(path, params) {
   if (resp.status === 401) {
     let reason = '';
     try { reason = (await resp.clone().json()).error || ''; } catch (e) { /* 非 JSON 就按通用提示 */ }
+    if (reason === 'ip not registered') {
+      // 按 IP 授权的库里，认不出的机器只能报姓名（登记过姓名、没登记 IP 的人走这里）
+      throw new Error('这台电脑的 IP 不在授权名单里。如果库主人给你登记过姓名，可以试试点“换个人”后填姓名；否则请联系库主人加 IP。');
+    }
     const hint = reason === 'ip mismatch for name'
       ? '这个姓名登记的 IP 不是这台机器。核对一下姓名，或请库主人更新名单：'
       : '这个库需要登记姓名，请输入你的名字：';
@@ -249,6 +254,14 @@ $('searchform').addEventListener('submit', (ev) => {
 });
 $('reset').onclick = () => goDir('');
 $('dlgclose').onclick = () => $('dlg').close();
+$('whoami').onclick = (ev) => {
+  ev.preventDefault();
+  const asked = prompt('你的名字（只用于审计记录；库按 IP 认人）：', state.name || '');
+  if (asked && asked.trim()) { state.name = asked.trim(); localStorage.setItem('landoc_name', state.name); }
+  else if (asked !== null) { state.name = ''; localStorage.removeItem('landoc_name'); }
+  loadHeader();
+  goDir(state.dir);
+};
 
 loadHeader();
 goDir('');

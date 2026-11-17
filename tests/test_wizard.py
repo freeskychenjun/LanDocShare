@@ -93,6 +93,32 @@ def test_build_config_ignores_roster_when_scope_is_lan(tmp_path):
     assert cfg.allow_people == {}
 
 
+def test_parse_cidrs_normalises_and_rejects_junk():
+    assert wizard.parse_cidrs("10.91.1.0/24, 10.91.10.0/24") == (
+        ["10.91.1.0/24", "10.91.10.0/24"],
+        None,
+    )
+    # 只给 IP 时按单主机网段处理；全角逗号/空格也认
+    assert wizard.parse_cidrs("10.91.1.5") == (["10.91.1.5/32"], None)
+    assert wizard.parse_cidrs("10.91.1.0/24，10.91.2.0/24")[0] == ["10.91.1.0/24", "10.91.2.0/24"]
+    assert wizard.parse_cidrs("")[0] == ["10.91.0.0/16"]
+    assert wizard.parse_cidrs("10.91.300.0/24")[1] is not None
+
+
+def test_build_config_uses_custom_cidrs(tmp_path):
+    cfg = wizard.build_config(
+        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", cidrs=["10.91.1.0/24"]
+    )
+    assert cfg.allow_cidrs == ["10.91.1.0/24"]
+
+
+def test_build_config_local_scope_ignores_custom_cidrs(tmp_path):
+    cfg = wizard.build_config(
+        "小库", [tmp_path], wizard.SCOPE_LOCAL, tmp_path / "lib", cidrs=["10.91.0.0/16"]
+    )
+    assert cfg.allow_cidrs == ["127.0.0.1"]
+
+
 def test_validate_person_rules():
     cidrs = wizard.SCOPE_CIDRS[wizard.SCOPE_PEOPLE]
     assert wizard.validate_person("", "10.91.1.197", cidrs) == "姓名不能为空"
