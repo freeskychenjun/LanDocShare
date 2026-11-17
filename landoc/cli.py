@@ -17,19 +17,30 @@ from landoc.config import Config
 from landoc.index import Index
 
 
+# 二期 registry 中心（设计 §7）固定在 8767，库端顺延端口时必须跳过它，
+# 否则"本机 8766 被旧服务占住"的机器会把 8767 抢走，registry 反而起不来。
+RESERVED_PORTS = frozenset({8767})
+
+
+def _port_free(host: str, port: int) -> bool:
+    """能否绑定该端口；不加 SO_REUSEADDR（Windows 上它会让 bind 抢占已在监听的端口）。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 def pick_port(start: int, host: str = "0.0.0.0", tries: int = 20) -> int:
-    """从 start 起找一个能绑定的端口（8766 被旧的共享服务占着时自动顺延）。"""
+    """从 start 起找一个能绑定的端口（8766 被旧的共享服务占着时自动顺延，跳过 8767）。"""
     for offset in range(tries):
         port = start + offset
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # 不加 SO_REUSEADDR：Windows 上它会让 bind 成功"抢占"已在监听的端口，
-            # 探测就永远返回被占用的那个端口。
-            try:
-                sock.bind((host, port))
-            except OSError:
-                continue
-        return port
-    raise RuntimeError(f"{start}..{start + tries - 1} 端口都被占用")
+        if port in RESERVED_PORTS:
+            continue
+        if _port_free(host, port):
+            return port
+    raise RuntimeError(f"{start}..{start + tries - 1} 端口都被占用（已跳过保留端口 {sorted(RESERVED_PORTS)}）")
 
 
 ACROBAT_TOOL_CANDIDATES = (

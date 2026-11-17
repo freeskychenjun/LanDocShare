@@ -19,6 +19,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["landoc"]
 
+[tool.setuptools.package-data]
+# 检索页是纯静态文件，装成 wheel 时别漏（PyInstaller 打包同样要 --add-data）
+landoc = ["web/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

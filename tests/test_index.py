@@ -23,6 +23,8 @@ def test_short_query_uses_like_fallback(tmp_path):
     idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
     rows, fell_back = idx.search("乐平")
     assert len(rows) == 1 and fell_back is False
+    # 2 字查询走 instr 兜底，但片段里的命中词同样要标 <<>>，否则网页/助手都看不出命中了哪
+    assert "<<乐平>>" in rows[0]["snippet"]
 
 
 def test_like_escape_turns_wildcards_literal():

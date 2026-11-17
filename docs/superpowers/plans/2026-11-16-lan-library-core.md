@@ -19,7 +19,7 @@
 - 批注必须剔除（Flat OPC 里的 `comments.xml` 不得进入 md）。
 - 不转换 `.xls/.xlsx/.et`（跳过并计入统计）。
 - 检索服务只输出片段与表格，**永不输出全文/下载/`source_path`**。
-- 端口默认 8766；被占用时自动 8767、8768…，实际端口写入 `meta`。
+- 端口默认 8766；被占用时自动 8768、8769…（跳过 8767：二期 registry 保留），实际端口写入 `meta`。
 - 权限默认 `allow_cidrs=["10.91.0.0/16"]`；越权 403、姓名未登记 401。
 - 审计：JSONL，一行一事件，本地保留 30 天。
 - 中文界面与中文错误信息；代码标识符英文。
@@ -448,7 +448,7 @@ def test_init_creates_config_and_db(tmp_path, capsys):
     assert (tmp_path/"config.json").exists() and (tmp_path/"library.db").exists()
 
 def test_serve_picks_next_free_port(tmp_path, monkeypatch):
-    # 8766 被占时应用 8767
+    # 8766 被占时应用 8768（8767 是 registry 保留端口，必须跳过）
 ```
 
 - [ ] **Step 2: 跑测试失败** — Expected: FAIL

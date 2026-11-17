@@ -292,7 +292,7 @@ class Index:
                 "title": r[1],
                 "ext": r[2],
                 "score": round(r[3], 2),
-                "snippet": _make_snippet(r[4] or "", q, self.snippet_tokens),
+                "snippet": _make_snippet(r[4] or "", build_match_query(q), self.snippet_tokens),
             }
             for r in rows
         ]

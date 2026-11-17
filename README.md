@@ -20,7 +20,7 @@ python -m landoc probe --lib-dir D:\MyLib
 # 转换第一批（增量：再跑只处理有变化的文件）
 python -m landoc convert --lib-dir D:\MyLib
 
-# 起服务（默认 8766，被占用自动顺延）
+# 起服务（默认 8766，被占用自动顺延到 8768 起——8767 留给二期 registry）
 python -m landoc serve --lib-dir D:\MyLib
 
 # 看统计
@@ -29,12 +29,14 @@ python -m landoc status --lib-dir D:\MyLib
 
 检索接口（只读，只给片段与表格，永不给全文/下载）：
 
+同事直接用浏览器打开 `http://<内网IP>:8766/` 就是检索页（搜索框 + 目录树 + 表格查看，纯静态无外链）；下面这些是给 AI 助手/脚本用的。
+
 ```bash
 curl --get "http://<内网IP>:8766/api/search" --data-urlencode "q=马斯京根" --data-urlencode "limit=5"
 curl --get "http://<内网IP>:8766/api/tables" --data-urlencode "path=成果/乐平.docx.md"
 ```
 
-端点：`/`、`/api/health`、`/api/meta`、`/api/stats`、`/api/search`、`/api/tree`、`/api/list`、`/api/tables`。
+端点：`/`（网页）、`/api/info`、`/api/health`、`/api/meta`、`/api/stats`、`/api/search`、`/api/tree`、`/api/list`、`/api/tables`。
 
 收紧共享（隐私开关，默认都开；`init` 时一次设好，之后 `status` 会显示当前策略）：
 

@@ -74,6 +74,14 @@ def test_pick_port_skips_busy_port():
         assert cli.pick_port(taken) == taken + 1
 
 
+def test_pick_port_skips_registry_port(monkeypatch):
+    """8767 留给二期 registry：库端顺延时不能把它抢走（本机 8766 就被旧服务占着）。"""
+    monkeypatch.setattr(cli, "_port_free", lambda host, port: True)
+    assert cli.RESERVED_PORTS == {8767}
+    assert cli.pick_port(8766) == 8766
+    assert cli.pick_port(8767) == 8768
+
+
 def test_parser_rejects_unknown_command():
     with pytest.raises(SystemExit):
         cli.main(["nonsense"])

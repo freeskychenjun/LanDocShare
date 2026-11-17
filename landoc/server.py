@@ -25,6 +25,18 @@ from landoc.index import MAX_LIMIT, Index
 MAX_QUERY_LEN = 200
 DEFAULT_RATE = 60
 
+# 同事用浏览器打开 / 时看到的单页检索界面（纯静态、无外部依赖，离网也可用）
+WEB_INDEX = Path(__file__).with_name("web") / "index.html"
+_PAGE_CACHE: str | None = None
+
+
+def index_page_html() -> str:
+    """读单页；文件缺失（例如打包漏了数据文件）时抛 OSError，由调用方退回 JSON 信息页。"""
+    global _PAGE_CACHE
+    if _PAGE_CACHE is None:
+        _PAGE_CACHE = WEB_INDEX.read_text(encoding="utf-8")
+    return _PAGE_CACHE
+
 
 def decode_param(raw: str) -> str:
     """解码单个 query 参数：先 UTF-8，失败按 GBK。
@@ -127,11 +139,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, payload, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json")
+
+    def _html(self, markup: str, code: int = 200) -> None:
+        self._send(code, markup.encode("utf-8"), "text/html")
 
     def _error(self, code: int, message: str) -> None:
         self._json({"error": message}, code)
@@ -176,6 +192,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, route: str, params: dict, ip: str, name: str | None) -> None:
         if route == "/":
+            self._record(ip, name, route, 200)
+            try:
+                return self._html(index_page_html())
+            except OSError:
+                # 页面文件缺失时别让首页整个 500，退回可读的 JSON 说明
+                return self._json(self._info_page())
+        if route == "/api/info":
+            self._record(ip, name, route, 200)
             return self._json(self._info_page())
         if route == "/api/health":
             stats = self.index.stats()
@@ -250,8 +274,10 @@ class Handler(BaseHTTPRequestHandler):
             "service": "landoc",
             "status": "online",
             "note": "个人资料库共享检索服务：只提供关键词检索与命中片段/表格，不提供全文或下载。",
-            "usage": "同事的 AI 助手通过 lan-lib-search 技能访问；也可手动调用 /api/search?q=关键词",
+            "usage": "浏览器打开 / 用网页检索；AI 助手走 lan-lib-search 技能；也可直接调用 /api/search?q=关键词",
             "endpoints": {
+                "/": "网页检索界面（text/html）",
+                "/api/info": "本说明（JSON）",
                 "/api/health": "在线状态与文档数",
                 "/api/meta": "库名、版本、共享范围",
                 "/api/stats": "库统计",

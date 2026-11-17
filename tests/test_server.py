@@ -75,9 +75,18 @@ def test_meta_exposes_scope_not_paths(running):
     assert "source_path" not in json.dumps(payload)
 
 
-def test_root_info_page(running):
+def test_root_serves_search_page(running):
+    """同事直接开浏览器就能搜：/ 必须是可用的单页，而不是 JSON。"""
     client, _, _ = running
-    payload = client.json("/")
+    status, body = client.get("/")
+    assert status == 200
+    assert "<!doctype html>" in body.lower()
+    assert "api/search" in body
+
+
+def test_info_page_json_at_api_info(running):
+    client, _, _ = running
+    payload = client.json("/api/info")
     assert payload["service"] == "landoc"
     assert "/api/search" in payload["endpoints"]
 

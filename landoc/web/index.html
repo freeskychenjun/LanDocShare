@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LanDocShare · 资料库检索</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #fff; --ink: #1d2129; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --mark: #fde68a; --mark-ink: #111;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --panel:#1c1f24; --ink:#e6e8eb; --muted:#9aa3af; --line:#2b3038; --accent:#60a5fa; --mark:#7c5b00; --mark-ink:#fff3c4; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line); }
+  .bar { max-width:1120px; margin:0 auto; padding:14px 20px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  .brand { font-weight:700; font-size:17px; white-space:nowrap; }
+  .brand small { color:var(--muted); font-weight:400; margin-left:8px; font-size:12px; }
+  form.search { flex:1 1 320px; display:flex; gap:8px; }
+  input[type=search] { flex:1; min-width:180px; padding:9px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font-size:15px; }
+  input[type=search]:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  button { padding:9px 16px; border:1px solid transparent; border-radius:8px; background:var(--accent); color:#fff; font-size:15px; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border-color:var(--line); }
+  main { max-width:1120px; margin:0 auto; padding:18px 20px 60px; display:grid; grid-template-columns:240px minmax(0,1fr); gap:20px; }
+  @media (max-width: 820px) { main { grid-template-columns:1fr; } aside { order:2; } }
+  aside, section.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+  aside { padding:12px; align-self:start; position:sticky; top:76px; }
+  aside h2 { font-size:12px; letter-spacing:.08em; color:var(--muted); margin:2px 4px 8px; font-weight:600; }
+  .tree { list-style:none; margin:0; padding:0; }
+  .tree button { width:100%; text-align:left; background:transparent; color:var(--ink); border:0; padding:6px 8px; border-radius:6px; font-size:14px; display:flex; justify-content:space-between; gap:8px; }
+  .tree button:hover { background:var(--bg); }
+  .tree .count { color:var(--muted); font-size:12px; }
+  .crumb { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0 0 12px; color:var(--muted); font-size:13px; }
+  .crumb a { color:var(--accent); cursor:pointer; text-decoration:none; }
+  section.card { padding:6px 18px; }
+  .hit { padding:14px 0; border-bottom:1px solid var(--line); }
+  .hit:last-child { border-bottom:0; }
+  .hit h3 { margin:0 0 2px; font-size:16px; font-weight:600; }
+  .hit .path { color:var(--muted); font:12px/1.5 Consolas, "Courier New", monospace; word-break:break-all; }
+  .hit p { margin:8px 0 0; color:var(--ink); font-size:14px; }
+  mark { background:var(--mark); color:var(--mark-ink); padding:0 2px; border-radius:3px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .tag { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 8px; }
+  .meta { color:var(--muted); font-size:13px; margin:0 0 10px; }
+  .empty { color:var(--muted); padding:28px 0; text-align:center; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); max-width:920px; width:calc(100% - 40px); padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog .head { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); }
+  dialog .body { padding:14px 16px; max-height:70vh; overflow:auto; }
+  dialog table { border-collapse:collapse; width:100%; font-size:13px; margin:0 0 16px; }
+  dialog th, dialog td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
+  dialog th { background:var(--bg); }
+  dialog h4 { margin:0 0 6px; font-size:13px; color:var(--muted); font-weight:600; }
+  footer { max-width:1120px; margin:0 auto; padding:0 20px 30px; color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">LanDocShare<small id="libname"></small></div>
+    <form class="search" id="searchform">
+      <input type="search" id="q" placeholder="搜关键词，如：乐平、马斯京根、水安全" autocomplete="off">
+      <button type="submit">搜索</button>
+      <button type="button" class="ghost" id="reset">全部</button>
+    </form>
+  </div>
+</header>
+<main>
+  <aside>
+    <h2>目录</h2>
+    <ul class="tree" id="tree"></ul>
+  </aside>
+  <div>
+    <div class="crumb" id="crumb"></div>
+    <section class="card" id="panel"><div class="empty">输入关键词开始检索，或从左侧目录进入。</div></section>
+  </div>
+</main>
+<footer>只提供命中片段与表格，不提供全文或下载。库内容由库主人维护。</footer>
+<dialog id="dlg">
+  <div class="head"><strong id="dlgtitle">表格</strong><button class="ghost" id="dlgclose" type="button">关闭</button></div>
+  <div class="body" id="dlgbody"></div>
+</dialog>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const state = {
+  q: '', dir: '',
+  name: localStorage.getItem('landoc_name') || (new URLSearchParams(location.search).get('name') || '')
+};
+if (state.name) localStorage.setItem('landoc_name', state.name);
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// 片段里的 <<命中词>> 来自服务端，先分段再转义，避免把标记当 HTML
+function snippetHtml(raw) {
+  // 片段会把 md 的标题/正文压成一行，显示前去掉标题井号，读起来像人话
+  const text = String(raw || '').replace(/(^|\s)#{1,6}\s+/g, ' ').trim();
+  let out = '';
+  for (const part of text.split(/(<<|>>)/)) {
+    if (part === '<<') out += '<mark>';
+    else if (part === '>>') out += '</mark>';
+    else out += esc(part);
+  }
+  return out;
+}
+
+async function api(path, params) {
+  const url = new URL(path, location.origin);
+  for (const [k, v] of Object.entries(params || {})) if (v !== '' && v != null) url.searchParams.set(k, v);
+  if (state.name) url.searchParams.set('name', state.name);
+  const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
+  if (resp.status === 401) {
+    const asked = prompt('这个库需要登记姓名，请输入你的名字：', state.name || '');
+    if (asked) { state.name = asked.trim(); localStorage.setItem('landoc_name', state.name); return api(path, params); }
+    throw new Error('需要姓名');
+  }
+  if (resp.status === 403) throw new Error('你的网段不在这个库的共享范围内');
+  if (resp.status === 429) throw new Error('查询太频繁，请稍后再试');
+  if (!resp.ok) throw new Error('请求失败：HTTP ' + resp.status);
+  return resp.json();
+}
+
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+
+async function loadHeader() {
+  try {
+    const meta = await api('/api/meta');
+    $('libname').textContent = `· ${meta.name || ''}　${meta.doc_count} 篇`;
+  } catch (e) { /* 首页信息失败不影响检索 */ }
+}
+
+async function loadTree(dir) {
+  const data = await api('/api/tree', {path: dir});
+  const ul = $('tree');
+  ul.innerHTML = '';
+  if (dir) {
+    const up = el('<li><button type="button">↩ 上一级</button></li>');
+    up.querySelector('button').onclick = () => { const p = dir.split('/').slice(0, -1).join('/'); goDir(p); };
+    ul.appendChild(up);
+  }
+  for (const node of data.children || []) {
+    const li = el(`<li><button type="button"><span>${esc(node.name)}</span><span class="count">${esc(node.count)}</span></button></li>`);
+    const child = dir ? dir + '/' + node.name : node.name;
+    li.querySelector('button').onclick = () => (node.dir ? goDir(child) : showFiles(child));
+    ul.appendChild(li);
+  }
+  if (!ul.children.length) ul.appendChild(el('<li class="meta">（空）</li>'));
+}
+
+function crumb(parts, tail) {
+  const c = $('crumb'); c.innerHTML = '';
+  const a = el('<a>全部</a>'); a.onclick = () => goDir(''); c.appendChild(a);
+  parts.forEach((p, i) => {
+    c.appendChild(document.createTextNode(' / '));
+    const link = el(`<a>${esc(p)}</a>`);
+    link.onclick = () => goDir(parts.slice(0, i + 1).join('/'));
+    c.appendChild(link);
+  });
+  if (tail) { c.appendChild(document.createTextNode(' / ')); c.appendChild(el(`<span>${esc(tail)}</span>`)); }
+}
+
+async function search(q, dir) {
+  state.q = q; state.dir = dir || '';
+  $('q').value = q;
+  crumb(state.dir ? state.dir.split('/') : []);
+  const data = await api('/api/search', {q, dir: state.dir, limit: 30});
+  const panel = $('panel'); panel.innerHTML = '';
+  const head = el(`<p class="meta">“${esc(q)}” 命中 ${esc(data.count)} 篇${data.fallback ? '（精确匹配不足，已放宽为任一词命中）' : ''}</p>`);
+  panel.appendChild(head);
+  if (!data.results.length) { panel.appendChild(el('<div class="empty">没有命中。换个词，或试试 2 字关键词。</div>')); return; }
+  for (const r of data.results) {
+    const hit = el(`<div class="hit">
+      <div class="row"><h3>${esc(r.title)}</h3><span class="tag">${esc(r.ext)}</span></div>
+      <div class="path">${esc(r.path)}</div>
+      <p>${snippetHtml(r.snippet)}</p>
+      <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
+    </div>`);
+    hit.querySelector('button').onclick = () => openTables(r.path);
+    panel.appendChild(hit);
+  }
+}
+
+async function showFiles(dir) {
+  state.dir = dir;
+  $('q').value = '';
+  crumb(dir.split('/'));
+  const data = await api('/api/list', {path: dir});
+  const panel = $('panel'); panel.innerHTML = '';
+  panel.appendChild(el(`<p class="meta">${esc(dir)} · ${esc(data.count)} 篇</p>`));
+  if (!data.files.length) { panel.appendChild(el('<div class="empty">这个目录下没有文档。</div>')); return; }
+  for (const f of data.files) {
+    const row = el(`<div class="hit">
+      <div class="row"><h3>${esc(f.title)}</h3><span class="tag">${esc(f.ext)}</span></div>
+      <div class="path">${esc(f.path)}</div>
+      <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
+    </div>`);
+    row.querySelector('button').onclick = () => openTables(f.path);
+    panel.appendChild(row);
+  }
+}
+
+async function goDir(dir) {
+  state.dir = dir;
+  try {
+    await loadTree(dir);
+    if (dir) await showFiles(dir); else { $('panel').innerHTML = '<div class="empty">输入关键词开始检索，或从左侧目录进入。</div>'; crumb([]); }
+  } catch (e) { $('panel').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+async function openTables(path) {
+  $('dlgtitle').textContent = path;
+  $('dlgbody').innerHTML = '<p class="meta">加载中…</p>';
+  $('dlg').showModal();
+  try {
+    const data = await api('/api/tables', {path});
+    if (!data.tables.length) { $('dlgbody').innerHTML = '<p class="meta">这篇文档里没有识别到表格。</p>'; return; }
+    $('dlgbody').innerHTML = data.tables.map((t, i) => {
+      const title = `<h4>表 ${i + 1}${t.context ? '：' + esc(String(t.context).replace(/^#+\s*/, '')) : ''}${t.truncated ? '（已截断）' : ''}</h4>`;
+      const md = String(t.markdown || '');
+      if (t.kind === 'gfm') {
+        const lines = md.split('\n').filter((line) => line.trim());
+        // 第 2 行是 |---| 分隔行，去掉；其余按 | 拆格
+        const cells = (line) => line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+        const body = lines.slice(2).map((line) => '<tr>' + cells(line).map((c) => `<td>${esc(c)}</td>`).join('') + '</tr>').join('');
+        const head = lines.length ? '<tr>' + cells(lines[0]).map((c) => `<th>${esc(c)}</th>`).join('') + '</tr>' : '';
+        return title + `<table>${head}${body}</table>`;
+      }
+      // 原生 HTML 表格原样执行会带来脚本风险，按文本展示
+      return title + `<pre style="white-space:pre-wrap;font-size:12px;color:var(--muted)">${esc(md)}</pre>`;
+    }).join('');
+  } catch (e) { $('dlgbody').innerHTML = `<p class="meta">${esc(e.message)}</p>`; }
+}
+
+$('searchform').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const q = $('q').value.trim();
+  if (!q) return;
+  search(q, state.dir).catch((e) => { $('panel').innerHTML = `<div class="empty">${esc(e.message)}</div>`; });
+});
+$('reset').onclick = () => goDir('');
+$('dlgclose').onclick = () => $('dlg').close();
+
+loadHeader();
+goDir('');
+</script>
+</body>
+</html>
