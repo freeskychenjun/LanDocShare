@@ -98,6 +98,41 @@ def _icon_path() -> Path | None:
     return None
 
 
+def release_tk(window: object) -> None:
+    """在窗口线程里把 tkinter 对象全部丢引用（必须在创建解释器的线程里调用）。
+
+    Tk 解释器只能由创建它的线程销毁。窗口关掉后如果这些对象留给别的线程
+    （退出时通常是主线程）回收，Tcl 会报
+    "Tcl_AsyncDelete: async handler deleted by the wrong thread"，
+    进程退出码变成 1——用户看到的就是"点退出，程序却报错"。
+
+    容器（dict/list）里也可能存着 Label/Button（比如状态面板的 `_labels`），
+    所以要连容器一起清，不能只看一层属性。
+    """
+    import gc
+    import tkinter as tk
+
+    def is_tk(value: object) -> bool:
+        return isinstance(value, (tk.Misc, tk.Variable))
+
+    for key, value in list(vars(window).items()):
+        if is_tk(value):
+            setattr(window, key, None)
+        elif isinstance(value, dict):
+            for inner_key, inner in list(value.items()):
+                if is_tk(inner):
+                    value.pop(inner_key, None)
+        elif isinstance(value, list):
+            value[:] = [item for item in value if not is_tk(item)]
+
+    if getattr(tk, "_default_root", None) is not None:
+        try:
+            tk._default_root = None
+        except Exception:  # noqa: BLE001 - 老版本 tkinter 没这个全局
+            pass
+    gc.collect()
+
+
 class StatusPanel:
     """一个常驻线程里跑 tkinter；`show()` 可以从任意线程调用。"""
 
@@ -111,6 +146,7 @@ class StatusPanel:
         on_update=None,
         on_toggle_share=None,
         on_open_roster=None,
+        on_open_access=None,
         on_install=None,
     ) -> None:
         self.cfg = cfg
@@ -120,6 +156,7 @@ class StatusPanel:
         self.on_update = on_update
         self.on_toggle_share = on_toggle_share
         self.on_open_roster = on_open_roster
+        self.on_open_access = on_open_access
         self.on_install = on_install
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -138,6 +175,11 @@ class StatusPanel:
 
     def close(self) -> None:
         self._queue.put(("close", None))
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # 等窗口线程把解释器在它自己那条线程里销毁干净，别把 Tk 对象
+            # 留给主线程回收（那样退出时会报 Tcl_AsyncDelete）
+            thread.join(timeout=2.0)
 
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -198,6 +240,9 @@ class StatusPanel:
         actions.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._upgrade_button = ttk.Button(actions, text="检查更新", command=self._upgrade)
         self._upgrade_button.pack(side="left")
+        ttk.Button(actions, text="可访问的库", command=self._open_access).pack(
+            side="left", padx=6
+        )
 
         self._copy_hint = ttk.Label(frame, text="", foreground="#2f7d32")
         self._copy_hint.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
@@ -211,6 +256,7 @@ class StatusPanel:
 
         self._pump()
         root.mainloop()
+        release_tk(self)
 
     def _pump(self) -> None:
         """每 120 ms 抽一次命令；顺便每 1.5 s 刷一次状态。"""
@@ -283,6 +329,10 @@ class StatusPanel:
     def _open_roster(self) -> None:
         if self.on_open_roster is not None:
             self.on_open_roster()
+
+    def _open_access(self) -> None:
+        if self.on_open_access is not None:
+            self.on_open_access()
 
     def _upgrade(self) -> None:
         """一个按钮三种动作：没发现→检查；已发现→下载；已下载→确认后升级。"""

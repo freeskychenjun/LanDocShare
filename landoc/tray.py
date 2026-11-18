@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 from landoc import __version__, autostart
 from landoc.app import LibraryApp, AppStatus
 from landoc.config import Config
+from landoc.discover_ui import DiscoverWindow
 from landoc.netinfo import lan_ip
 from landoc.panel import StatusPanel
 from landoc.roster_ui import RosterWindow
@@ -90,9 +91,11 @@ class TrayApp:
             on_update=self._update_now,
             on_toggle_share=self._toggle_share,
             on_open_roster=self._show_roster,
+            on_open_access=self._show_libraries,
             on_install=self._install_update,
         )
         self.roster = RosterWindow(cfg, on_saved=self._roster_saved)
+        self.libraries = DiscoverWindow(cfg)
 
     # ---- pystray 回调 ----
     def _on_status(self, status: AppStatus) -> None:
@@ -118,6 +121,9 @@ class TrayApp:
 
     def _show_roster(self) -> None:
         self.roster.show()
+
+    def _show_libraries(self) -> None:
+        self.libraries.show()
 
     def _roster_saved(self) -> None:
         """名单改完：状态窗口的"共享范围"要及时反映人数变化。"""
@@ -161,6 +167,7 @@ class TrayApp:
         self._notify(f"正在升级到 v{staged.version}，程序会自动重启…")
         self.panel.close()
         self.roster.close()
+        self.libraries.close()
         if self.icon is not None:
             self.icon.stop()
         # 更新器要拿单实例互斥量，这里尽快退出，别和它抢
@@ -222,6 +229,7 @@ class TrayApp:
     def _quit(self) -> None:
         self.panel.close()
         self.roster.close()
+        self.libraries.close()
         self.app.stop()
         if self.icon is not None:
             self.icon.stop()
@@ -234,6 +242,7 @@ class TrayApp:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("显示状态窗口", self._show_panel, default=True),
             pystray.MenuItem("打开库主页", self._open_page),
+            pystray.MenuItem("可访问的资料库…", self._show_libraries),
             pystray.MenuItem(lambda item: self._update_label(), self._menu_update),
             pystray.MenuItem("立即重建索引", self._update_now),
             pystray.MenuItem("修改建库设置…", self._edit_library),

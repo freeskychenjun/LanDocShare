@@ -91,6 +91,30 @@ def test_show_starts_one_panel_thread(tmp_path, monkeypatch):
     assert panel._thread is not None and panel._thread.daemon
 
 
+def test_close_waits_for_window_thread(tmp_path, monkeypatch):
+    """close() 要等窗口线程退出：Tk 解释器必须在那条线程里销毁。
+
+    不等的话退出时主线程回收 Tk 对象，Tcl 会报
+    "Tcl_AsyncDelete: async handler deleted by the wrong thread"。
+    """
+    cfg = _cfg(tmp_path)
+    panel = StatusPanel(cfg, app=None)
+    done = threading.Event()
+
+    def fake_run():
+        while True:
+            command, _payload = panel._queue.get(timeout=5)
+            if command == "close":
+                done.set()
+                return
+
+    monkeypatch.setattr(panel, "_run", fake_run)
+    panel.show()
+    panel.close()
+    assert done.is_set()
+    assert panel._thread is not None and not panel._thread.is_alive()
+
+
 # --------------------------------------------------------------------------- #
 # 版本行：发现新版本时把"到哪一步了"讲清楚
 # --------------------------------------------------------------------------- #

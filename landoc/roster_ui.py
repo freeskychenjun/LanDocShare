@@ -18,6 +18,7 @@ from pathlib import Path
 
 from landoc import roster
 from landoc.config import Config
+from landoc.panel import release_tk
 
 
 def _icon_path() -> Path | None:
@@ -61,6 +62,10 @@ class RosterWindow:
 
     def close(self) -> None:
         self._queue.put(("close", None))
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # 等窗口线程在自己的线程里销毁解释器，避免退出时 Tcl_AsyncDelete
+            thread.join(timeout=2.0)
 
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -163,6 +168,7 @@ class RosterWindow:
 
         self._pump()
         root.mainloop()
+        release_tk(self)
 
     # ---------------------------------------------------------- 队列泵
     def _pump(self) -> None:
