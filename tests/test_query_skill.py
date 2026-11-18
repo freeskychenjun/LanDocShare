@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import threading
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -86,6 +88,38 @@ def test_fetch_libraries_falls_back_to_cache_with_health_check(q, monkeypatch, t
     libraries, source = q.fetch_libraries()
     assert source == "cache+health"
     assert libraries[0]["online"] is True
+
+
+def test_fetch_libraries_probes_downed_center_in_parallel(q, monkeypatch, tmp_path):
+    """中心挂了退回缓存时，逐库探活要并发——串行 20 个库就要等 30 秒。"""
+    libs = [{"name": f"库{i}", "url": f"http://h{i}:8768/", "online": True} for i in range(6)]
+    cache = tmp_path / "home" / "cache_libraries.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"libraries": libs}), encoding="utf-8")
+
+    def boom(url, timeout=3.0):
+        raise OSError("center down")
+
+    state = {"now": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def slow_ok(url, timeout=1.5):
+        with guard:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with guard:
+            state["now"] -= 1
+        return "ok" in url
+
+    monkeypatch.setattr(q, "_get_json", boom)
+    monkeypatch.setattr(q, "_health_ok", slow_ok)
+    libraries, source = q.fetch_libraries()
+    assert source == "cache+health"
+    assert state["peak"] > 1, "探活还是串行的"
+    # 顺序不能变（缓存里的登记顺序），在线状态按各自结果写回
+    assert [lib["name"] for lib in libraries] == [lib["name"] for lib in libs]
+    assert all(lib["online"] is False for lib in libraries)
 
 
 def test_fetch_libraries_passes_name_and_separates_cache(q, monkeypatch, tmp_path):

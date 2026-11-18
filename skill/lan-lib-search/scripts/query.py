@@ -12,7 +12,7 @@
 
 网络约定（设计 §7 / §8）：
 - 名单从登记中心 GET /libraries 拿，并缓存 24 h 备用；带上 identity.txt 的姓名后，
-  中心只返回"这个姓名/IP 有权限访问"的库。中心不通时用缓存 + 逐库 /api/health 探活。
+  中心只返回"这个姓名/IP 有权限访问"的库。中心不通时用缓存 + 并发 /api/health 探活。
 - 每库 GET /api/search?q=…&limit=8&name=…，单库超时 2 s，并发 12 路；
   某个库超时不报错，只在脚注里说"在线 X/Y 个库返回结果"。
 - 合并：score 归一到各库最大值 × 库级权重（默认 1，可在 config.json 里按人调），
@@ -109,10 +109,24 @@ def fetch_libraries(name: str = "") -> tuple[list[dict], str]:
         return [], "none"
     libraries = cached.get("libraries", [])
     _LATEST["version"] = str(cached.get("latest_version") or "")
-    for lib in libraries:  # 缓存里的"在线"会过期，逐库探活一次
-        if lib.get("online", True):
-            lib["online"] = _health_ok(lib.get("url", ""))
-    return libraries, "cache+health"
+    return _probe_online(libraries), "cache+health"
+
+
+def _probe_online(libraries: list[dict]) -> list[dict]:
+    """缓存里的"在线"是会过期的，逐库探活一次——但要并发探。
+
+    串行探时 N 个库最坏要 N × 1.5 秒（20 个库 30 秒），而这只是"中心挂了"的
+    兜底路径，没人愿意为它等半分钟。并发探的墙钟上限是 ⌈N/WORKERS⌉ × 1.5 秒。
+    原地改 `online` 字段、保持原有顺序（顺序要跟缓存里的登记顺序一致）。
+    """
+    targets = [lib for lib in libraries if lib.get("online", True)]
+    if not targets:
+        return libraries
+    with ThreadPoolExecutor(max_workers=min(WORKERS, len(targets))) as pool:
+        alive = list(pool.map(lambda lib: _health_ok(lib.get("url", "")), targets))
+    for lib, ok in zip(targets, alive):
+        lib["online"] = ok
+    return libraries
 
 
 def upgrade_note(libraries: list[dict]) -> str:
