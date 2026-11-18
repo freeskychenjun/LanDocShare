@@ -286,3 +286,45 @@ def test_install_without_staged_update_explains(tmp_path, monkeypatch):
         assert app.install_update() == "新版本还没下载好"
     finally:
         app.stop()
+
+
+def test_manual_check_says_up_to_date_out_loud(tmp_path, monkeypatch):
+    """点「检查更新」若一句话都不说，用户会以为菜单坏了。"""
+    notes: list[str] = []
+    app = _update_app(
+        tmp_path, monkeypatch, fetch=lambda url, version: None, on_notify=notes.append
+    )
+    app.start()
+    try:
+        app.check_updates_async(announce=True)
+        assert wait_for(lambda: any("已是最新版本" in note for note in notes), 5.0)
+    finally:
+        app.stop()
+
+
+def test_auto_check_stays_quiet_but_manual_check_does_not(tmp_path, monkeypatch):
+    """后台每 6 小时的自动检查不该弹气泡，只有用户主动点才提示。"""
+    notes: list[str] = []
+    app = _update_app(
+        tmp_path, monkeypatch, fetch=lambda url, version: None, on_notify=notes.append
+    )
+    app.start()
+    try:
+        time.sleep(0.3)  # 自动检查已经跑过一轮
+        assert not [note for note in notes if "已是最新版本" in note]
+    finally:
+        app.stop()
+
+
+def test_downloaded_update_announces_ready(tmp_path, monkeypatch):
+    info = updater.UpdateInfo(version="0.3.0", url="http://x/p.zip", sha256="a" * 64, size=1)
+    notes: list[str] = []
+    app = _update_app(
+        tmp_path, monkeypatch, fetch=lambda url, version: info, on_notify=notes.append
+    )
+    app.start()
+    try:
+        assert wait_for(lambda: app.update_ready, 5.0)
+        assert wait_for(lambda: any("已下载好" in note for note in notes), 5.0)
+    finally:
+        app.stop()

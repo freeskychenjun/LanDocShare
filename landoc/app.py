@@ -246,16 +246,42 @@ class LibraryApp:
         mapped = {target: fields[source] for source, target in mapping.items() if source in fields}
         if mapped:
             self._update(**mapped)
+        if fields.get("phase") == "ready" and fields.get("version"):
+            self._notify_user(
+                f"新版本 v{fields['version']} 已下载好，右键托盘图标可以升级"
+            )
 
-    def check_updates_async(self) -> None:
-        """托盘"检查更新"用：不阻塞界面，结果通过状态字段显示。"""
+    def check_updates_async(self, *, announce: bool = False) -> None:
+        """托盘"检查更新"用：不阻塞界面，结果通过状态字段显示。
+
+        announce=True 时，检查完若没有可升级的新版本就弹一条通知：否则用户点了
+        菜单看不到任何变化，会以为这个按钮坏了（"已是最新版本"必须说出来）。
+        """
         checker = self._ensure_updates()
         if checker is None:
-            self._update(update_message="没配置登记中心，无法检查更新")
+            message = "没配置登记中心，无法检查更新"
+            self._update(update_message=message)
+            if announce:
+                self._notify_user(message)
             return
-        threading.Thread(
-            target=checker.check, name="landoc-update-check", daemon=True
-        ).start()
+
+        def _run() -> None:
+            info = checker.check()
+            if not announce or info is not None:
+                return
+            message = self.status.update_message or f"已是最新版本（v{__version__}）"
+            self._notify_user(message)
+
+        threading.Thread(target=_run, name="landoc-update-check", daemon=True).start()
+
+    def _notify_user(self, message: str) -> None:
+        """气泡提示；没有通知通道（无托盘/单测）时静默。"""
+        if self._on_notify is None:
+            return
+        try:
+            self._on_notify(message)
+        except Exception:  # noqa: BLE001 - 通知失败不该影响主流程
+            pass
 
     def download_update_async(self) -> None:
         checker = self._ensure_updates()

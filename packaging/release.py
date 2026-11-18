@@ -47,6 +47,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _fix_console_text(text: str) -> str:
+    """复原"UTF-8 字节被按 GBK 解码"的乱码。
+
+    Windows 中文控制台给 Python 的 argv 是按 ANSI(GBK) 解的，直接传中文说明
+    会变成 `淇锛氭墭鐩樻湁` 这种。这里反向试一次：能 GBK 编码、又能当 UTF-8
+    解回来，就认为原本是 UTF-8 中文。
+    """
+    try:
+        repaired = text.encode("cp936", "strict").decode("utf-8", "strict")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    return repaired
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".manifest", suffix=".tmp", dir=path.parent)
@@ -179,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="允许同版本/降级覆盖（慎用）")
     args = parser.parse_args(argv)
 
-    notes = list(args.notes)
+    notes = [_fix_console_text(note) for note in args.notes]
     if args.notes_file:
         try:
             notes += [

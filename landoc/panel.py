@@ -309,7 +309,7 @@ class StatusPanel:
         if status.update_version:
             self.app.download_update_async()
             return
-        self.app.check_updates_async()
+        self.app.check_updates_async(announce=True)
 
     def _copy_address(self) -> None:
         root = self._root

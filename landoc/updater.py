@@ -952,7 +952,11 @@ class UpdateChecker:
                 self._emit(phase="", message=f"检查更新失败：{exc}")
                 return None
             if info is None:
-                self._emit(phase="", version="", message="")
+                self._emit(
+                    phase="",
+                    version="",
+                    message=f"已是最新版本（v{__version__}）",
+                )
                 return None
             self.info = info
             note = f"发现新版本 v{info.version}"

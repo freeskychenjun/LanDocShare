@@ -149,7 +149,7 @@ class TrayApp:
         elif status.update_version:
             self.app.download_update_async()
         else:
-            self.app.check_updates_async()
+            self.app.check_updates_async(announce=True)
 
     def _install_update(self) -> None:
         staged = self.app.staged_update

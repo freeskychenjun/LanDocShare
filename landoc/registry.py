@@ -91,18 +91,29 @@ def skill_root() -> Path:
     return base / "skill" / SKILL_DIR_NAME
 
 
+def _publish_dirs() -> list[Path]:
+    """发布物的候选目录（按优先级）：exe 同目录 → 上一级 → 上两级的 distribution/。
+
+    打包版放在 `仓库/dist/LanDocShare/`，发布脚本却往 `仓库/distribution/` 写；只看
+    exe 同目录/上一级会漏掉真正的发布目录（曾经因此在 dist/ 里放了份过期清单，
+    中心就一直报旧版本）。
+    """
+    exe_dir = Path(sys.executable).resolve().parent
+    return [
+        exe_dir,
+        exe_dir.parent,
+        exe_dir.parent.parent / "distribution",
+        _repo_root() / "distribution",
+    ]
+
+
 def default_package_zip() -> Path | None:
-    """库软件 zip 的候选位置：exe 同目录 → exe 上一级（onedir 的旁边）→ 仓库 distribution/。"""
+    """库软件 zip 的候选位置：exe 同目录 → 上一级（onedir 的旁边）→ distribution/。"""
     env = os.environ.get("LANDOC_PACKAGE_ZIP")
     if env:
         return Path(env)
-    exe_dir = Path(sys.executable).resolve().parent
-    candidates = [
-        exe_dir / PACKAGE_NAME,
-        exe_dir.parent / PACKAGE_NAME,
-        _repo_root() / "distribution" / PACKAGE_NAME,
-    ]
-    for path in candidates:
+    for folder in _publish_dirs():
+        path = folder / PACKAGE_NAME
         if path.is_file():
             return path
     return None
@@ -120,8 +131,7 @@ def default_manifest_path(package_zip: Path | None = None) -> Path | None:
         return Path(env)
     if package_zip is not None:
         return Path(package_zip).parent / MANIFEST_NAME
-    exe_dir = Path(sys.executable).resolve().parent
-    for folder in (exe_dir, exe_dir.parent, _repo_root() / "distribution"):
+    for folder in _publish_dirs():
         candidate = folder / MANIFEST_NAME
         if candidate.is_file():
             return candidate

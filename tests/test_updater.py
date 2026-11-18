@@ -437,6 +437,16 @@ def test_checker_reports_failure_without_raising(update_dir):
     assert "连不上" in phases[-1]["message"]
 
 
+def test_checker_says_already_latest_instead_of_going_silent(update_dir):
+    """没有新版本时也要留一句话：否则"检查更新"点下去毫无反馈。"""
+    phases: list[dict] = []
+    checker = updater.UpdateChecker("http://x", fetch=lambda url, version: None, on_change=phases.append)
+    assert checker.check() is None
+    assert phases[-1]["phase"] == ""
+    assert "已是最新版本" in phases[-1]["message"]
+    assert updater.__version__ in phases[-1]["message"]
+
+
 def test_log_file_stays_inside_state_root(update_dir, monkeypatch):
     """跑测试时日志别写进真人档案：状态目录指到临时目录，日志也得跟着去。"""
     monkeypatch.setattr(updater, "local_app_data", lambda: Path("C:/Users/nobody/AppData/Local"))
