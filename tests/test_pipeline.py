@@ -7,7 +7,7 @@ from pathlib import Path
 import docx
 import pytest
 
-from landoc import office_bridge, pipeline
+from landoc import office_bridge, pdf_conv, pipeline
 from landoc.config import Config
 
 ENCRYPTED_HEADER = bytes.fromhex("17da5fa01633cd9a")
@@ -293,16 +293,75 @@ def test_failures_file_written_for_owner_review(cfg, docs_dir, monkeypatch):
     assert "timeout" in payload
 
 
-def test_removed_source_is_pruned_from_index_and_md(cfg, docs_dir, flat_opc, monkeypatch):
-    """I7: 文件被移出共享目录 = 撤回共享，md 与索引都必须清掉。"""
+def test_removed_source_keeps_a_copy_in_the_library(cfg, docs_dir, flat_opc, monkeypatch):
+    """库只增不减：源文档删掉后 md 副本与索引行都留着，只记一笔 source_missing。"""
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
     index = StubIndex()
     pipeline.run(cfg, index=index)
     assert index.rows
     (docs_dir / "plain.docx").unlink()
+    report = pipeline.run(cfg, index=index)
+    assert (Path(cfg.md_dir) / "成果" / "plain.docx.md").is_file()
+    assert any("plain.docx" in row["rel_path"] for row in index.rows)
+    assert report.skipped.get("source_missing") == 1
+    assert pipeline.missing_count(cfg) == 1
+
+
+def test_removing_a_folder_from_shares_withdraws_its_docs(cfg, docs_dir, flat_opc, monkeypatch):
+    """文件夹从 config.folders 里移掉 = 明确撤回：md 与索引都得清掉（授权也一并收回）。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
     pipeline.run(cfg, index=index)
+    assert index.rows
+    cfg.folders = []
+    report = pipeline.run(cfg, index=index)
+    assert not (Path(cfg.md_dir) / "成果" / "plain.docx.md").exists()
+    assert index.rows == []
+    assert list(report.skipped) == ["withdrawn"]  # 只有撤回这一种跳过，两篇都算撤回
+    assert report.skipped["withdrawn"] == 2
+
+
+def test_unreachable_folder_does_not_wipe_the_library(cfg, docs_dir, flat_opc, monkeypatch):
+    """拔了移动硬盘/网盘没连：文件夹仍在共享列表里，库一篇都不能少。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    rows_before = list(index.rows)
+    docs_dir.rename(docs_dir.with_name("成果_已拔盘"))  # 路径暂时访问不到，配置没改
+    report = pipeline.run(cfg, index=index)
+    assert (Path(cfg.md_dir) / "成果" / "plain.docx.md").is_file()
+    assert index.rows == rows_before
+    assert report.skipped.get("source_missing") == len(rows_before)
+
+
+def test_prune_gone_is_the_only_way_to_slim_the_library(cfg, docs_dir, flat_opc, monkeypatch):
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    (docs_dir / "plain.docx").unlink()
+    pipeline.run(cfg, index=index)
+    assert pipeline.missing_count(cfg) == 1
+
+    removed = pipeline.prune_gone(cfg, index=index)
+    assert removed == 1
     assert not (Path(cfg.md_dir) / "成果" / "plain.docx.md").exists()
     assert all("plain.docx" not in row["rel_path"] for row in index.rows)
+    assert pipeline.missing_count(cfg) == 0
+
+
+def test_missing_marker_clears_when_the_source_comes_back(cfg, docs_dir, flat_opc, monkeypatch):
+    """移动硬盘重新插上：记号要撤掉，别再报"源已不在"。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    moved = docs_dir.with_name("成果_已拔盘")
+    docs_dir.rename(moved)
+    pipeline.run(cfg, index=index)
+    assert pipeline.missing_count(cfg) > 0
+
+    moved.rename(docs_dir)
+    pipeline.run(cfg, index=index)
+    assert pipeline.missing_count(cfg) == 0
 
 
 def test_drive_root_folder_keeps_md_inside_lib(cfg):
@@ -535,3 +594,245 @@ def test_env_signature_is_recorded_in_state(one_bad_doc, monkeypatch):
     pipeline.run(cfg, index=StubIndex())
     state = json.loads((Path(cfg.lib_dir) / pipeline.STATE_NAME).read_text(encoding="utf-8"))
     assert state["env"] == {"office": True, "acrobat": False}
+
+
+# ============ 一批加密 PDF 共用同一个 Acrobat（省掉每篇 5.5 秒起停）============
+
+
+def _fake_pdf_session(made: list, text: str = "加密 PDF 正文内容" * 30):
+    class FakeSession:
+        def __init__(self):
+            self.used = 0
+            self.closed = False
+            made.append(self)
+
+        def extract(self, path, timeout=None):
+            self.used += 1
+            return text
+
+        def close(self):
+            self.closed = True
+
+    return FakeSession
+
+
+def _three_encrypted_pdfs(docs_dir: Path) -> None:
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        (docs_dir / name).write_bytes(ENCRYPTED_HEADER + b"%PDF" + b"x" * 64)
+
+
+def test_encrypted_pdfs_share_one_acrobat_session(cfg, docs_dir, flat_opc, monkeypatch):
+    """三篇加密 PDF 只起一个 Acrobat：原来是每篇 Dispatch 一次、转完杀一次（6.2 秒/篇）。"""
+    _three_encrypted_pdfs(docs_dir)
+    made: list = []
+    monkeypatch.setattr(pdf_conv, "has_acrobat", lambda: True)
+    monkeypatch.setattr(pdf_conv, "PDFSession", _fake_pdf_session(made))
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+
+    report = pipeline.run(cfg, index=StubIndex())
+
+    assert report.converted == 5  # 3 篇加密 PDF + 明文 docx + 加密 docx
+    assert len(made) == 1  # 一个会话转完三篇
+    assert made[0].used == 3
+    assert made[0].closed  # 一轮结束就关掉，不留常驻进程
+
+
+def test_pdf_session_is_recycled_after_max_docs(cfg, docs_dir, flat_opc, monkeypatch):
+    """内存约 +0.44 MB/篇，所以每 PDF_SESSION_MAX_DOCS 篇换一个新会话。"""
+    _three_encrypted_pdfs(docs_dir)
+    made: list = []
+    monkeypatch.setattr(pipeline, "PDF_SESSION_MAX_DOCS", 2)
+    monkeypatch.setattr(pdf_conv, "has_acrobat", lambda: True)
+    monkeypatch.setattr(pdf_conv, "PDFSession", _fake_pdf_session(made))
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+
+    report = pipeline.run(cfg, index=StubIndex())
+
+    assert report.converted == 5
+    assert len(made) == 2  # 到上限换了一个
+    assert made[0].closed and made[1].closed
+    assert made[0].used == 2 and made[1].used == 1
+
+
+# ============ 一轮的边界：limit 数"尝试"、时间预算、用户回来就停 ============
+
+
+class CountingIndex(StubIndex):
+    def __init__(self):
+        super().__init__()
+        self.commits = 0
+
+    def commit(self):
+        self.commits += 1
+
+
+def _bad_files(docs_dir: Path, count: int) -> None:
+    for i in range(count):
+        (docs_dir / f"bad{i}.docx").write_bytes(ENCRYPTED_HEADER + b"broken" * 8)
+
+
+def test_limit_counts_failed_attempts(cfg, docs_dir, monkeypatch):
+    """旧口径数"成功篇数"：一批全是坏文件时 limit 永远到不了，单次 run 会跑十几个小时。"""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad_document")
+
+    _bad_files(docs_dir, 5)
+    monkeypatch.setattr(pipeline, "convert_one", boom)
+
+    report = pipeline.run(cfg, index=StubIndex(), limit=3)
+
+    assert report.stop_reason == "limit"
+    assert report.attempted == 3  # 失败也占额度
+    assert report.converted == 0
+    assert report.pending == 7  # 2 篇原样本 + 5 篇坏文件
+    assert report.remaining == 4
+
+
+def test_budget_stops_before_any_work(cfg, flat_opc, monkeypatch):
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    report = pipeline.run(cfg, index=StubIndex(), budget=0)
+    assert report.stop_reason == "budget"
+    assert report.attempted == 0 and report.converted == 0
+    assert report.pending == 2
+
+
+def test_should_stop_stops_between_docs(cfg, flat_opc, monkeypatch):
+    """库端用它实现"用户一回来就收工"：当前这篇转完就停，不硬撑一整批。"""
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    calls = {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    report = pipeline.run(cfg, index=StubIndex(), should_stop=stop)
+
+    assert report.stop_reason == "stop"
+    assert report.attempted == 1
+    assert report.converted == 1
+    assert report.pending == 2 and report.remaining == 1
+
+
+# ============ 增量落盘与进度回调 ============
+
+
+def test_index_committed_every_n_docs(cfg, flat_opc, monkeypatch):
+    """整轮单事务时崩一次就全丢，所以每 COMMIT_EVERY 篇提交一次。"""
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    monkeypatch.setattr(pipeline, "COMMIT_EVERY", 1)
+    index = CountingIndex()
+    seen: list = []
+
+    report = pipeline.run(cfg, index=index, on_progress=lambda r: seen.append(r.converted))
+
+    assert report.converted == 2
+    assert index.commits >= 2  # 至少中途一次 + 收尾一次
+    assert 1 in seen  # 转完第一篇就报过一次进度
+
+
+def test_state_written_during_round(cfg, flat_opc, monkeypatch):
+    """state.json 中途就要有这篇，不能只在 finally 写（中断/关机就白转）。"""
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    monkeypatch.setattr(pipeline, "STATE_SECONDS", 0.0)
+    stages: list = []
+
+    pipeline.run(
+        cfg,
+        index=StubIndex(),
+        on_progress=lambda r: stages.append(len(pipeline._read_state(cfg).get("files", {}))),
+    )
+
+    assert stages and stages[0] < stages[-1]
+
+
+def test_report_counts_total_and_pending(cfg, flat_opc, monkeypatch):
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    pipeline.run(cfg, index=StubIndex())
+
+    second = pipeline.run(cfg, index=StubIndex())
+
+    assert second.total_docs == 2  # 表格文件不计入
+    assert second.pending == 0  # 没有积压
+    assert second.skipped["unchanged"] == 2
+    assert second.stop_reason == "done"
+
+
+def test_report_remaining_and_eta():
+    report = pipeline.RunReport(pending=10, attempted=4, rate=0.5)
+    assert report.remaining == 6
+    assert report.eta_seconds == 3.0
+    assert pipeline.RunReport().remaining == 0
+    assert pipeline.RunReport(pending=3).eta_seconds == 0  # 还没测出速度就不给数字
+
+
+def test_rate_skips_the_first_docs_session_startup(cfg, monkeypatch):
+    """每轮第一篇替整轮付 Office/Acrobat 启动（4.5~9 秒）；算进速率会让 ETA 永久偏高。"""
+    calls = {"n": 0}
+
+    def slow_first(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            time.sleep(0.35)  # 假装这一篇在建会话
+        return "正文内容", "direct"
+
+    # 走"明文、无需 COM"的路子：否则第二篇会去起 Office 会话，测的就不是速率了
+    monkeypatch.setattr(pipeline.probe, "classify", lambda path: "plain")
+    monkeypatch.setattr(pipeline, "_is_ooxml", lambda path: True)
+    monkeypatch.setattr(pipeline, "convert_one", slow_first)
+    monkeypatch.setattr(pipeline, "RATE_EWMA", 1.0)  # 关掉历史平滑，直接看这一轮的采样
+
+    report = pipeline.run(cfg, index=StubIndex())
+
+    assert report.attempted == 2 and report.converted == 2
+    assert report.elapsed >= 0.35
+    assert report.rate < 0.1  # 只看第二篇：几乎瞬时；含启动会 >= 0.17
+
+
+def test_rate_falls_back_to_round_time_for_a_single_doc(cfg, monkeypatch):
+    """一轮只有一篇时没有"稳态样本"，只能拿整轮时间凑，但不能是 0（否则 ETA 说谎）。"""
+    monkeypatch.setattr(
+        pipeline, "convert_one", lambda *a, **k: (time.sleep(0.2), ("正文", "direct"))[1]
+    )
+    monkeypatch.setattr(pipeline, "RATE_EWMA", 1.0)
+
+    report = pipeline.run(cfg, index=StubIndex(), limit=1)
+
+    assert report.attempted == 1
+    assert report.rate >= 0.2
+
+
+def test_stat_many_matches_serial_and_keeps_order(tmp_path, monkeypatch):
+    files = []
+    for i in range(5):
+        path = tmp_path / f"f{i}.docx"
+        path.write_bytes(b"x" * (i + 1))
+        files.append(path)
+    missing = tmp_path / "gone.docx"
+
+    monkeypatch.setattr(pipeline, "STAT_PARALLEL_MIN", 2)
+    got = pipeline._stat_many([*files, missing])
+    want = [path.stat() for path in files]
+
+    assert len(got) == 6
+    assert got[5] is None  # 读不到的给 None，调用方记 unreadable
+    assert [(s.st_size, s.st_mtime) for s in got[:5]] == [
+        (w.st_size, w.st_mtime) for w in want
+    ]
+
+    monkeypatch.setattr(pipeline, "STAT_PARALLEL_MIN", 200)  # 串行分支同样要对
+    assert [s.st_size if s else None for s in pipeline._stat_many([*files, missing])] == [1, 2, 3, 4, 5, None]

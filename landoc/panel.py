@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from landoc.app import AppStatus, LibraryApp
+from landoc.app import AppStatus, LibraryApp, eta_phrase
 from landoc.config import Config
 
 
@@ -40,10 +40,24 @@ def phase_text(status: AppStatus) -> str:
     """第一行只讲"在干什么"，篇数/时间另有专行，别重复。"""
     text = _PHASE_TEXT.get(status.phase, status.phase)
     if status.phase == "converting" and status.converted:
-        return f"{text}：已转换 {status.converted} 篇"
+        line = f"{text}：已转换 {status.converted} 篇"
+        # 还剩多少/要多久跟"已转换"一起说，否则上千篇时这一行永远像卡住了
+        if status.pending > 0:
+            line += f" · 还剩 {status.pending} 篇"
+            if status.eta_seconds > 0:
+                line += f"（{eta_phrase(status.eta_seconds)}）"
+        return line
     if status.message:
         return f"{text} · {status.message}"
+    if status.gone:
+        # 库只增不减：源文档删了/共享盘没插，内容仍在库里能搜 —— 但别让人以为一切照旧
+        return f"{text} · {status.gone} 篇源文件已不在（内容仍在库中）"
     return text
+
+
+def update_button_text(status: AppStatus) -> str:
+    """「立即更新」在建库时变成「停止建库」：手动触发的建库可能跑很久，得能停。"""
+    return "停止建库" if status.phase == "converting" else "立即更新"
 
 
 def version_text(status: AppStatus) -> str:
@@ -77,6 +91,11 @@ def status_rows(
     rows = [
         PanelRow("状态", phase_text(status)),
         PanelRow("文档", f"{status.doc_count} 篇"),
+    ]
+    if status.pending > 0:
+        eta = f"（{eta_phrase(status.eta_seconds)}）" if status.eta_seconds > 0 else ""
+        rows.append(PanelRow("待收录", f"{status.pending} 篇{eta}"))
+    rows += [
         PanelRow("共享范围", scope),
         PanelRow("服务地址", f"http://{lan_ip}:{actual_port}/"),
         PanelRow("上次扫描", status.last_scan or "还没扫过"),
@@ -228,7 +247,8 @@ class StatusPanel:
         buttons = ttk.Frame(frame)
         buttons.grid(row=row, column=0, columnspan=3, sticky="w", pady=(16, 0))
         ttk.Button(buttons, text="打开检索页", command=self._open_page).pack(side="left")
-        ttk.Button(buttons, text="立即更新", command=self._update_now).pack(side="left", padx=6)
+        self._update_button = ttk.Button(buttons, text="立即更新", command=self._update_now)
+        self._update_button.pack(side="left", padx=6)
         self._share_button = ttk.Button(buttons, text="暂停共享", command=self._toggle_share)
         self._share_button.pack(side="left")
         ttk.Button(buttons, text="授权名单", command=self._open_roster).pack(side="left", padx=6)
@@ -296,6 +316,9 @@ class StatusPanel:
                 if widget is not None:
                     widget.configure(text=item.value)
             self._share_button.configure(text="恢复共享" if status.paused else "暂停共享")
+            update_button = getattr(self, "_update_button", None)
+            if update_button is not None:
+                update_button.configure(text=update_button_text(status))
             button = getattr(self, "_upgrade_button", None)
             if button is not None:
                 if status.update_phase == "ready" and status.update_version:
@@ -318,8 +341,14 @@ class StatusPanel:
             self.on_open_page()
 
     def _update_now(self) -> None:
+        """同一个按钮两用：没在转就「立即更新」，正在转就是「停止建库」。"""
+        if self.app.building:
+            self.app.stop_building()
+            self._refresh()
+            return
         if self.on_update is not None:
             self.on_update()
+        self._refresh()
 
     def _toggle_share(self) -> None:
         if self.on_toggle_share is not None:

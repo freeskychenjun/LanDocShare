@@ -458,3 +458,26 @@ def test_people_csv_import_keeps_departments(tmp_path: Path):
     cfg = Config.load(lib)
     assert cfg.allow_people == {"郑泽锋": "10.91.1.206"}
     assert cfg.people_departments == {"郑泽锋": "水文所"}
+
+def test_registry_command_forwards_unknown_flags_verbatim(monkeypatch):
+    """4.4: 转发不再维护参数表——登记中心新加的开关不必在 CLI 这边再登记一遍。"""
+    from landoc import registry
+
+    seen: dict = {}
+
+    def fake_main(argv):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(registry, "main", fake_main)
+    assert cli.main(["registry", "--roster", "a.csv", "--future-flag", "9"]) == 0
+    assert seen["argv"] == ["--roster", "a.csv", "--future-flag", "9"]
+
+
+def test_registry_command_with_no_flags_still_works(monkeypatch):
+    from landoc import registry
+
+    seen: dict = {}
+    monkeypatch.setattr(registry, "main", lambda argv: seen.setdefault("argv", argv) or 0)
+    assert cli.main(["registry"]) == 0
+    assert seen["argv"] == []

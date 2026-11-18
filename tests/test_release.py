@@ -44,3 +44,57 @@ def test_manifest_is_written_as_readable_utf8(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert "修复：托盘图标有时是空槽" in text
     assert "\\u" not in text  # 没被 ensure_ascii 转成 \uXXXX
+
+def test_prune_keeps_latest_and_lists_the_rest(tmp_path):
+    """4.5: 只留最新版 zip + 固定下载名 + 清单，历史包与旧构建目录可回收。"""
+    out = tmp_path / "distribution"
+    out.mkdir()
+    (out / "LanDocShare-0.2.1.zip").write_bytes(b"x" * 10)
+    (out / "LanDocShare-0.2.6.zip").write_bytes(b"x" * 20)
+    (out / "LanDocShare.zip").write_bytes(b"x" * 20)
+    (out / "notes-0.2.1.txt").write_text("old", encoding="utf-8")
+    release._write_json(out / release._DEFAULT_MANIFEST, {"version": "0.2.6"})
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "LanDocShare").mkdir()
+    (dist / "LanDocShare.old-20261118-095304").mkdir()
+    (dist / "_old-0.1.0").mkdir()
+
+    doomed = release.prune(out, dist, apply=False)
+    names = sorted(path.name for path, _size in doomed)
+    assert names == [
+        "LanDocShare-0.2.1.zip",
+        "LanDocShare.old-20261118-095304",
+        "_old-0.1.0",
+        "notes-0.2.1.txt",
+    ]
+    # 干跑只打印，不动文件
+    assert (out / "LanDocShare-0.2.1.zip").exists()
+    assert (dist / "_old-0.1.0").exists()
+    # 该留的东西一个都不许碰
+    assert (out / "LanDocShare-0.2.6.zip").exists()
+    assert (out / "LanDocShare.zip").exists()
+    assert (out / release._DEFAULT_MANIFEST).exists()
+    assert (dist / "LanDocShare").exists()
+
+    release.prune(out, dist, apply=True)
+    assert not (out / "LanDocShare-0.2.1.zip").exists()
+    assert not (out / "notes-0.2.1.txt").exists()
+    assert not (dist / "_old-0.1.0").exists()
+    assert (out / "LanDocShare-0.2.6.zip").exists()
+    assert (dist / "LanDocShare").exists()
+
+
+def test_prune_without_manifest_keeps_every_zip(tmp_path):
+    """清单丢了（不知道最新是哪版）就一个 zip 都别删，宁可占点磁盘也别删错。"""
+    out = tmp_path / "distribution"
+    out.mkdir()
+    (out / "LanDocShare-0.2.1.zip").write_bytes(b"x")
+    (out / "LanDocShare-0.2.6.zip").write_bytes(b"x")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+
+    doomed = release.prune(out, dist, apply=True)
+    assert doomed == []
+    assert (out / "LanDocShare-0.2.1.zip").exists()
+    assert (out / "LanDocShare-0.2.6.zip").exists()

@@ -2,6 +2,9 @@
 
 托盘程序（`landoc/tray.py`）只负责界面，真正的服务与调度都在这里，
 这样它也能被测试直接驱动，不必真的起一个托盘图标。
+
+建库默认只在用户离开电脑时跑（`idle`）；托盘「立即重建索引」是例外：
+`update_now()` 越过门控、一路跑到没有新增为止（见 `_drain`）。
 """
 
 from __future__ import annotations
@@ -61,7 +64,10 @@ class AppStatus:
     message: str = ""
     port: int = 0
     paused: bool = False
-    converted: int = 0  # 本次空闲窗口里转换成功的篇数
+    converted: int = 0  # 本次建库（空闲窗口或手动触发）里转换成功的篇数
+    pending: int = 0  # 本轮还剩多少篇没转（0 = 不知道/没有积压）
+    eta_seconds: int = 0  # 按实测速度估的剩余秒数（0 = 还没测出速度）
+    gone: int = 0  # 源文件已不在、内容仍留在库里的篇数（库只增不减，见 pipeline.run）
     registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
     version: str = __version__  # 本机程序版本
     update_version: str = ""  # 中心上的新版本（空 = 没发现）
@@ -70,14 +76,43 @@ class AppStatus:
 
     def summary(self) -> str:
         if self.phase == "converting":
-            return f"建库中：已转换 {self.converted} 篇"
+            text = f"建库中：已转换 {self.converted} 篇"
+            # 上千篇时只报"已转换 N 篇"会被当成卡死：有总数就补上剩余与预计时间
+            if self.pending > 0:
+                text += f" · 还剩 {self.pending} 篇"
+                if self.eta_seconds > 0:
+                    text += f"（{eta_phrase(self.eta_seconds)}）"
+            return text
         if self.phase == "paused":
             return "已暂停共享"
         if self.phase == "error":
             return f"出错：{self.message}"
+        tail = f" · {self.gone} 篇源已不在" if self.gone else ""
         if self.update_phase == "ready" and self.update_version:
-            return f"我的库：{self.doc_count} 篇 · 可升级 v{self.update_version}"
-        return f"我的库：{self.doc_count} 篇 · 上次 {self.last_scan or '从未'}"
+            return f"我的库：{self.doc_count} 篇{tail} · 可升级 v{self.update_version}"
+        return f"我的库：{self.doc_count} 篇{tail} · 上次 {self.last_scan or '从未'}"
+
+
+def human_eta(seconds: float) -> str:
+    """把剩余秒数说成人话（状态窗口与短消息共用）。"""
+    seconds = int(seconds)
+    if seconds <= 0:
+        return "不到 1 分钟"
+    if seconds < 60:
+        return "不到 1 分钟"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, minutes = divmod(minutes, 60)
+    if minutes and hours < 10:
+        return f"{hours} 小时 {minutes} 分"
+    return f"{hours} 小时"
+
+
+def eta_phrase(seconds: float) -> str:
+    """带"约"的说法：「约 2 分钟」，但「不到 1 分钟」前面不加"约"（读着别扭）。"""
+    text = human_eta(seconds)
+    return text if text.startswith("不到") else f"约 {text}"
 
 
 class LibraryApp:
@@ -94,7 +129,8 @@ class LibraryApp:
         idle_check: Callable[[], bool] | None = None,
         runner: Callable | None = None,
         server_factory: Callable | None = None,
-        batch: int = 20,
+        batch: int = 100,
+        round_seconds: float = 600.0,
         poll_seconds: float = 30.0,
         idle_minutes: float = 5.0,
         on_status: Callable[[AppStatus], None] | None = None,
@@ -109,11 +145,11 @@ class LibraryApp:
         self.cfg = cfg
         self.index = index
         self._idle_check = idle_check or (lambda: idle_module.is_idle(idle_minutes))
-        self._runner = runner or (
-            lambda: pipeline.run(self.cfg, index=self.index, limit=batch)
-        )
+        self._runner = runner or self._run_round
         self._server_factory = server_factory
         self._batch = batch
+        self._round_seconds = round_seconds
+        self._round_base = 0  # 本轮之前累计转换的篇数（给进度回调换算总数）
         self._poll = poll_seconds
         self._on_status = on_status
         self._on_notify = on_notify
@@ -128,6 +164,11 @@ class LibraryApp:
 
         self._stop = threading.Event()
         self._wake = threading.Event()
+        # 手动「立即重建索引」的请求：不认空闲门控，跑到没有新增为止（见 _drain）
+        self._force = threading.Event()
+        # 手动建库的"停下"请求：空闲任务用户一回来自然就停，手动跑就得有个停的按钮
+        self._abort = threading.Event()
+        self._stop_request = False  # 用户点过「停止建库」：停下后要回一句话
         self._paused = False
         self._saved_cidrs: list[str] | None = None
         self._lock = threading.Lock()
@@ -199,7 +240,27 @@ class LibraryApp:
 
     # ---- 托盘动作 ----
     def update_now(self) -> None:
+        """「立即重建索引」：马上跑，不等用户离开电脑。
+
+        早先这里只 `_wake.set()`，worker 仍要先过 `_idle()` —— 正在用电脑时点它
+        什么都不会发生，菜单名和实际行为是两回事。现在置 `_force`，本轮门控与
+        每篇的收工检查都放行，一直跑到没有新增为止（转换起的是独立隐藏 Office
+        进程，不碰用户正开着的窗口，只是花 CPU）。
+        """
+        self._force.set()
         self._wake.set()
+
+    def stop_building(self) -> None:
+        """停下正在进行的建库（托盘/状态窗在"建库中"时把按钮换成这个）。"""
+        self._force.clear()
+        self._abort.set()
+        self._stop_request = True  # 停下来之后要说一句，别让用户盯着不动的状态栏猜
+        self._wake.set()
+
+    @property
+    def building(self) -> bool:
+        """是不是正在转换（界面据此把「立即」换成「停止建库」）。"""
+        return self.status.phase == "converting"
 
     @property
     def paused(self) -> bool:
@@ -211,6 +272,9 @@ class LibraryApp:
         self._saved_cidrs = list(self.cfg.allow_cidrs)
         self.cfg.allow_cidrs = []
         self._paused = True
+        # 暂停就是"先别干活"：连手动建库的请求一起撤掉，否则恢复共享时会突然开跑
+        self._force.clear()
+        self._abort.clear()
         self._update(phase="paused", paused=True)
 
     def resume_share(self) -> None:
@@ -355,39 +419,116 @@ class LibraryApp:
     def _worker(self) -> None:
         while not self._stop.is_set():
             if self._paused:
+                self._force.clear()
+                self._abort.clear()
                 self._update(phase="paused", paused=True)
                 self._wait(self._poll)
                 continue
-            if not self._idle():
+            clicked = self._force.is_set()  # 这一轮是用户点了「立即重建索引」吗
+            if not clicked and not self._idle():
                 self._update(phase="serving")
                 self._wait(self._poll)
                 continue
-            converted = self._drain_while_idle()
-            if converted and self._on_notify is not None:
-                try:
-                    self._on_notify(f"已收录 {converted} 篇，可被检索")
-                except Exception:  # noqa: BLE001 - 通知失败不该拖垮调度
-                    pass
+            converted, failed = self._drain()
+            # 手动点的那次必须有回音：没新增也要说一句，否则用户以为按钮坏了
+            stopped = self._stop_request  # 这一轮是被「停止建库」喊停的吗
+            self._stop_request = False
+            message = ""
+            if converted:
+                message = f"已收录 {converted} 篇，可被检索"
+            elif stopped:
+                # 停下时还有积压：既别说"已是最新"，也别静悄悄什么都不说
+                message = "已停止建库，已收录的文档照常可检索"
+            elif clicked and failed:
+                message = f"没有新增；{failed} 篇转换失败，详见 failures.json"
+            elif clicked and self.status.gone:
+                # 源文档不在了但副本还在：光说"已是最新"会让人以为库被清过
+                message = f"已是最新；{self.status.gone} 篇源文件已不在，内容仍在库中"
+            elif clicked:
+                message = "已是最新：没有需要收录的新文档"
+            if message:
+                self._notify_user(message)
             self._update(phase="serving", converted=0)
             self._wait(self._poll)
 
-    def _drain_while_idle(self) -> int:
+    def _run_round(self):
+        """一轮建库：最多 `batch` 篇「尝试」，最长 `round_seconds` 秒，用户回来就收工。
+
+        早先这里只传 `limit=batch`，而 limit 数的是**成功**篇数：一批 100 篇里
+        全是带口令/损坏文件时，单次 run 会一直转下去，用户坐下用电脑也停不下来。
+        """
+        return pipeline.run(
+            self.cfg,
+            index=self.index,
+            limit=self._batch,
+            budget=self._round_seconds,
+            should_stop=self._should_stop_round,
+            on_progress=self._on_round_progress,
+        )
+
+    def _should_stop_round(self) -> bool:
+        """每篇开始前问一次：该收工了吗（停止/暂停/手动的"停下"/用户回来了）。
+
+        手动「立即重建索引」期间不看空闲：用户点了就是要现在跑，否则正在用电脑时
+        连一篇都转不了（这正是旧版"点了没反应"的根因）。
+        """
+        if self._stop.is_set() or self._paused or self._abort.is_set():
+            return True
+        return not self._force.is_set() and not self._idle()
+
+    def _on_round_progress(self, report) -> None:
+        """转换途中刷状态：已转换按"本轮之前 + 本次"算，另报剩余篇数与 ETA。"""
+        self._update(
+            phase="converting",
+            converted=self._round_base + report.converted,
+            pending=report.remaining,
+            eta_seconds=int(report.eta_seconds),
+        )
+
+    def _drain(self) -> tuple[int, int]:
+        """连着跑轮次，直到没活干；返回 (本次共收录篇数, 本次失败篇数)。
+
+        空闲时按门控跑，用户一回来就停；手动「立即重建索引」（`_force`）时不受
+        空闲限制，一直跑到某轮既没转换也没尝试（= 没有新增）为止。
+        """
         total = 0
-        while not self._stop.is_set() and not self._paused and self._idle():
-            try:
-                report = self._runner()
-            except Exception as exc:  # noqa: BLE001 - 单轮失败等下一轮
-                message = f"{exc.__class__.__name__}: {exc}"
-                log_event(self.cfg.lib_dir, f"扫描失败：{message}")
-                self._update(phase="error", message=message)
-                return total
-            total += report.converted
-            self._refresh_counts()
-            self._update(phase="converting", converted=total)
-            if report.converted == 0:
-                break
-            self._wake.clear()
-        return total
+        failed = 0
+        try:
+            while not self._stop.is_set() and not self._paused and not self._abort.is_set():
+                if not (self._force.is_set() or self._idle()):
+                    break
+                self._round_base = total
+                try:
+                    report = self._runner()
+                except Exception as exc:  # noqa: BLE001 - 单轮失败等下一轮
+                    message = f"{exc.__class__.__name__}: {exc}"
+                    log_event(self.cfg.lib_dir, f"扫描失败：{message}")
+                    self._update(phase="error", message=message)
+                    return total, failed
+                total += report.converted
+                failed += len(report.failed or [])
+                # 每轮一行运行日志：状态窗口只留"最后一句话"，重启就没了，排障要看这个
+                if report.attempted:
+                    log_event(
+                        self.cfg.lib_dir,
+                        f"一轮结束：收录 {report.converted} 篇、失败 {len(report.failed or [])} 篇、"
+                        f"尝试 {report.attempted} 篇、剩余 {report.remaining} 篇，"
+                        f"用时 {report.elapsed:.0f} 秒（{report.stop_reason or '-'}）",
+                    )
+                self._refresh_counts()
+                self._update(
+                    phase="converting",
+                    converted=total,
+                    pending=report.remaining,
+                    eta_seconds=int(report.eta_seconds),
+                )
+                if report.converted == 0 and not report.attempted:
+                    break
+                self._wake.clear()
+            return total, failed
+        finally:
+            self._force.clear()
+            self._abort.clear()
 
     def _refresh_counts(self) -> None:
         try:
@@ -395,7 +536,11 @@ class LibraryApp:
             state = pipeline._read_state(self.cfg)
         except Exception:  # noqa: BLE001
             return
-        self._update(doc_count=stats.get("total", 0), last_scan=state.get("last_scan_ts", ""))
+        self._update(
+            doc_count=stats.get("total", 0),
+            last_scan=state.get("last_scan_ts", ""),
+            gone=pipeline.missing_count(self.cfg),
+        )
 
     def _wait(self, seconds: float) -> None:
         self._wake.wait(seconds)

@@ -111,3 +111,29 @@ def test_existing_config_skips_wizard(tmp_path, monkeypatch):
 
     assert tray.main(["--lib-dir", str(lib_dir)]) == 0
     assert started["cfg"].name == "老库"
+
+
+class _FakeApp:
+    building = False
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def update_now(self) -> None:
+        self.calls.append("update")
+
+    def stop_building(self) -> None:
+        self.calls.append("stop")
+
+
+def test_rebuild_menu_item_switches_between_rebuild_and_stop():
+    """「立即重建索引」点下去会真的跑起来；正在跑时同一项变成「停止建库」。"""
+    owner = types.SimpleNamespace(app=_FakeApp())
+    assert tray.TrayApp._rebuild_label(owner) == "立即重建索引"
+    tray.TrayApp._rebuild_or_stop(owner)
+    assert owner.app.calls == ["update"]
+
+    owner.app.building = True
+    assert tray.TrayApp._rebuild_label(owner) == "停止建库"
+    tray.TrayApp._rebuild_or_stop(owner)
+    assert owner.app.calls == ["update", "stop"]

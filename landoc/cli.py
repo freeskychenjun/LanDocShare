@@ -212,6 +212,25 @@ def _cmd_status(args) -> int:
     print(f"存储策略：{_storage_policy(cfg)}")
     print(f"登记中心：{cfg.registry_url or '（未登记，同事只能靠手动地址发现）'}")
     print(f"上次扫描：{state.get('last_scan_ts', '（从未）')}")
+    gone = pipeline.missing_count(cfg)
+    if gone:
+        print(f"源已不在：{gone} 篇（内容仍在库中，可正常检索；要清掉用 `landoc prune --gone`）")
+    return 0
+
+
+def _cmd_prune(args) -> int:
+    """库只增不减：扫描器不再因为"源文档没了"删东西，瘦身得在这动手。"""
+    cfg = Config.load(Path(args.lib_dir))
+    gone = pipeline.missing_count(cfg)
+    if not args.gone:
+        if not gone:
+            print("[提示] 没有源文件缺失的文档，库是完整的")
+            return 0
+        print(f"[提示] 有 {gone} 篇源文件已不在（内容仍在库中，照常可检索）")
+        print("       要真删掉它们的 md 副本与索引行，加 --gone")
+        return 0
+    removed = pipeline.prune_gone(cfg)
+    print(f"[OK] 已清理 {removed} 篇源文件已不在的文档")
     return 0
 
 
@@ -464,7 +483,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     convert = sub.add_parser("convert", help="转换一批文档")
     convert.add_argument("--lib-dir", required=True)
-    convert.add_argument("--limit", type=int, default=None)
+    convert.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="本轮最多尝试转换的篇数（失败/超时也算一篇）",
+    )
     convert.set_defaults(func=_cmd_convert)
 
     serve = sub.add_parser("serve", help="启动只读检索服务")
@@ -475,6 +499,13 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="查看库统计")
     status.add_argument("--lib-dir", required=True)
     status.set_defaults(func=_cmd_status)
+
+    prune = sub.add_parser(
+        "prune", help="清理「源文件已不在」的文档（库只增不减，瘦身得人点头）"
+    )
+    prune.add_argument("--lib-dir", required=True)
+    prune.add_argument("--gone", action="store_true", help="真的删掉（md 副本 + 索引行）")
+    prune.set_defaults(func=_cmd_prune)
 
     people_cmd = sub.add_parser("people", help="查看/维护允许名单（姓名 → IP → 部门）")
     people_cmd.add_argument("--lib-dir", required=True)
@@ -509,21 +540,17 @@ def build_parser() -> argparse.ArgumentParser:
     update_cmd.add_argument("--install", action="store_true", help="下载后立即安装并重启（需先退出托盘程序）")
     update_cmd.set_defaults(func=_cmd_update)
 
-    registry_cmd = sub.add_parser("registry", help="启动登记中心（让同事们互相发现彼此的库）")
-    registry_cmd.add_argument("--port", type=int, default=None, help="默认 8767")
-    registry_cmd.add_argument("--state-dir", default=None, help="registry.json 放哪，默认 ~/.landoc-registry")
-    registry_cmd.add_argument("--allow-cidrs", default=None, help="允许来源网段，逗号分隔（默认 10.91.0.0/16）")
-    registry_cmd.add_argument("--package-zip", default=None, help="库软件 zip 路径（/download 用）")
-    registry_cmd.add_argument("--manifest", default=None, help="版本清单 latest.json 路径（默认与 zip 同目录）")
-    registry_cmd.add_argument("--advertise", default=None, help="对外公布的中心地址，默认按请求 Host 推断")
-    registry_cmd.add_argument("--roster", default=None, help="部门授权名单 roster.csv 的存放位置")
-    registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run，带看门狗）后退出")
-    registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
-    registry_cmd.add_argument("--watchdog", action="store_true", help="常驻看门狗：中心退出/卡死时自动拉起")
-    registry_cmd.add_argument("--watchdog-log", default=None, help="看门狗日志路径")
-    registry_cmd.add_argument("--watchdog-interval", type=float, default=None, help="多少秒探一次 /health（0=不探）")
-    registry_cmd.add_argument("--watchdog-failures", type=int, default=None, help="连续几次没应答算卡死")
-    registry_cmd.add_argument("--stop", action="store_true", help="让正在运行的中心优雅退出（重打包前用）")
+    # 登记中心的参数**原样透传**：`landoc registry …` 之后的一切都交给 registry.main 自己解析
+    # （以前是这边逐条搬 13 个参数，中心一加参数两边就得同步改，`--roster` 就这么漏过一次）。
+    # 真正的转发在 `main()` 开头做（argparse 的 REMAINDER 遇到 `--xxx` 会失灵），这里只占个位置，
+    # 让 `landoc --help` 里仍能看到这个子命令。
+    registry_cmd = sub.add_parser(
+        "registry",
+        help="启动登记中心（让同事们互相发现彼此的库）",
+        description="参数原样转发给登记中心，例如 `landoc registry --port 8767 --watchdog`；"
+        "`landoc registry --help` 看完整列表。",
+        add_help=False,
+    )
     registry_cmd.set_defaults(func=_cmd_registry)
     return parser
 
@@ -531,50 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_registry(args) -> int:
     from landoc import registry
 
-    argv = _registry_argv(args)
-    return registry.main(argv)
-
-
-# 顺序照 CLI 里写的来：同一组参数转发后读起来与输入一致（测试也按这个顺序断言）
-_REGISTRY_ARGS = (
-    ("port", "--port", False),
-    ("state_dir", "--state-dir", False),
-    ("allow_cidrs", "--allow-cidrs", False),
-    ("package_zip", "--package-zip", False),
-    ("manifest", "--manifest", False),
-    ("advertise", "--advertise", False),
-    ("roster", "--roster", False),
-    ("install_autostart", "--install-autostart", True),
-    ("remove_autostart", "--remove-autostart", True),
-    ("watchdog", "--watchdog", True),
-    ("watchdog_log", "--watchdog-log", False),
-    ("watchdog_interval", "--watchdog-interval", None),
-    ("watchdog_failures", "--watchdog-failures", None),
-    ("stop", "--stop", True),
-)
-
-
-def _registry_argv(args) -> list[str]:
-    """把 `landoc registry …` 收到的参数原样转给 registry.main。
-
-    以前这里是一个个 if 手工搬，加参数时两边各写一遍很容易漏（`--roster` 就这么
-    漏了很久：命令行收了，登记中心却还是用默认名单）。
-    """
-    argv: list[str] = []
-    for name, flag, kind in _REGISTRY_ARGS:
-        value = getattr(args, name, None)
-        if kind is True:
-            if value:
-                argv.append(flag)
-        elif value is None or value == "":
-            continue
-        elif name == "watchdog_interval":
-            argv += [flag, f"{float(value):g}"]
-        elif name == "watchdog_failures":
-            argv += [flag, str(int(value))]
-        else:
-            argv += [flag, str(value)]
-    return argv
+    return registry.main([])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -584,7 +568,14 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(errors="replace")  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001 - 老环境/被重定向就算了
             pass
-    args = build_parser().parse_args(argv)
+    words = list(sys.argv[1:] if argv is None else argv)
+    # `registry` 之后的一切原样交给登记中心自己的 argparse：这边不再维护一份参数表，
+    # 中心加了参数也不用两边同步（argparse 的 REMAINDER 在这里吃不住 --xxx，只能先切）
+    if words and words[0] == "registry":
+        from landoc import registry
+
+        return registry.main(words[1:])
+    args = build_parser().parse_args(words)
     return args.func(args)
 
 

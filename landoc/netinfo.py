@@ -1,7 +1,8 @@
-"""内网地址探测（给 CLI 与状态窗口共用）。"""
+"""内网地址探测与网段判定（给 CLI、库端服务与登记中心共用）。"""
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 
 
@@ -20,6 +21,28 @@ def local_ips() -> frozenset[str]:
     except OSError:
         pass
     return frozenset(found)
+
+
+def cidr_allowed(ip: str, cidrs) -> bool:
+    """来源 IP 是否落在允许的网段里。
+
+    库端服务（`server._ip_allowed`）与登记中心（旧 `registry._cidr_allowed`）是同一套判定，
+    所以只有这一份实现。语义上偏保守：**空清单 = 拒绝所有来源**（对应"暂停共享"），
+    绝不能反过来变成"全网放行"；清单里写错的网段跳过，不让它把整台机器挡死或放开。
+    """
+    if not cidrs:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for cidr in cidrs:
+        try:
+            if addr in ipaddress.ip_network(str(cidr), strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def lan_ip() -> str:

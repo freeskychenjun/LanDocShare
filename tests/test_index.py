@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -159,3 +160,93 @@ def test_recent_honours_limit_and_empty_library(idx: Index):
         idx.upsert(f"f{i}.md", f"文档{i}", "docx", f"/s/f{i}.docx", 10, 1.0, "乐平")
     assert len(idx.recent(limit=3)) == 3
     assert len(idx.recent(limit=0)) == 1  # 下界夹到 1，绝不返回空列表骗前端
+
+
+def test_fts_shares_one_copy_of_the_text(idx: Index):
+    """正文只存 documents 一份：FTS 是 external content 表，不再自带 title/content。"""
+    idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程概况")
+    idx.commit()
+    sql = idx.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents_fts'"
+    ).fetchone()[0]
+    assert "content='documents'" in sql and "content_rowid='rowid'" in sql
+    # external content 表自身不存正文：查询仍能 JOIN 出正文，片段也从 documents 生成
+    rows, _ = idx.search("乐平")
+    assert rows[0]["snippet"].count("乐平") >= 1
+    assert "<<乐平>>" in rows[0]["snippet"]
+
+
+def test_triggers_keep_fts_in_sync_across_upsert_and_delete(idx: Index):
+    """不手工删插 FTS：INSERT/UPDATE/DELETE 触发器要能把倒排跟着改对。"""
+    idx.upsert("a.md", "马斯京根演算", "docx", "/s/a.docx", 10, 1.0, "马斯京根法河道洪水演算")
+    idx.commit()
+    assert idx.search("马斯京根")[0]
+    # 同名改正文 + 改标题：旧词必须消失，新词必须能命中，且 FTS 里只有这一行
+    idx.upsert("a.md", "鄱阳湖调度", "docx", "/s/a.docx", 20, 2.0, "鄱阳湖星子站水位过程")
+    idx.commit()
+    assert idx.search("马斯京根")[0] == []
+    assert idx.search("鄱阳湖")[0][0]["title"] == "鄱阳湖调度"
+    assert idx.conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0] == 1
+    idx.delete("a.md")
+    idx.commit()
+    assert idx.search("鄱阳湖")[0] == []
+    assert idx.conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0] == 0
+
+
+LEGACY_SCHEMA = """
+CREATE TABLE documents (
+    rowid      INTEGER PRIMARY KEY AUTOINCREMENT,
+    rel_path   TEXT UNIQUE NOT NULL,
+    title      TEXT NOT NULL,
+    ext        TEXT,
+    source_path TEXT,
+    src_size   INTEGER NOT NULL,
+    src_mtime  REAL NOT NULL,
+    content    TEXT NOT NULL,
+    indexed_at TEXT
+);
+CREATE VIRTUAL TABLE documents_fts USING fts5(title, content, tokenize='trigram');
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+"""
+
+
+def _legacy_library(db: Path) -> None:
+    """造一个 0.2.x 的库：documents_fts 自带正文、没有触发器。"""
+    conn = sqlite3.connect(str(db))
+    conn.executescript(LEGACY_SCHEMA)
+    for rel, title, content in (
+        ("a.md", "乐平枢纽", "乐平水利枢纽工程概况"),
+        ("b.md", "马斯京根", "马斯京根法河道洪水演算"),
+    ):
+        conn.execute(
+            "INSERT INTO documents (rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at)"
+            " VALUES (?, ?, 'docx', '/s/x.docx', 10, 1.0, ?, '2026-11-17 10:00:00')",
+            (rel, title, content),
+        )
+        rowid = conn.execute("SELECT rowid FROM documents WHERE rel_path = ?", (rel,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO documents_fts (rowid, title, content) VALUES (?, ?, ?)", (rowid, title, content)
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_library_is_migrated_in_place(tmp_path: Path):
+    """老库打开时自动换成 external content 表并重建倒排，检索不丢。"""
+    db = tmp_path / "library.db"
+    _legacy_library(db)
+    idx = Index(db)
+    sql = idx.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents_fts'"
+    ).fetchone()[0]
+    assert "content='documents'" in sql
+    for name in ("documents_ai", "documents_ad", "documents_au"):
+        assert idx.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name = ?", (name,)
+        ).fetchone()
+    assert idx.search("马斯京根")[0][0]["path"] == "b.md"  # 倒排已重建
+    assert idx.stats()["total"] == 2
+    # 再开一次是幂等的：不重建成空表，触发器也还在
+    again = Index(db)
+    assert again.search("乐平")[0][0]["path"] == "a.md"
+    assert again.conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0] == 2

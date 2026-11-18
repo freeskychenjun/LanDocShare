@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import threading
 import time
@@ -20,6 +19,7 @@ from pathlib import Path
 
 from landoc import __version__
 from landoc.index import MAX_LIMIT, Index
+from landoc.netinfo import cidr_allowed
 from landoc.ratelimit import DEFAULT_RATE, RateLimiter
 
 MAX_QUERY_LEN = 200
@@ -109,20 +109,8 @@ class Audit:
 
 
 def _ip_allowed(ip: str, allow_cidrs) -> bool:
-    # 空列表 = 暂停共享 = 拒绝所有来源（绝不能反过来变成"全网放行"）
-    if not allow_cidrs:
-        return False
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    for cidr in allow_cidrs:
-        try:
-            if addr in ipaddress.ip_network(str(cidr), strict=False):
-                return True
-        except ValueError:
-            continue
-    return False
+    # 空列表 = 暂停共享 = 拒绝所有来源（绝不能反过来变成"全网放行"）；判定在 netinfo 里只有一份
+    return cidr_allowed(ip, allow_cidrs)
 
 
 def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | None, str | None]:

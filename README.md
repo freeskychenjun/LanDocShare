@@ -26,6 +26,9 @@ python -m landoc serve --lib-dir D:\MyLib
 # 看统计
 python -m landoc status --lib-dir D:\MyLib
 
+# 清理「源文件已不在」的文档（库只增不减，瘦身要人点头；不加 --gone 只报数）
+python -m landoc prune --lib-dir D:\MyLib --gone
+
 # 维护允许名单（姓名只作备注，真正按 IP 放行）：CSV 两列 姓名,IP
 python -m landoc people --lib-dir D:\MyLib --csv 名单.csv     # 合并导入
 python -m landoc people --lib-dir D:\MyLib                    # 看名单
@@ -70,11 +73,12 @@ python -m landoc.tray --lib-dir D:\MyLib
 python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 ```
 
-双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的状态窗口打开。托盘菜单：显示状态窗口 / 打开库主页 / **检查更新（发现新版后变成「下载新版本 v…」→「升级到 v…」）** / 立即重建索引 / 修改建库设置… / 暂停共享 / 权限设置 / 开机自启 / 查看日志 / 退出。
+双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的状态窗口打开。托盘菜单：显示状态窗口 / 打开库主页 / **检查更新（发现新版后变成「下载新版本 v…」→「升级到 v…」）** / **立即重建索引（正在建库时变成「停止建库」）** / 修改建库设置… / 暂停共享 / 权限设置 / 开机自启 / 查看日志 / 退出。
 
 - **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。
 - **「谁能查」三档**：公司内网（默认网段 10.91.0.0/16，**可改**，如只给本院填 10.91.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：名单里填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；姓名的两种用途是①IP 会变的人可以不填 IP、只登记姓名，这时必须报姓名才放行；②日志里好看。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（只有存在"没登记 IP"的人时才是 true）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 10.91.1.0/24,10.91.10.0/24`。改名单**即时生效**，不用重启服务。
 - **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数、共享范围、服务地址、上次扫描、**版本**，带「打开检索页 / 立即更新 / **检查更新（有新版时变「下载更新」/「升级到 v…」）** / 暂停共享 / 授权名单 / 复制地址」按钮。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
+- **「立即重建索引」是真的立即**（旧版只是叫醒调度线程，仍要过空闲门控——正在用电脑时点了没反应）：点下去就置 `_force`，本轮门控与每篇开始前的收工检查都放行，**一直跑到没有新增为止**（不是跑一轮就收工），状态窗口同时显示"已转换 N 篇 · 还剩 M 篇（约 X 分钟）"。转换起的是独立的隐藏 Office/WPS 进程（`DispatchEx` + `Visible=False`），不碰你正开着的窗口，只占 CPU。跑完弹回音：有新增说"已收录 N 篇，可被检索"，没有新增说"已是最新：没有需要收录的新文档"（有失败则报失败篇数）——点了没动静和"按钮坏了"看着一样，所以必须有这句话。**停下**：建库期间托盘那一项和状态窗按钮都变成「停止建库」；「暂停共享」也会把它撤掉（恢复共享后不会自己又跑起来）。
 - Win11 会把新图标收进任务栏的 `^` 溢出区：点开 `^`，把纸页图标拖到任务栏上就常驻了。
 - **托盘图标怎么才画得出来**（`landoc/notifyicon.py`）：pystray 0.19.5 发 `NOTIFYICONDATAW` 时传的是 `hID=`，而字段名是 `uID`，ctypes 不校验关键字 → **uID 永远是 0**，外壳只会留个空槽（没图标、右键点不出菜单）。程序启动时给 `Shell_NotifyIcon` 包了一层：uID 补成非零；`NIM_ADD` 失败（外壳残留上一条记录时常见）就删掉重加，还不行就补一条带 `NIF_ICON` 的 `NIM_MODIFY`，并在后台再试几次。排障可设 `LANDOC_TRAY_DEBUG=1`，日志在 `%LOCALAPPDATA%\LanDocShare\logs\tray.log`。
 
@@ -231,12 +235,26 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 | 加密 pdf 如何转文本 | **本机有 Acrobat 就用它**（`PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、不落明文副本）；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录查找顺序：`init --acrobat-tool-dir` → 环境变量 `LANDOC_ACROBAT_TOOL_DIR` → exe 同级的 `工具\`（打包版，同事机器用这个）→ 仓库根 `工具\` 与开发路径（仅源码运行时） | `pdf_conv` / `cli.acrobat_tool_candidates` |
 | Acrobat 取文本为什么要拼接 | `GetText(i)` 返回的是**单个字符**，直接 join 会得到逐字断行的碎片，trigram 命中率归零；`_join_tokens` 做中文不加空格/ASCII 补空格 | `pdf_conv._join_tokens` |
 | 一批文档为什么共用一个 Office | 每篇重启 Office 要白付 6 秒；`OfficeSession` 把整批固定在同一 COM 线程 | `office_bridge` |
+| 一批加密 pdf 为什么也共用一个 Acrobat | 同上但更贵：每篇 `Dispatch`+杀进程要白付 **5.5 秒（占 6.2 秒的 88%）**；`PDFSession` 用一次 `Dispatch` 连转一批、每篇只新建 `PDDoc`（复用 PDDoc 无收益），每 500 篇换新会话（内存约 +0.44 MB/篇） | `pdf_conv.PDFSession` |
 | `.doc/.ppt/.dps/.wps` 为什么也走 COM | 这些是 OLE 容器，python-docx/python-pptx 不认；判据是"是否加密 或 不是 zip" | `pipeline.convert_one` |
 | 失败的文件会不会每轮都重试 | **同一版本**（mtime+size 都没变）连续失败 1 次就不再碰；版本变了或累计到 `MAX_ATTEMPTS=3` 次也停，记在 `failures.json` 等人工看 | `pipeline.run` / `MAX_ATTEMPTS` |
 | 装了 Office / Acrobat 之后老失败会不会自愈 | run() 开头探一次环境指纹（`office`/`acrobat`）存进 `state.json`，指纹一变就清掉 `no_office`/`no_reader` 这类**环境性**失败记录（`timeout` 等文件自身的失败保留） | `pipeline.env_signature` / `_drop_stale_env_failures` |
 | 中文检索为什么用 trigram | jieba 分词边界对不上就零命中（查"马斯京根"vs 索引里"马斯京根法"）；trigram 做子串匹配 | `index.build_match_query` |
+| 正文为什么只存一份 | `documents_fts` 是 external content 表（`content='documents'`），自己只存倒排、正文按 rowid 从 `documents` 读；三个触发器跟着 INSERT/UPDATE/DELETE 同步（`ON CONFLICT DO UPDATE` 也会触发 UPDATE 触发器）。旧库打开时自动 DROP 旧表 → `rebuild` → `VACUUM`（100 篇约 0.2 秒） | `index.SCHEMA` / `Index._migrate_fts` |
 | 2 字查询（"乐平""洪水"） | 低于 trigram 最小长度，改走 `instr` 子串扫描 | `index._like_search` |
 | 想"只共享片段、不落盘" | `--no-store-content` 只把前 `snippet_only_chars` 字（默认 20000，可调）写进索引（超出部分搜不到是刻意的）；`--no-render-md` 不落 md 副本、清掉旧副本 | `pipeline.run` / `Config` |
+| 上千篇的批次怎么划 | 一轮最多 **attempt** `batch`（默认 100）篇（失败/超时也占额度）、最长 `round_seconds`（默认 600 秒）；每篇开始前问一次「用户回来了 / 暂停 / 退出」，是就收手，剩下的留给下个空闲窗口 | `app._run_round` / `pipeline.run(budget=, should_stop=)` |
+| 点「立即重建索引」为什么以前没反应 | 它只 `_wake.set()`，worker 醒来仍要过 `_idle()`，正在用电脑时连一篇都转不了。现在置 `_force`：本轮门控与每篇的收工检查都放行，且**连着跑到没有新增为止**；`_abort` 是「停止建库」，`pause_share()` 也会把请求撤掉 | `app.update_now` / `app._drain` / `app._should_stop_round` |
+| 建库中途断电/被关掉会白转吗 | 索引每 20 篇 `commit` 一次、`state.json` 每 60 秒整份重写一次，重启从下一篇继续（原来是整轮跑完才在 `finally` 写一次，CLI 全量 = 整库单事务） | `pipeline.COMMIT_EVERY` / `STATE_SECONDS` |
+| 删掉/移走源文档，库里的副本会不会跟着没 | **不会**：库只增不减。源文件消失（删了、改名、移走、共享盘没插）只是记一笔 `source_missing`，md 与索引行都留着、照常可检索，状态窗口报「M 篇源文件已不在（内容仍在库中）」；源文档回来后记号自动撤掉。**唯一**会自动删的时机是把整个文件夹从 `config.folders` 里移掉（明确撤回，授权一并收回）。想瘦身用 `landoc prune --gone`。早先是"这一轮没扫到就删"，拔了移动硬盘启动托盘会把整个库清空 | `pipeline.run` / `pipeline.prune_gone` / `pipeline._configured_tops` |
+| 状态窗口怎么让人信"它没死" | 首行 `建库中：已转换 300 篇 · 还剩 700 篇（约 1 小时 2 分）`，另有「待收录」一行；ETA 用实测秒/篇的滑动平均（`rate_s_per_doc`），不因某篇超时而跳 | `app.AppStatus.summary` / `panel.phase_text` |
+| 出问题去哪看 | 状态窗口只有"最后一句话"，细节在 `<库目录>\logs\app.log`（超 1 MB 滚成 `.1`）：启动、扫描失败、登记中心恢复，以及**每轮一行摘要**（收录/失败/尝试/剩余/用时/停止原因，空转轮不写） | `app.log_event` / `app._drain` |
+| 网段放行判定为什么只有一份 | `netinfo.cidr_allowed()` 同时给库端服务与登记中心用：空清单 = 暂停共享 = 拒绝所有来源（绝不反向变成全网放行），写错的网段跳过不致命 | `netinfo.cidr_allowed` / `server._ip_allowed` / `registry._cidr_allowed` |
+| 换网卡后管理员会不会被自己的中心挡成 403 | 不会：本机地址每 60 秒现查一次（`_current_local_ips`），没显式配 `roster_admin_ips` 时"谁算本机"随网络走 | `registry._current_local_ips` |
+| 多网卡/VPN 机器不想让某条链路改名单 | 在 `registry.json` 的 config 里显式写 `roster_admin_ips`（支持单 IP 或 CIDR），默认清单就不再自动取全部网卡地址 | `registry._roster_admin_ips` |
+| 配置文件将来改了字段含义怎么办 | `config.json` 带 `config_version`（现为 1）；`from_dict` 只按 dataclass 字段加载、未知键静默忽略，新旧版本互读都不炸 | `config.CONFIG_VERSION` |
+| `landoc registry` 的参数为什么不再列举 | 参数**原样透传**给登记中心自己的 argparse（`landoc registry --help` 就是中心的帮助）；以前逐条搬 13 个参数，中心加参数就得两边同步，`--roster` 漏过一次 | `cli.main` |
+| 打包产物越堆越多 | `python packaging/release.py --prune`（只打印）／`--prune --apply`（真删）：只留最新版 zip、固定下载名 `LanDocShare.zip`、`latest.json`、当前说明与 `dist/LanDocShare`；**清单缺失时一个 zip 都不删**。本机已实际清理 9 项 / 951.3 MB（dist 579→174 MB、distribution 727→182 MB，仓库 1.44 GB→492 MB） | `packaging/release.py` |
 
 ## 实测基准（本机，Python 3.14 / WPS + Office 2019）
 
@@ -247,6 +265,12 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 - 加密 docx：31,545 字正文 + 13 张表格，Heading 1/2/3 完整
 - 加密 pptx：逐页形状文本 + 表格
 - 加密 pdf：Acrobat 路线 **5.1 秒（含进程启动）/ 21 页 8,456 字**，文本干净、无需 OCR、不留明文副本；服务端 `水安全保障`/`十五五` 均命中并高亮
+- 同一份加密 pdf 复制 100 份（`PDFSession` 一批共用一个 Acrobat）：**100.2 秒 / 100 篇 ≈ 1.0 秒/篇**（含落 md + 写索引）；纯取文本 0.73 秒/篇，启动 4.45 秒只付一次 → **比每篇重起 Acrobat（6.2 秒/篇）快 6 倍**
+- 上千篇的估算因此从「1000 篇 ≈ 103 分钟」降到 **≈ 13 分钟**（2000 篇 3.4 小时 → 25 分钟）
+- 一轮的边界（40 份加密 pdf 副本上实测）：`limit=10` → 只尝试 10 篇（15.0 秒，含首次 Acrobat 启动），`budget=3` → 转完手头那篇就停，`should_stop` 第 6 次为真 → 停在这一篇之后；第一轮结束 `state.json` 已记 10 篇（改造前只在整轮 `finally` 写一次）。索引 20 篇一提交比整轮单事务只慢约 15%，单事务时 WAL 峰值会涨到库大小且建库途中搜不到新内容
+- 索引体积（正文只存一份之后）：100 份真实加密 pdf（每篇 8,456 字）**9.6 → 7.0 MB，省 27%**（8.3 字节/字）；合成 2 万字/篇的 1000 篇 **139.5 → 80.1 MB，省 43%**（4.0 字节/字）。写入速度两者都在 ~2 毫秒/篇，相对 1 秒/篇的转换可以忽略。老库第一次打开会自动迁移 + VACUUM（100 篇 0.21 秒）
+- 速率的算法（ETA 的地基）：只数"真在转"的时间，且**每轮第一篇不计**——那一篇替整轮付了 Office/Acrobat 的 4.5~9 秒启动。20 份加密 pdf 的库上 `limit=8` 两轮：墙钟 17.5 秒 / 14.8 秒，但速率都稳定在 **0.74 秒/篇**（含启动的旧口径是 2.19 / 1.84 秒/篇，把剩余的 ETA 夸大成 26.3 秒 / 7.4 秒，实际 9.0 秒 / 3.0 秒）
+- 规划阶段（扫目录 + stat）的开销：7,427 篇的目录（`G:\2025年工作`）热态 `_iter_docs` **0.37 秒** + stat **0.28 秒** = 0.65 秒；stat 分给 4 条线程只省 0.06 秒（1.27×），所以没有为它做"目录 mtime 缓存"——省下的那点时间买不回漏收新文件的风险
 
 ## 测试
 
@@ -275,7 +299,7 @@ landoc/
   autostart.py     开机自启（HKCU Run 键）
   wizard.py        建库向导（tkinter 单屏）
   panel.py         状态窗口（tkinter，关窗=隐藏）
-  netinfo.py       内网地址探测（CLI 与状态窗口共用）
+  netinfo.py       内网地址探测 + 网段判定（CLI / 服务 / 登记中心共用同一份）
   registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）+ 分发入口 + 名单发布 + `--stop` 优雅停止
   watchdog.py      中心看门狗（`--watchdog`）：子进程退避重启、`/health` 卡死判定、日志
   roster.py        授权名单：本地增删/排序、与中心之间的发布与拉取
@@ -287,7 +311,7 @@ landoc/
 
 packaging/
   LanDocShare.spec PyInstaller onedir 打包配置（排掉 torch/cv2 等重包）
-  release.py       发布新版本：PyInstaller → 版本化 zip → sha256 → latest.json
+  release.py       发布新版本：PyInstaller → 版本化 zip → sha256 → latest.json；`--prune [--apply]` 清旧包
 
 skill/lan-lib-search/
   SKILL.md             给 AI 助手的用法说明（触发词、流程、无 Python 时的 curl 降级）

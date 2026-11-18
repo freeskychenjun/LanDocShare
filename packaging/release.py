@@ -180,6 +180,60 @@ def release(
     return manifest
 
 
+def _path_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def prune(
+    out_dir: Path = DEFAULT_OUT_DIR,
+    dist_root: Path | None = None,
+    *,
+    apply: bool = False,
+) -> list[tuple[Path, int]]:
+    """清掉旧版本留下的包与构建产物，只保留最新那份（默认只打印，`apply=True` 才真删）。
+
+    留：`latest.json`、当前版本的 zip、`LanDocShare.zip`（首次安装的固定下载名）、
+    当前版本的说明文件，以及 `dist/LanDocShare`（下一次 `--skip-build` 还要用）。
+    删：更早版本的 zip/说明、`dist/LanDocShare.old-*`、`dist/_old-*`。
+    """
+    out_dir = Path(out_dir)
+    manifest = load_previous_manifest(out_dir)
+    current = str(manifest.get("version") or "")
+    root = Path(dist_root) if dist_root is not None else DEFAULT_DIST.parent
+
+    doomed: list[tuple[Path, int]] = []
+    # 不知道"最新是哪版"就一个 zip 都别删：宁可占点磁盘，也不能把要用的包删掉
+    if current and out_dir.is_dir():
+        for path in sorted(out_dir.glob("LanDocShare-*.zip")):
+            if path.stem == f"LanDocShare-{current}":
+                continue
+            doomed.append((path, _path_size(path)))
+        for path in sorted(out_dir.glob("notes-*.txt")):
+            if path.stem == f"notes-{current}":
+                continue
+            doomed.append((path, _path_size(path)))
+    if root.is_dir():
+        for path in sorted(root.iterdir()):
+            if path.is_dir() and path.name.startswith(("LanDocShare.old-", "_old-")):
+                doomed.append((path, _path_size(path)))
+
+    total = 0
+    for path, size in doomed:
+        total += size
+        action = "删除" if apply else "可删"
+        print(f"  [{action}] {path} — {size / 1024 / 1024:.1f} MB")
+    print(f"  合计 {len(doomed)} 项、{total / 1024 / 1024:.1f} MB{'（已删除）' if apply else '（--apply 才真删）'}")
+    if apply:
+        for path, _size in doomed:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    return doomed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="release", description="发布 LanDocShare 新版本")
     parser.add_argument("--version", default=__version__, help=f"要发布的版本（默认 {__version__}）")
@@ -191,7 +245,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mandatory", action="store_true", help="标记为强烈建议升级")
     parser.add_argument("--skip-build", action="store_true", help="不跑 PyInstaller，直接压 dist/")
     parser.add_argument("--force", action="store_true", help="允许同版本/降级覆盖（慎用）")
+    parser.add_argument("--prune", action="store_true", help="清掉旧版本的 zip 与历史构建产物（只打印，不动手）")
+    parser.add_argument("--apply", action="store_true", help="配 --prune 用：真的删")
     args = parser.parse_args(argv)
+
+    if args.prune:
+        prune(Path(args.out_dir), Path(args.dist).parent, apply=args.apply)
+        return 0
 
     notes = [_fix_console_text(note) for note in args.notes]
     if args.notes_file:

@@ -137,6 +137,16 @@ class TrayApp:
     def _update_now(self) -> None:
         self.app.update_now()
 
+    def _rebuild_label(self) -> str:
+        """没在转换就「立即重建索引」，正在转换就变成能停下来的「停止建库」。"""
+        return "停止建库" if self.app.building else "立即重建索引"
+
+    def _rebuild_or_stop(self) -> None:
+        if self.app.building:
+            self.app.stop_building()
+        else:
+            self.app.update_now()
+
     def _update_label(self) -> str:
         status = self.app.status
         if self.app.update_ready:
@@ -244,7 +254,7 @@ class TrayApp:
             pystray.MenuItem("打开库主页", self._open_page),
             pystray.MenuItem("可访问的资料库…", self._show_libraries),
             pystray.MenuItem(lambda item: self._update_label(), self._menu_update),
-            pystray.MenuItem("立即重建索引", self._update_now),
+            pystray.MenuItem(lambda item: self._rebuild_label(), self._rebuild_or_stop),
             pystray.MenuItem("修改建库设置…", self._edit_library),
             pystray.MenuItem("授权名单…", self._show_roster),
             pystray.MenuItem(

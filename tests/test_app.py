@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
 from landoc import updater
-from landoc.app import LibraryApp
+from landoc.app import AppStatus, LibraryApp, eta_phrase, human_eta
 from landoc.config import Config
 from landoc.pipeline import RunReport
 
@@ -395,3 +396,260 @@ def test_downloaded_update_announces_ready(tmp_path, monkeypatch):
         assert wait_for(lambda: any("已下载好" in note for note in notes), 5.0)
     finally:
         app.stop()
+
+
+# ============ 进度：剩余篇数与 ETA ============
+
+
+def test_human_eta_reads_like_a_person():
+    assert human_eta(0) == "不到 1 分钟"
+    assert human_eta(30) == "不到 1 分钟"
+    assert human_eta(130) == "2 分钟"
+    assert human_eta(3700) == "1 小时 2 分"
+    assert human_eta(7200) == "2 小时"
+    # 「约 不到 1 分钟」读着别扭，短时间不加"约"
+    assert eta_phrase(30) == "不到 1 分钟"
+    assert eta_phrase(130) == "约 2 分钟"
+
+
+def test_summary_adds_remaining_and_eta_while_converting():
+    """上千篇时只报"已转换 N 篇"会被当成卡死。"""
+    status = AppStatus(phase="converting", converted=300, pending=700, eta_seconds=130)
+    assert status.summary() == "建库中：已转换 300 篇 · 还剩 700 篇（约 2 分钟）"
+    # 不知道总数时保持老文案（托盘里那一行字不能被撑长）
+    assert AppStatus(phase="converting", converted=5).summary() == "建库中：已转换 5 篇"
+
+
+def test_round_passes_budget_and_stop_hook(tmp_path, monkeypatch):
+    """一轮同时受"篇数上限"和"时间预算"约束，用户回来要能停。"""
+    from landoc import app as app_module
+
+    seen: dict = {}
+
+    def fake_run(cfg, **kwargs):
+        seen.update(kwargs)
+        return RunReport(converted=1, pending=9, attempted=1, rate=0.5)
+
+    monkeypatch.setattr(app_module.pipeline, "run", fake_run)
+    lib = make_app(tmp_path, idle_check=lambda: True, batch=7, round_seconds=12.5)
+    try:
+        report = lib._run_round()
+    finally:
+        lib.stop()
+
+    assert seen["limit"] == 7
+    assert seen["budget"] == 12.5
+    assert callable(seen["should_stop"]) and callable(seen["on_progress"])
+    assert report.pending == 9
+
+
+def test_progress_callback_updates_status_with_remaining(tmp_path):
+    app = make_app(tmp_path, idle_check=lambda: True)
+    try:
+        app._round_base = 100
+        app._on_round_progress(RunReport(converted=5, pending=395, attempted=5, rate=1.0))
+        assert app.status.converted == 105  # 本轮之前 100 + 本次 5
+        assert app.status.pending == 390  # 395 待转 - 5 已转
+        assert app.status.eta_seconds == 390
+    finally:
+        app.stop()
+
+
+# ============ 「立即重建索引」= 真的立即 ============
+
+
+def test_stop_hook_ignores_idle_only_during_manual_build(tmp_path):
+    """手动点的那次不受空闲门控：否则正在用电脑时点菜单一篇都转不了。"""
+    app = make_app(tmp_path, idle_check=lambda: False)
+    try:
+        assert app._should_stop_round() is True  # 平时：用户还在用电脑
+        app.update_now()
+        assert app._should_stop_round() is False  # 手动：照转
+        app.stop_building()
+        assert app._should_stop_round() is True  # 停止建库：马上收工
+        app._force.set()
+        app.pause_share()
+        assert app._should_stop_round() is True  # 暂停共享优先
+    finally:
+        app.stop()
+
+
+def test_update_now_converts_while_user_is_active(tmp_path):
+    """旧版这里只是叫醒 worker，仍要过空闲门控 —— 菜单名和实际行为是两回事。"""
+    calls: list[int] = []
+    notes: list[str] = []
+
+    def runner():
+        calls.append(1)
+        if len(calls) == 1:
+            return RunReport(converted=3, pending=3, attempted=3)
+        return RunReport()
+
+    app = make_app(
+        tmp_path, runner=runner, idle_check=lambda: False, on_notify=notes.append
+    )
+    app.start()
+    try:
+        time.sleep(0.15)
+        assert calls == []  # 自动批量在用户活动时不动
+        app.update_now()
+        assert wait_for(lambda: notes)
+        assert notes == ["已收录 3 篇，可被检索"]
+        assert len(calls) == 2  # 转完再确认一次没有新增，然后收工
+        assert wait_for(lambda: app.status.phase == "serving")
+    finally:
+        app.stop()
+
+
+def test_manual_build_keeps_going_until_backlog_done(tmp_path):
+    """手动触发不是"跑一轮就收工"：新增几百篇时要一路转完，不能留下一半让用户再点。"""
+    backlog = {"left": 250}
+    calls: list[int] = []
+
+    def runner():
+        calls.append(1)
+        if backlog["left"] <= 0:
+            return RunReport()
+        done = min(100, backlog["left"])
+        backlog["left"] -= done
+        return RunReport(converted=done, pending=done + backlog["left"], attempted=done)
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: False)
+    app.start()
+    try:
+        app.update_now()
+        assert wait_for(lambda: backlog["left"] == 0 and len(calls) == 4)
+        # 跑完就把强制标记撤掉：用户没再点，不能一直占着 CPU
+        assert wait_for(lambda: not app._force.is_set())
+        time.sleep(0.1)
+        assert len(calls) == 4
+    finally:
+        app.stop()
+
+
+def test_manual_click_with_nothing_new_still_answers(tmp_path):
+    """点了菜单却一点回音都没有，用户会以为按钮坏了。"""
+    notes: list[str] = []
+    app = make_app(
+        tmp_path, runner=lambda: RunReport(), idle_check=lambda: False, on_notify=notes.append
+    )
+    app.start()
+    try:
+        app.update_now()
+        assert wait_for(lambda: notes)
+        assert notes == ["已是最新：没有需要收录的新文档"]
+    finally:
+        app.stop()
+
+
+def test_manual_click_with_only_failures_reports_them(tmp_path):
+    notes: list[str] = []
+    app = make_app(
+        tmp_path,
+        runner=lambda: RunReport(failed=[("a.docx", "no_office")]),
+        idle_check=lambda: False,
+        on_notify=notes.append,
+    )
+    app.start()
+    try:
+        app.update_now()
+        assert wait_for(lambda: notes)
+        assert notes == ["没有新增；1 篇转换失败，详见 failures.json"]
+    finally:
+        app.stop()
+
+
+def test_manual_click_reports_source_missing_docs(tmp_path):
+    """库只增不减之后，"没新增"的回音不能盖住"有 N 篇源文件已不在"这件事。"""
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "files": {
+                    "测试目录/搬走了.docx": {
+                        "source_missing": True,
+                        "missing_since": "2026-11-18 23:00:00",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    notes: list[str] = []
+    app = make_app(
+        tmp_path, runner=lambda: RunReport(), idle_check=lambda: False, on_notify=notes.append
+    )
+    app.start()
+    try:
+        app.update_now()
+        assert wait_for(lambda: notes)
+        assert notes == ["已是最新；1 篇源文件已不在，内容仍在库中"]
+    finally:
+        app.stop()
+
+
+def test_pause_drops_a_pending_manual_request(tmp_path):
+    """暂停期间点「立即重建索引」不该在恢复共享后突然开跑。"""
+    app = make_app(tmp_path, idle_check=lambda: False)
+    app.update_now()
+    app.pause_share()
+    assert app._force.is_set() is False
+    app.resume_share()
+    assert app._force.is_set() is False
+
+
+def test_building_flag_follows_phase(tmp_path):
+    app = make_app(tmp_path, idle_check=lambda: False)
+    app._update(phase="converting")
+    assert app.building is True
+    app._update(phase="serving")
+    assert app.building is False
+
+def test_round_is_logged_to_app_log(tmp_path):
+    """4.6: 状态窗口只留"最后一句话"，每轮摘要要落到 logs/app.log（重启后还能查）。"""
+    from landoc.app import app_log_path
+
+    rounds = [RunReport(converted=3, attempted=4, pending=7, elapsed=12.0, stop_reason="limit")]
+
+    def runner():
+        return rounds.pop(0) if rounds else RunReport()
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: True)
+    assert app._drain() == (3, 0)
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "一轮结束：收录 3 篇、失败 0 篇、尝试 4 篇、剩余 3 篇" in text
+    assert "用时 12 秒（limit）" in text
+
+
+def test_stopping_a_manual_build_is_reported(tmp_path):
+    """途中点了「停止建库」：要明说停下了，不能报成「已是最新」。"""
+    notes: list[str] = []
+    state = {}
+
+    def runner():
+        state["app"].stop_building()  # 用户在第一轮建库途中点了「停止建库」
+        return RunReport()
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: False, on_notify=notes.append)
+    state["app"] = app
+    app.start()
+    try:
+        app.update_now()
+        assert wait_for(lambda: notes)
+        assert notes == ["已停止建库，已收录的文档照常可检索"]
+    finally:
+        app.stop()
+
+
+def test_abort_before_a_round_converts_nothing(tmp_path):
+    calls: list[int] = []
+
+    def runner():
+        calls.append(1)
+        return RunReport(converted=1, attempted=1)
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: False)
+    app.stop_building()
+    assert app._drain() == (0, 0)  # 已经喊停，一篇都不该再转
+    assert calls == []
+    assert app._abort.is_set() is False  # 收工要把标记清干净，别影响下一轮

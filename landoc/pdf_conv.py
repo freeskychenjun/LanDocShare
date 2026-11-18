@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,9 +28,41 @@ TOOL_EXE_NAME = "acrobat.exe"
 _ASCII_START = re.compile(r"[A-Za-z0-9]")
 _ASCII_END = re.compile(r"[A-Za-z0-9]$")
 
+# COM 断连类 HRESULT：Acrobat 被库主人手动关掉 / 进程被杀时抛这些，丢掉旧对象重建即可。
+_COM_GONE = frozenset({-2147023174, -2147023170, -2147417848, -2147467259})
+
 
 class PDFDecryptError(RuntimeError):
     """兜底工具或 Acrobat 没能把文件变成可读文本。"""
+
+
+class PDFSessionGone(RuntimeError):
+    """Acrobat 进程没了或 COM 断连（不是文档坏），重建会话后值得重试一次。"""
+
+
+def _default_dispatch(progid: str):
+    """按 ProgID 起/取 COM 对象（AcroExch.App / AcroExch.PDDoc / AcroExch.Rect）。"""
+    import win32com.client as wc
+
+    return wc.Dispatch(progid)
+
+
+def _is_com_gone(exc: BaseException) -> bool:
+    codes: set[int] = set()
+    hr = getattr(exc, "hresult", None)
+    if isinstance(hr, int):
+        codes.add(hr)
+    for arg in getattr(exc, "args", ()) or ():
+        if isinstance(arg, int):
+            codes.add(arg)
+    return bool(codes & _COM_GONE)
+
+
+def _exit_quietly(app) -> None:
+    try:
+        app.Exit()
+    except Exception:  # noqa: BLE001 - 退出失败不影响结果，后面还有 taskkill 兜底
+        pass
 
 
 @dataclass
@@ -100,8 +134,12 @@ def _join_tokens(tokens) -> str:
     return "".join(out)
 
 
-def _page_text(pd, index: int, wc) -> str:
-    """取一页文本：整页建一个文本选区，逐段 GetText 后拼回正文。"""
+def _page_text(pd, index: int, dispatch) -> str:
+    """取一页文本：整页建一个文本选区，逐段 GetText 后拼回正文。
+
+    `dispatch` 是"按 ProgID 造 COM 对象"的可调用对象（默认 `_default_dispatch`），
+    测试可以塞替身，不必真起 Acrobat。
+    """
     page = pd.AcquirePage(index)
     try:
         size = page.GetSize()
@@ -111,7 +149,7 @@ def _page_text(pd, index: int, wc) -> str:
             page.Release()
         except Exception:  # noqa: BLE001 - 已释放/无此成员都不影响结果
             pass
-    rect = wc.Dispatch("AcroExch.Rect")
+    rect = dispatch("AcroExch.Rect")
     # PDF 坐标原点在左下角：Top 是上边界、Bottom 是 0
     rect.Left, rect.Right, rect.Bottom, rect.Top = 0, width, 0, height
     selection = pd.CreateTextSelect(index, rect)
@@ -120,53 +158,159 @@ def _page_text(pd, index: int, wc) -> str:
     return _join_tokens(selection.GetText(i) for i in range(selection.GetNumText()))
 
 
-def _acrobat_text(path: Path, timeout: float = 120.0) -> str:
-    """Acrobat 路线：PDDoc 打开 → 逐页全页取文本（不经临时文件）。
+def _read_pdf_text(dispatch, path: Path) -> str:
+    """用一个新的 PDDoc 读一篇 PDF 的全部文本（不带任何超时/进程管理）。"""
+    pd = None
+    try:
+        pd = dispatch("AcroExch.PDDoc")
+        if not pd.Open(str(path)):
+            raise PDFDecryptError(f"Acrobat 打不开：{path}")
+        pages = [_page_text(pd, i, dispatch) for i in range(pd.GetNumPages())]
+        return "\n".join(page for page in pages if page)
+    except PDFDecryptError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 只有"进程没了"才值得重建重试，其余原样抛
+        if _is_com_gone(exc):
+            raise PDFSessionGone(f"Acrobat 断连：{exc}") from exc
+        raise
+    finally:
+        if pd is not None:
+            try:
+                pd.Close()
+            except Exception:  # noqa: BLE001
+                pass
 
-    实测（Acrobat DC / 21 页加密 PDF）：0.8 秒、文本干净、不落任何明文副本。
-    PDDoc 在 Acrobat 侧运行，属白名单进程，所以能读到明文。
+
+class PDFSession:
+    """复用同一个 Acrobat 实例连续抽一批 PDF 的文本。
+
+    为什么需要它：本机实测（Acrobat DC，21 页加密 PDF）每篇独立起停 6.20 秒，
+    换成"一个进程连着转"后 0.73 秒/篇 —— 固定成本只剩首次 4.5 秒的启动，
+    88% 的时间原本都花在反复启动/结束 Acrobat 上。
+
+    代价是 Acrobat 进程内存随篇数线性上涨（≈0.44 MB/篇，实测 100 篇 39.5→83.7 MB），
+    所以调用方应当每几百篇换一个新会话（pipeline 的 `PDF_SESSION_MAX_DOCS`）。
+
+    COM 有线程亲和性，整批固定跑在一个专用工作线程里；超时则杀掉"本会话新起的"
+    进程并让会话失效，绝不碰库主人自己开着的阅读器。
     """
 
-    def work() -> str:
-        import pythoncom  # 仅 Windows
-        import win32com.client as wc
+    def __init__(self, dispatch=None, timeout: float = 120.0):
+        self._dispatch = dispatch or _default_dispatch
+        self._timeout = timeout
+        self._queue: "queue.Queue" = queue.Queue()
+        self._app = None
+        self._before = office_bridge._acrobat_pids()
+        self._dead = False
+        self.used = 0  # 已处理的篇数：调用方据此决定何时回收这个会话
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        import pythoncom
 
         pythoncom.CoInitialize()
-        pd = None
         try:
-            app = wc.Dispatch("AcroExch.App")
-            try:
-                app.Hide()
-            except Exception:  # noqa: BLE001 - 不同版本可能没有 Hide
-                pass
-            pd = wc.Dispatch("AcroExch.PDDoc")
-            if not pd.Open(str(path)):
-                raise PDFDecryptError(f"Acrobat 打不开：{path}")
-            pages = [_page_text(pd, i, wc) for i in range(pd.GetNumPages())]
-            return "\n".join(page for page in pages if page)
-        finally:
-            if pd is not None:
+            while True:
+                job = self._queue.get()
+                if job is None:
+                    break
+                func, box, done = job
                 try:
-                    pd.Close()
-                except Exception:  # noqa: BLE001
-                    pass
+                    box["value"] = func(self)
+                except BaseException as exc:  # noqa: BLE001 - 原样交给调用方线程
+                    box["error"] = exc
+                finally:
+                    done.set()
+        finally:
             pythoncom.CoUninitialize()
 
-    before = office_bridge._acrobat_pids()
-    try:
-        return office_bridge._run_with_timeout(
-            work,
-            timeout,
-            on_timeout=lambda: office_bridge._kill_office_processes(
-                office_bridge._acrobat_pids() - before
-            ),
-        )
-    finally:
-        # 只清我们自己拉起来的 Acrobat 实例，库主人自己开着的阅读器不动
-        office_bridge._kill_office_processes(office_bridge._acrobat_pids() - before)
+    def app(self):
+        if self._app is None:
+            self._app = self._dispatch("AcroExch.App")
+            try:
+                self._app.Hide()
+            except Exception:  # noqa: BLE001 - 不同版本可能没有 Hide
+                pass
+        return self._app
+
+    def call(self, func, timeout: float | None = None):
+        if self._dead:
+            raise PDFSessionGone("Acrobat 会话已失效")
+        wait = self._timeout if timeout is None else timeout
+        box: dict = {}
+        done = threading.Event()
+        self.used += 1
+        self._queue.put((func, box, done))
+        if not done.wait(wait):
+            office_bridge._kill_office_processes(
+                office_bridge._acrobat_pids() - self._before
+            )
+            self._dead = True
+            raise office_bridge.OfficeTimeout(f"超过 {wait:.0f} 秒未完成")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def _job(self, path: Path):
+        def job(session: "PDFSession") -> str:
+            session.app()
+            return _read_pdf_text(self._dispatch, path)
+
+        return job
+
+    def extract(self, path: Path, timeout: float | None = None) -> str:
+        try:
+            return self.call(self._job(path), timeout)
+        except PDFSessionGone:
+            # 用户手动关掉了 Acrobat，或进程自己崩了：清掉旧对象重来一次
+            self._reset()
+            return self.call(self._job(path), timeout)
+
+    def _reset(self) -> None:
+        self._app = None
+        office_bridge._kill_office_processes(office_bridge._acrobat_pids() - self._before)
+        self._dead = False
+
+    def close(self) -> None:
+        # 先请 Acrobat 自己退出（和 Office 一样：硬杀会留残留进程）
+        if not self._dead and self._app is not None:
+            try:
+                self.call(lambda session: _exit_quietly(session.app()), timeout=10)
+            except Exception:  # noqa: BLE001 - 已断连/已退出都无所谓
+                pass
+        try:
+            self._queue.put(None)
+            self._thread.join(timeout=5)
+        except RuntimeError:
+            pass
+        for _ in range(4):
+            if not (office_bridge._acrobat_pids() - self._before):
+                break
+            threading.Event().wait(0.5)
+        office_bridge._kill_office_processes(office_bridge._acrobat_pids() - self._before)
+        self._app = None
+
+    def __enter__(self) -> "PDFSession":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
 
-def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0) -> PDFResult:
+def _acrobat_text(path: Path, timeout: float = 120.0) -> str:
+    """一次性路线：临时起一个 Acrobat 会话，读完就关。
+
+    批量转换请传 `PDFSession` 给 `pdf_to_text`（一个实例连转一批，省下每篇 5.5 秒）。
+    实测（Acrobat DC / 21 页加密 PDF）：0.8 秒取完、文本干净、不落任何明文副本；
+    PDDoc 在 Acrobat 侧运行，属白名单进程，所以能读到明文。
+    """
+    with PDFSession(timeout=timeout) as session:
+        return session.extract(path, timeout)
+
+
+def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0, session=None) -> PDFResult:
+    """PDF → 文本。`session` 是一个 `PDFSession`（批量转换用，省掉每篇重启 Acrobat）。"""
     path = Path(path)
     if not path.is_file():
         return PDFResult("", "skipped", "unreadable")
@@ -180,10 +324,14 @@ def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0) -> PDFResult:
     if kind == "blocked":
         return PDFResult("", "skipped", "unreadable")
 
-    # 密文：Acrobat 优先
+    # 密文：Acrobat 优先（有会话就复用同一个 Acrobat 进程）
     if has_acrobat():
         try:
-            text = _acrobat_text(path, timeout)
+            text = (
+                session.extract(path, timeout)
+                if session is not None
+                else _acrobat_text(path, timeout)
+            )
             if len(text.strip()) >= MIN_TEXT_CHARS:
                 return PDFResult(text, "acrobat")
         except (PDFDecryptError, office_bridge.OfficeTimeout, OSError, RuntimeError):

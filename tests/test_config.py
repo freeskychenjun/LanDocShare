@@ -41,3 +41,25 @@ def test_config_load_missing_raises(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         Config.load(tmp_path / "nope")
+
+def test_config_file_declares_a_version(tmp_path):
+    """3.5: 配置里带语义版本号，将来字段含义变了才有地方挂迁移钩子。"""
+    import json
+
+    from landoc.config import CONFIG_VERSION
+
+    cfg = Config(name="x", lib_dir=tmp_path)
+    cfg.save()
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["config_version"] == CONFIG_VERSION == 1
+    # 这个键不是 dataclass 字段：旧/新版本互相读都不该被它噎住
+    assert Config.load(tmp_path).name == "x"
+
+
+def test_config_ignores_unknown_keys(tmp_path):
+    """将来加字段时，老程序读新配置也只按自己认识的字段加载，不炸。"""
+    import json
+
+    payload = {"name": "库", "lib_dir": str(tmp_path), "folders": [], "config_version": 9, "future_key": 1}
+    (tmp_path / "config.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    assert Config.load(tmp_path).name == "库"

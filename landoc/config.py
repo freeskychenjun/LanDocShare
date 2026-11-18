@@ -11,6 +11,9 @@ from pathlib import Path
 
 DEFAULT_ALLOW_CIDRS = ["10.91.0.0/16"]
 CONFIG_NAME = "config.json"
+# 配置文件的语义版本：只用于"这个字段在新版里含义变了"时的迁移钩子，不参与鉴权/比对。
+# 加字段不用升；只有当同一个键的语义变了（比如 allow_cidrs 从"额外放行"改成"唯一口径"）才升。
+CONFIG_VERSION = 1
 
 
 @dataclass
@@ -73,6 +76,8 @@ class Config:
         data["lib_dir"] = str(self.lib_dir)
         data["folders"] = [str(p) for p in self.folders]
         data["acrobat_tool_dir"] = str(self.acrobat_tool_dir) if self.acrobat_tool_dir else None
+        # 版本号写在关键字后面，旧版 `from_dict` 会把它当未知键丢掉，不影响互认
+        data["config_version"] = CONFIG_VERSION
         return data
 
     @classmethod
@@ -83,6 +88,7 @@ class Config:
         kwargs["folders"] = [Path(p) for p in kwargs.get("folders", [])]
         tool = kwargs.get("acrobat_tool_dir")
         kwargs["acrobat_tool_dir"] = Path(tool) if tool else None
+        # 目前只有 v1：读到更高版本不做任何猜测，原样按已知字段加载（迁移钩子留给将来）
         return cls(**kwargs)
 
     def save(self) -> None:

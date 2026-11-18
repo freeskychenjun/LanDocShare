@@ -99,6 +99,175 @@ def test_acrobat_is_used_when_available(encrypted_pdf_path, cfg_without_tool, mo
     assert "水安全保障" in result.text
 
 
+# ============ PDFSession：一个 Acrobat 连转一批（每篇省 5.5 秒起停）============
+
+
+class _FakeSize:
+    x = 595.0
+    y = 842.0
+
+
+class _FakePage:
+    def GetSize(self):
+        return _FakeSize()
+
+    def Release(self):
+        pass
+
+
+class _FakeRect:
+    pass
+
+
+class _FakeSelection:
+    def __init__(self, text: str):
+        self._tokens = list(text)
+
+    def GetNumText(self):
+        return len(self._tokens)
+
+    def GetText(self, i):
+        return self._tokens[i]
+
+
+class _FakeApp:
+    def __init__(self):
+        self.hidden = False
+        self.exited = False
+
+    def Hide(self):
+        self.hidden = True
+
+    def Exit(self):
+        self.exited = True
+
+
+class _FakePDDoc:
+    def __init__(self, pages):
+        self._pages = list(pages)
+        self.closed = False
+
+    def Open(self, path):
+        return True
+
+    def GetNumPages(self):
+        return len(self._pages)
+
+    def AcquirePage(self, index):
+        return _FakePage()
+
+    def CreateTextSelect(self, index, rect):
+        return _FakeSelection(self._pages[index])
+
+    def Close(self):
+        self.closed = True
+
+
+class _FakeCom:
+    """按 ProgID 造替身对象，并数一共起了几次 App / 几次 PDDoc。"""
+
+    def __init__(self, pages=("首页正文", "第二页正文")):
+        self.pages = list(pages)
+        self.app_dispatches = 0
+        self.pddoc_dispatches = 0
+        self.rect_dispatches = 0
+        self.apps: list[_FakeApp] = []
+        self.pddocs: list[_FakePDDoc] = []
+        self.on_pddoc = None
+
+    def __call__(self, progid):
+        if progid == "AcroExch.App":
+            self.app_dispatches += 1
+            app = _FakeApp()
+            self.apps.append(app)
+            return app
+        if progid == "AcroExch.Rect":
+            self.rect_dispatches += 1
+            return _FakeRect()
+        self.pddoc_dispatches += 1
+        hook, self.on_pddoc = self.on_pddoc, None
+        if hook is not None:
+            hook(self.pddoc_dispatches)
+        pd = _FakePDDoc(self.pages)
+        self.pddocs.append(pd)
+        return pd
+
+
+def _silence_process_refs(monkeypatch, pids=None):
+    alive = {"pids": set(pids or ())}
+    killed: list[set[int]] = []
+    monkeypatch.setattr(pdf_conv.office_bridge, "_acrobat_pids", lambda: set(alive["pids"]))
+    monkeypatch.setattr(
+        pdf_conv.office_bridge,
+        "_kill_office_processes",
+        lambda pids=None: killed.append(set(pids or ())),
+    )
+    return alive, killed
+
+
+def test_pdf_session_reuses_one_acrobat_instance(monkeypatch):
+    """核心收益：三篇共用一个 Acrobat（原来每篇都要 Dispatch 一次、杀一次）。"""
+    com = _FakeCom()
+    _silence_process_refs(monkeypatch)
+    with pdf_conv.PDFSession(dispatch=com) as session:
+        for _ in range(3):
+            text = session.extract(Path("x.pdf"))
+            assert "首页正文" in text and "第二页正文" in text
+        assert session.used == 3
+    assert com.app_dispatches == 1  # 一次启动，不是三次
+    assert com.pddoc_dispatches == 3  # 每篇一个新 PDDoc（复用 PDDoc 实测没有额外收益）
+    assert all(pd.closed for pd in com.pddocs)
+    assert com.apps[0].exited  # 收尾走 Exit，不留残留进程
+
+
+def test_pdf_session_rebuilds_after_acrobat_was_closed(monkeypatch):
+    """库主人手动把 Acrobat 关掉：断连要能被识别，重建后重试一次而不是记失败。"""
+
+    class Gone(Exception):
+        hresult = -2147023174  # RPC 服务器不可用
+
+    com = _FakeCom()
+    com.on_pddoc = lambda n: (_ for _ in ()).throw(Gone("RPC 服务器不可用"))
+    _silence_process_refs(monkeypatch)
+    with pdf_conv.PDFSession(dispatch=com) as session:
+        assert "首页正文" in session.extract(Path("x.pdf"))
+    assert com.app_dispatches == 2  # 第一次不灵，第二次重建
+    assert com.pddoc_dispatches == 2
+
+
+def test_pdf_session_timeout_kills_only_its_own_processes(monkeypatch):
+    import time as _time
+
+    alive, killed = _silence_process_refs(monkeypatch, pids={101, 102})
+    com = _FakeCom()
+
+    def slow(n):
+        alive["pids"].add(999)  # 我们自己拉起来的那个
+        _time.sleep(0.6)
+
+    com.on_pddoc = slow
+    with pdf_conv.PDFSession(dispatch=com, timeout=0.2) as session:
+        with pytest.raises(pdf_conv.office_bridge.OfficeTimeout):
+            session.extract(Path("x.pdf"))
+    flat = set().union(*killed) if killed else set()
+    assert 999 in flat, "超时必须杀掉本会话新起的 Acrobat"
+    assert 101 not in flat and 102 not in flat, "库主人自己开着的阅读器不能动"
+
+
+def test_pdf_to_text_uses_shared_session(encrypted_pdf_path, cfg_without_tool, monkeypatch):
+    monkeypatch.setattr(pdf_conv, "has_acrobat", lambda: True)
+    seen: list[Path] = []
+
+    class FakeSession:
+        def extract(self, path, timeout=None):
+            seen.append(path)
+            return "十五五水安全保障规划" * 20
+
+    result = pdf_conv.pdf_to_text(encrypted_pdf_path, cfg=cfg_without_tool, session=FakeSession())
+    assert result.via == "acrobat"
+    assert seen == [encrypted_pdf_path]
+
+
 def test_acrobat_failure_falls_back_to_disguise(
     encrypted_pdf_path, cfg_with_tool_dir, plaintext_pdf_bytes, monkeypatch
 ):

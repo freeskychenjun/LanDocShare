@@ -7,7 +7,13 @@ import threading
 from landoc.app import AppStatus
 from landoc import __version__
 from landoc.config import Config
-from landoc.panel import StatusPanel, phase_text, status_rows, version_text
+from landoc.panel import (
+    StatusPanel,
+    phase_text,
+    status_rows,
+    update_button_text,
+    version_text,
+)
 
 
 def _cfg(tmp_path, **overrides):
@@ -69,6 +75,23 @@ def test_phase_text_does_not_repeat_counts(tmp_path):
     assert "13 篇" not in rows["状态"]
     assert phase_text(AppStatus(phase="converting", converted=5)) == "建库中：已转换 5 篇"
     assert phase_text(AppStatus(phase="error", message="端口被占用")) == "出错了 · 端口被占用"
+
+
+def test_phase_text_and_rows_show_backlog(tmp_path):
+    """上千篇时窗口要能看到"还剩多少、还要多久"，否则跟死机没区别。"""
+    cfg = _cfg(tmp_path)
+    status = AppStatus(phase="converting", converted=300, pending=700, eta_seconds=3720)
+
+    assert phase_text(status) == "建库中：已转换 300 篇 · 还剩 700 篇（约 1 小时 2 分）"
+
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["待收录"] == "700 篇（约 1 小时 2 分）"
+    # 没积压时不显示这一行（否则空闲的库窗口里永远挂着一行 0 篇）
+    rows = {
+        row.label: row.value
+        for row in status_rows(cfg, AppStatus(phase="serving"), lan_ip="10.91.1.197")
+    }
+    assert "待收录" not in rows
 
 
 def test_show_starts_one_panel_thread(tmp_path, monkeypatch):
@@ -139,3 +162,20 @@ def test_version_text_describes_update_progress():
     assert version_text(
         AppStatus(version="0.2.0", update_version="0.3.0", update_message="检查更新失败：连不上中心")
     ) == "v0.2.0 → v0.3.0（检查更新失败：连不上中心）"
+
+
+def test_update_button_turns_into_stop_while_building():
+    """「立即更新」在建库时变「停止建库」：手动触发的建库可能跑很久，得能停。"""
+    assert update_button_text(AppStatus(phase="serving")) == "立即更新"
+    assert update_button_text(AppStatus(phase="converting", converted=3)) == "停止建库"
+    assert update_button_text(AppStatus(phase="paused")) == "立即更新"
+
+
+def test_source_missing_docs_are_reported_but_not_hidden():
+    """库只增不减：源文档没了，内容还在库里能搜 —— 状态行得说清楚，别让人以为一切照旧。"""
+    assert phase_text(AppStatus(phase="serving", gone=3)) == (
+        "正在共享 · 3 篇源文件已不在（内容仍在库中）"
+    )
+    assert phase_text(AppStatus(phase="serving", gone=0)) == "正在共享"
+    assert "3 篇源已不在" in AppStatus(phase="serving", doc_count=12, gone=3).summary()
+    assert "源已不在" not in AppStatus(phase="serving", doc_count=12).summary()

@@ -482,19 +482,8 @@ class RegistryStore:
 
 
 def _cidr_allowed(ip: str, cidrs) -> bool:
-    if not cidrs:
-        return False
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    for cidr in cidrs:
-        try:
-            if addr in ipaddress.ip_network(str(cidr), strict=False):
-                return True
-        except ValueError:
-            continue
-    return False
+    """网段判定与库端服务共用 `netinfo.cidr_allowed`（"空清单=拒绝"的口径必须一致）。"""
+    return netinfo.cidr_allowed(ip, cidrs)
 
 
 def _audience_allows(entry: dict, viewer_ip: str, viewer_name: str) -> bool:

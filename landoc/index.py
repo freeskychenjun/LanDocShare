@@ -1,7 +1,8 @@
 r"""FTS5 索引：建库、增量写、检索、目录聚合、表格抽取。
 
 SQL 与 `F:\md_share\share_server.py` 保持一致（同一套已验证的实现）：
-- FTS5 用独立表 + `trigram` 分词（中文按子串匹配，不依赖分词边界），检索走 `documents_fts MATCH`；
+- FTS5 用 external content 表 + `trigram` 分词（中文按子串匹配，不依赖分词边界），
+  检索走 `documents_fts MATCH`；正文只存 `documents` 一份，倒排靠触发器同步；
 - `tree` / `list_dir` 只从索引聚合，不读磁盘 —— 被排除的目录对同事完全不可见；
 - `list_dir` 必须用 `rowid IN (子查询)` 两步查：直接 `LIKE + ORDER BY` 会全表扫描
   含正文的行（实测可超时 30 s 以上），不要"优化"回单层查询。
@@ -36,13 +37,29 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     title, content,
+    content='documents', content_rowid='rowid',
     tokenize='trigram'
 );
+CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, old.content);
+    INSERT INTO documents_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+END;
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
 """
+
+# external content 表的建表语句里带这一句；旧库没有 → 需要重建（见 Index._migrate_fts）
+FTS_EXTERNAL_MARK = "content='documents'"
 
 
 def build_match_query(q: str, op: str = "AND") -> str:
@@ -125,7 +142,52 @@ class Index:
         self.md_root = Path(md_root) if md_root else self.db_path.parent / "md"
         self._local = threading.local()
         with self.conn:
+            rebuilt = self._migrate_fts()
             self.conn.executescript(SCHEMA)
+            if rebuilt:
+                self._rebuild_fts()
+        if rebuilt:
+            # 迁移把旧表 DROP 了，腾出来的页还留在文件里；VACUUM 才真正还磁盘。
+            # 库被别的进程占着时会拿到 database is locked —— 跳过即可，不影响读写。
+            self.vacuum()
+
+    def _migrate_fts(self) -> bool:
+        """把 0.2.x 的「自带正文的 FTS 表」换成 external content 表；返回是否重建过。
+
+        旧版 documents_fts 自己存一份 title/content，1000 篇 3 万字大约多占 130 MB。
+        新版让它按 rowid 从 documents 读（正文只存一份），表结构不兼容，只能
+        DROP + 重建倒排（rebuild 是 external content 表的专用命令）。
+        """
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents_fts'"
+        ).fetchone()
+        if row is None or FTS_EXTERNAL_MARK in (row[0] or "").lower():
+            return False  # 新库，或已经是 external content（触发器交给 SCHEMA 补齐）
+        if not self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone():
+            return False  # 半成品库，让 SCHEMA 照常建
+        try:
+            self.conn.execute("DROP TABLE documents_fts")
+        except sqlite3.OperationalError:
+            # 另一个进程正占着这张表（服务端与命令行同时建库）：这次先不迁，
+            # 旧表配上新触发器照样能写，下次打开再重试。
+            return False
+        for name in ("documents_ai", "documents_ad", "documents_au"):
+            self.conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        return True
+
+    def _rebuild_fts(self) -> None:
+        self.conn.execute("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')")
+        self.conn.commit()
+
+    def vacuum(self) -> bool:
+        """压缩库文件（迁移后回收旧表占的页）。忙时返回 False，不影响正确性。"""
+        try:
+            self.conn.execute("VACUUM")
+        except sqlite3.OperationalError:
+            return False
+        return True
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -138,10 +200,11 @@ class Index:
 
     # ---- 写入 ----
     def upsert(self, rel_path, title, ext, source_path, src_size, src_mtime, content) -> None:
-        """写一条文档记录。
+        """写一条文档记录；倒排由 documents 上的触发器同步。
 
-        FTS 里存原文，靠 trigram 分词器做子串索引；片段（snippet）由
-        `_make_snippet` 从 documents.content 生成，命中词用 <<>> 标出。
+        documents_fts 是 external content 表，正文只存 documents 一份，因此这里
+        只写 documents —— `ON CONFLICT DO UPDATE` 会触发 UPDATE 触发器做完删旧/插新。
+        旧实现还要手工 `SELECT rowid` + 删插 FTS，一篇三次往返。
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         self.conn.execute(
@@ -153,24 +216,10 @@ class Index:
                  content=excluded.content, indexed_at=excluded.indexed_at""",
             (rel_path, title, ext, source_path, int(src_size), float(src_mtime), content, now),
         )
-        rowid = self.conn.execute(
-            "SELECT rowid FROM documents WHERE rel_path = ?", (rel_path,)
-        ).fetchone()[0]
-        self.conn.execute("DELETE FROM documents_fts WHERE rowid = ?", (rowid,))
-        self.conn.execute(
-            "INSERT INTO documents_fts (rowid, title, content) VALUES (?, ?, ?)",
-            (rowid, title, content),
-        )
 
     def delete(self, rel_path: str) -> None:
-        """删除一条文档（撤回共享时用）：documents 与 FTS 一起删。"""
-        row = self.conn.execute(
-            "SELECT rowid FROM documents WHERE rel_path = ?", (rel_path,)
-        ).fetchone()
-        if not row:
-            return
-        self.conn.execute("DELETE FROM documents_fts WHERE rowid = ?", (row[0],))
-        self.conn.execute("DELETE FROM documents WHERE rowid = ?", (row[0],))
+        """删除一条文档（撤回共享时用）：触发器一并发删 FTS 条目，不碰磁盘文件。"""
+        self.conn.execute("DELETE FROM documents WHERE rel_path = ?", (rel_path,))
 
     def commit(self) -> None:
         self.conn.commit()
