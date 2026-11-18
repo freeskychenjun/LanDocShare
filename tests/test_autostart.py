@@ -57,6 +57,36 @@ def test_registry_command_line_for_frozen_exe(monkeypatch):
     assert autostart.registry_command_line(8767) == r'"C:\Apps\LanDocShare\LanDocShare.exe" registry --port 8767'
 
 
+def test_registry_command_line_appends_runtime_args(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Apps\LanDocShare\LanDocShare.exe")
+    line = autostart.registry_command_line(
+        8767, ["--watchdog", "--package-zip", r"F:\发布 包\LanDocShare.zip"]
+    )
+    assert line.startswith(r'"C:\Apps\LanDocShare\LanDocShare.exe" registry --port 8767 ')
+    assert "--watchdog --package-zip" in line
+    assert r'"F:\发布 包\LanDocShare.zip"' in line  # 空格路径要带引号，否则重启后被拆成两段
+
+
+def test_enable_registry_puts_watchdog_first(monkeypatch):
+    seen = {}
+
+    def fake_enable(command, name=None):
+        seen["command"] = command
+        seen["name"] = name
+
+    monkeypatch.setattr(autostart, "enable", fake_enable)
+    command = autostart.enable_registry(8790, extra=["--package-zip", "a.zip"])
+    assert "--port 8790" in command
+    assert command.index("--watchdog") < command.index("--package-zip")
+    assert seen["name"] == autostart.REGISTRY_VALUE_NAME
+
+
+def test_enable_registry_can_skip_watchdog(monkeypatch):
+    monkeypatch.setattr(autostart, "enable", lambda command, name=None: None)
+    assert "--watchdog" not in autostart.enable_registry(8767, watchdog=False)
+
+
 def test_registry_entry_is_separate_from_library_entry(run_key):
     autostart.enable('"C:\\Apps\\LanDocShare\\LanDocShare.exe" --autostart', name=autostart.VALUE_NAME)
     autostart.enable('"C:\\Apps\\LanDocShare\\LanDocShare.exe" registry --port 8767', name=autostart.REGISTRY_VALUE_NAME)

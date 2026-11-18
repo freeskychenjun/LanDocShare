@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
+from collections.abc import Sequence
+
 import winreg
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -29,12 +32,20 @@ def command_line(extra: str = "--autostart") -> str:
     return f'"{exe}" -m landoc.tray {extra}'.strip()
 
 
-def registry_command_line(port: int = 8767) -> str:
-    """登记中心的自启命令：打包后 `LanDocShare.exe registry --port 8767`。"""
+def registry_command_line(port: int = 8767, extra: Sequence[str] = ()) -> str:
+    """登记中心的自启命令：打包后 `LanDocShare.exe registry --port 8767`。
+
+    `extra` 是这次启动实际用到的运行参数（--package-zip/--manifest/--state-dir
+    等）：自启时如果不带上，重启后分发配置就丢了，同事的下载入口会 404。
+    """
     exe = _python()
     if getattr(sys, "frozen", False):
-        return f'"{exe}" registry --port {port}'
-    return f'"{exe}" -m landoc.registry --port {port}'
+        parts = [f'"{exe}"', "registry", "--port", str(port)]
+    else:
+        parts = [f'"{exe}"', "-m", "landoc.registry", "--port", str(port)]
+    if extra:
+        parts.append(subprocess.list2cmdline([str(item) for item in extra]))
+    return " ".join(parts)
 
 
 def is_enabled(name: str = VALUE_NAME) -> bool:
@@ -67,8 +78,14 @@ def set_enabled(flag: bool, name: str = VALUE_NAME) -> None:
     enable(name=name) if flag else disable(name=name)
 
 
-def enable_registry(port: int = 8767) -> str:
-    command = registry_command_line(port)
+def enable_registry(
+    port: int = 8767, *, extra: Sequence[str] = (), watchdog: bool = True
+) -> str:
+    """写中心的自启项；默认带 `--watchdog`，开机后中心挂了会被自动拉起。"""
+    args = [str(item) for item in extra]
+    if watchdog and "--watchdog" not in args:
+        args.insert(0, "--watchdog")
+    command = registry_command_line(port, args)
     enable(command, name=REGISTRY_VALUE_NAME)
     return command
 

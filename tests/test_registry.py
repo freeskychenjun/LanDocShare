@@ -480,3 +480,79 @@ def test_libraries_report_manifest_version_not_process_version(tmp_path):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=3)
+
+
+# ---------------------------------------------------------------- 优雅停止与自启参数
+
+
+def test_stop_flag_only_leaves_a_request(tmp_path):
+    from landoc import registry
+
+    assert registry.main(["--stop", "--state-dir", str(tmp_path)]) == 0
+    assert registry.stop_path(tmp_path).is_file()  # 没绑端口、没起服务，只是留记号
+
+
+def test_stop_request_shuts_the_server_down(tmp_path, monkeypatch):
+    from landoc import registry
+
+    monkeypatch.setattr(registry, "STOP_POLL_SECONDS", 0.05)
+    store = RegistryStore(tmp_path / "registry.json")
+    httpd = make_registry_server(store, port=0, allow_cidrs=["127.0.0.1"])
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        registry._start_stop_watcher(httpd, tmp_path)
+        assert get_json(f"{base}/health")[0] == 200
+        path = registry.request_stop(tmp_path)
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert not path.exists()  # 记号被消费掉，不会误杀下次启动
+    finally:
+        httpd.server_close()
+
+
+def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
+    import argparse
+
+    from landoc.registry import (
+        DEFAULT_CIDRS,
+        WATCHDOG_DEFAULT_FAILURES,
+        WATCHDOG_DEFAULT_INTERVAL,
+        _autostart_args,
+    )
+
+    bare = argparse.Namespace(
+        state_dir=str(Path.home() / ".landoc-registry"),
+        allow_cidrs=",".join(DEFAULT_CIDRS),
+        package_zip=None,
+        manifest=None,
+        advertise="",
+        roster=None,
+        watchdog_log=None,
+        watchdog_interval=WATCHDOG_DEFAULT_INTERVAL,
+        watchdog_failures=WATCHDOG_DEFAULT_FAILURES,
+    )
+    assert _autostart_args(bare) == []
+
+    custom = argparse.Namespace(
+        state_dir=str(tmp_path),
+        allow_cidrs="10.0.0.0/8",
+        package_zip="distribution/LanDocShare.zip",
+        manifest=None,
+        advertise="http://10.91.1.197:8767",
+        roster="roster.csv",
+        watchdog_log="logs/registry.log",
+        watchdog_interval=60.0,
+        watchdog_failures=5,
+    )
+    args = _autostart_args(custom)
+    assert args[:2] == ["--state-dir", str(tmp_path.resolve())]
+    assert args[2:4] == ["--allow-cidrs", "10.0.0.0/8"]
+    assert args[4:6] == ["--package-zip", str(Path("distribution/LanDocShare.zip").resolve())]
+    assert args[6:8] == ["--advertise", "http://10.91.1.197:8767"]
+    assert args[8:10] == ["--roster", str(Path("roster.csv").resolve())]
+    # 看门狗自己的参数也要活过重启：否则开机后日志写到别处、探测间隔也回默认
+    assert args[10:12] == ["--watchdog-log", str(Path("logs/registry.log").resolve())]
+    assert args[12:14] == ["--watchdog-interval", "60"]
+    assert args[14:16] == ["--watchdog-failures", "5"]

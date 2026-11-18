@@ -66,6 +66,8 @@ from landoc.updater import is_newer, parse_version, sha256_file
 
 DEFAULT_PORT = 8767
 DEFAULT_CIDRS = ["10.91.0.0/16"]
+WATCHDOG_DEFAULT_INTERVAL = 30.0
+WATCHDOG_DEFAULT_FAILURES = 3
 ONLINE_TTL = 300.0  # 5 分钟内有心跳 = 在线
 FORGET_TTL = 1800.0  # 30 分钟没心跳 = 从清单里移除
 MAX_BODY = 64 * 1024
@@ -1330,6 +1332,81 @@ def make_registry_server(
     return httpd
 
 
+STOP_NAME = "stop.request"
+STOP_POLL_SECONDS = 2.0
+
+
+def stop_path(state_dir: Path) -> Path:
+    return Path(state_dir) / STOP_NAME
+
+
+def request_stop(state_dir: Path) -> Path:
+    """留个记号，让正在跑的中心自己优雅退出（不杀进程、不再重启）。"""
+    path = stop_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(time.time()), encoding="utf-8")
+    return path
+
+
+def _start_stop_watcher(httpd, state_dir: Path) -> threading.Thread:
+    """每 2 秒看一眼 `stop.request`；有就关掉 serve_forever，等 main 收尾。"""
+    path = stop_path(state_dir)
+
+    def loop() -> None:
+        while True:
+            time.sleep(STOP_POLL_SECONDS)
+            if not path.exists():
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            print("[停止] 收到 --stop 请求，正在关掉对外服务…", flush=True)
+            httpd.shutdown()
+            return
+
+    thread = threading.Thread(target=loop, name="landoc-registry-stop", daemon=True)
+    thread.start()
+    return thread
+
+
+def _autostart_args(args: argparse.Namespace) -> list[str]:
+    """把这次启动实际用到的运行参数原样写进自启命令（路径转绝对）。
+
+    开机自启时工作目录不是管理员敲命令的那个目录，相对路径必须在这里定死，
+    否则重启后 `--package-zip distribution/...` 会找不到包，下载入口直接 404。
+    """
+    extra: list[str] = []
+    default_state = Path.home() / ".landoc-registry"
+    if Path(args.state_dir) != default_state:
+        extra += ["--state-dir", str(Path(args.state_dir).resolve())]
+    if args.allow_cidrs != ",".join(DEFAULT_CIDRS):
+        extra += ["--allow-cidrs", str(args.allow_cidrs)]
+    for flag, value in (
+        ("--package-zip", args.package_zip),
+        ("--manifest", args.manifest),
+        ("--advertise", args.advertise),
+        ("--roster", args.roster),
+    ):
+        if not value:
+            continue
+        text = str(value)
+        if flag != "--advertise":
+            text = str(Path(text).resolve())
+        extra += [flag, text]
+    # 看门狗自己的参数也写进去：换过日志位置、调过探测间隔的，重启后还得是那一套
+    watchdog_log = getattr(args, "watchdog_log", None)
+    if watchdog_log:
+        extra += ["--watchdog-log", str(Path(watchdog_log).resolve())]
+    interval = getattr(args, "watchdog_interval", None)
+    if interval is not None and float(interval) != WATCHDOG_DEFAULT_INTERVAL:
+        extra += ["--watchdog-interval", f"{float(interval):g}"]
+    failures = getattr(args, "watchdog_failures", None)
+    if failures is not None and int(failures) != WATCHDOG_DEFAULT_FAILURES:
+        extra += ["--watchdog-failures", str(int(failures))]
+    return extra
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="landoc-registry", description="LanDocShare 登记中心")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -1347,20 +1424,65 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="部门授权名单的存放位置（默认 <state-dir>/roster.csv；库软件发布名单时写这里）",
     )
-    parser.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run），然后退出")
+    parser.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run，带看门狗），然后退出")
     parser.add_argument("--remove-autostart", action="store_true", help="删掉开机自启，然后退出")
+    parser.add_argument(
+        "--watchdog",
+        action="store_true",
+        help="常驻看门狗：中心退出/卡死时自动拉起（配合 --install-autostart 开机即守护）",
+    )
+    parser.add_argument(
+        "--watchdog-log",
+        default=None,
+        help="看门狗与中心子进程的输出写哪（默认 %%LOCALAPPDATA%%\\LanDocShare\\logs\\registry-watchdog.log）",
+    )
+    parser.add_argument(
+        "--watchdog-interval",
+        type=float,
+        default=WATCHDOG_DEFAULT_INTERVAL,
+        help="每隔多少秒探一次 /health；0 = 不探，只管子进程退出",
+    )
+    parser.add_argument(
+        "--watchdog-failures",
+        type=int,
+        default=WATCHDOG_DEFAULT_FAILURES,
+        help="连续多少次 /health 没应答算卡死并重启（默认 3）",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="让正在运行的登记中心优雅退出（等手头请求答完），然后退出；配合看门狗重打包用",
+    )
     args = parser.parse_args(argv)
+
+    if args.stop:
+        path = request_stop(Path(args.state_dir))
+        print(f"[OK] 已请求登记中心停止（{path}）")
+        print("     它会在几秒内答完手头的请求再退出；看门狗也会一起退，重打包完再启动一次。")
+        return 0
 
     from landoc import autostart
 
     if args.install_autostart:
-        command = autostart.enable_registry(args.port)
-        print(f"[OK] 已设开机自启：{command}")
+        extra = _autostart_args(args)
+        command = autostart.enable_registry(args.port, extra=extra)
+        print(f"[OK] 已设开机自启（看门狗守护）：{command}")
         return 0
     if args.remove_autostart:
         autostart.disable_registry()
         print("[OK] 已关掉登记中心的开机自启")
         return 0
+
+    if args.watchdog:
+        from landoc import watchdog
+
+        return watchdog.supervise(
+            list(sys.argv[1:] if argv is None else argv),
+            log_path=Path(args.watchdog_log) if args.watchdog_log else None,
+            port=args.port,
+            health_interval=args.watchdog_interval,
+            health_failures=args.watchdog_failures,
+        )
 
     cidrs = [part.strip() for part in args.allow_cidrs.split(",") if part.strip()]
     state_dir = Path(args.state_dir)
@@ -1369,16 +1491,26 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = Path(args.manifest) if args.manifest else default_manifest_path(package)
     manifest = load_manifest(manifest_path)
     roster_path = Path(args.roster) if args.roster else state_dir / ROSTER_NAME
-    httpd = make_registry_server(
-        store,
-        port=args.port,
-        allow_cidrs=cidrs,
-        package_zip=package,
-        manifest=manifest_path,
-        advertise=args.advertise,
-        roster_path=roster_path,
-    )
+    try:
+        httpd = make_registry_server(
+            store,
+            port=args.port,
+            allow_cidrs=cidrs,
+            package_zip=package,
+            manifest=manifest_path,
+            advertise=args.advertise,
+            roster_path=roster_path,
+        )
+    except OSError as exc:
+        from landoc import watchdog
+
+        print(f"[错误] 端口 {args.port} 起不来：{exc}")
+        print("       可能已经有一个登记中心，或端口被别的程序占着；换 --port，或先停掉占用者。")
+        return watchdog.PORT_BUSY_CODE
     actual = httpd.server_address[1]
+    # 上次 --stop 留下的记号不能拿来杀这次刚起的中心
+    stop_path(state_dir).unlink(missing_ok=True)
+    _start_stop_watcher(httpd, state_dir)
     print(f"[OK] 登记中心已启动：http://0.0.0.0:{actual}/ （说明页与下载入口）")
     print(f"     库软件：{package if package and package.is_file() else '未找到（/download 会提示）'}")
     if manifest is None:
@@ -1388,6 +1520,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"     skill 包：{'可用' if skill_root().is_dir() else f'找不到模板 {skill_root()}'}")
     print(f"     授权名单：{roster_path}{'' if roster_path.is_file() else '（还没发布）'}")
     print(f"     改名单就在这台机器上开：http://127.0.0.1:{actual}/roster/edit （别人打不开）")
+    print(f"     要停下来重打包：registry --stop（{stop_path(state_dir)}），看门狗会一起退")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

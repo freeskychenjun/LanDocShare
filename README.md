@@ -99,7 +99,10 @@ python -m landoc.cli init --lib-dir D:\MyLib --name 陈鋆的资料库 --folder 
 - `GET /health`：中心自身状态。
 - `GET /libraries` 响应里不回传各库的授权名单，只回库名/地址/篇数/在线状态。
 - 数据落盘 `~/.landoc-registry/registry.json`（`--state-dir` 可改，原子写），重启不丢。
-- 开机自启：`LanDocShare.exe registry --install-autostart`（写 `HKCU\...\Run` 的 `LanDocShare-registry` 值，不需要管理员；`--remove-autostart` 撤销）。它与库软件自己的自启值是两条，互不影响。
+- 开机自启：`LanDocShare.exe registry --install-autostart`（写 `HKCU\...\Run` 的 `LanDocShare-registry` 值，不需要管理员；`--remove-autostart` 撤销）。它与库软件自己的自启值是两条，互不影响。**默认带看门狗**（见下条），并把这次启动实际用到的运行参数（`--package-zip` / `--manifest` / `--roster` / 非默认的 `--state-dir`、`--allow-cidrs`、`--watchdog-log`、`--watchdog-interval`、`--watchdog-failures`，路径转绝对）一起写进命令——开机后再拉起来仍然是同一套分发配置，不会因为工作目录变了而找不到包，也不会把日志悄悄写到别处。
+- **看门狗**（`--watchdog`，`landoc/watchdog.py`）：把中心当子进程管起来，中心退出就按 3/5/10/20/30/60 秒退避重启，活过 5 分钟退避归零；中心还活着但 `/health` 连续 3 次不应答（端口开着、请求没人答）判卡死，杀掉重启。`/health` 只要有人接电话就算活（中心按来源网段回 403 也算），不会误杀。看门狗自己的输出和中心的 stdout/stderr 都写 `%LOCALAPPDATA%\LanDocShare\logs\registry-watchdog.log`（`--watchdog-log` 可改）；中心的输出由看门狗逐行转抄（带 `[中心]` 前缀），子进程按 UTF-8、不缓冲写，所以日志只有一种编码、两条流也不会互相覆盖，被强杀时最后的输出也不再丢。开机自启时没有控制台，出问题就翻这个文件。`--watchdog-interval 0` 关掉探活，只管子进程退出。
+- 中心因为**端口被占用**起不来时以退出码 3 退出，看门狗记一条日志后也退出，不会每分钟徒劳重启。
+- **重打包前先优雅停**：`LanDocShare.exe registry --stop`（或 `python -m landoc.cli registry --stop`，`--state-dir` 要跟运行中的一致）只是在状态目录留一个 `stop.request` 记号，中心几秒内答完手头的请求再退出，看门狗看到退出码 0 也一起退——重新打包期间不会"刚停就被拉起来"，文件也不会被占用。打包完再启动一次即可；下次启动会自动清掉过期的记号。
 - 只需要元数据，中心挂了不影响各库自身检索。
 - **可见性口径与库端一致**：中心复用库端的 `_ip_allowed` + `authorize_person` 判断，库端会放行的来源才看得到这个库；中心因此会保存各库上报的授权名单（姓名/IP，不含文档内容）。这是"同事只能看到对自己开放的库"的必要代价；旧版库升级前不会出现在清单里。
 
@@ -248,7 +251,8 @@ landoc/
   wizard.py        建库向导（tkinter 单屏）
   panel.py         状态窗口（tkinter，关窗=隐藏）
   netinfo.py       内网地址探测（CLI 与状态窗口共用）
-  registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）+ 分发入口 + 名单发布
+  registry.py      登记中心（8767）：心跳登记 + 在线清单（TTL 5/30 分钟）+ 分发入口 + 名单发布 + `--stop` 优雅停止
+  watchdog.py      中心看门狗（`--watchdog`）：子进程退避重启、`/health` 卡死判定、日志
   roster.py        授权名单：本地增删/排序、与中心之间的发布与拉取
   roster_ui.py     授权名单窗口（tkinter，增删改 / 导入导出 / 与中心同步）
   updater.py       自动更新：检查 / 下载续传 / 校验解压 / 换目录 / 健康检查与回滚

@@ -232,6 +232,35 @@ def test_registry_command_forwards_flags(monkeypatch):
     assert seen["argv"] == ["--port", "8790", "--install-autostart"]
 
 
+def test_registry_command_forwards_watchdog_flags(monkeypatch):
+    from landoc import registry
+
+    seen: dict = {}
+
+    monkeypatch.setattr(registry, "main", lambda argv: seen.setdefault("argv", argv) or 0)
+    cli.main(
+        [
+            "registry",
+            "--watchdog",
+            "--watchdog-log",
+            "w.log",
+            "--watchdog-interval",
+            "10",
+            "--watchdog-failures",
+            "2",
+        ]
+    )
+    assert seen["argv"] == [
+        "--watchdog",
+        "--watchdog-log",
+        "w.log",
+        "--watchdog-interval",
+        "10",
+        "--watchdog-failures",
+        "2",
+    ]
+
+
 def test_init_records_registry_url(tmp_path: Path):
     lib = tmp_path / "lib"
     cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://10.91.1.197:8767"])

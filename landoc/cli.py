@@ -496,8 +496,13 @@ def build_parser() -> argparse.ArgumentParser:
     registry_cmd.add_argument("--package-zip", default=None, help="库软件 zip 路径（/download 用）")
     registry_cmd.add_argument("--manifest", default=None, help="版本清单 latest.json 路径（默认与 zip 同目录）")
     registry_cmd.add_argument("--advertise", default=None, help="对外公布的中心地址，默认按请求 Host 推断")
-    registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run）后退出")
+    registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run，带看门狗）后退出")
     registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
+    registry_cmd.add_argument("--watchdog", action="store_true", help="常驻看门狗：中心退出/卡死时自动拉起")
+    registry_cmd.add_argument("--watchdog-log", default=None, help="看门狗日志路径")
+    registry_cmd.add_argument("--watchdog-interval", type=float, default=None, help="多少秒探一次 /health（0=不探）")
+    registry_cmd.add_argument("--watchdog-failures", type=int, default=None, help="连续几次没应答算卡死")
+    registry_cmd.add_argument("--stop", action="store_true", help="让正在运行的中心优雅退出（重打包前用）")
     registry_cmd.set_defaults(func=_cmd_registry)
     return parser
 
@@ -522,6 +527,16 @@ def _cmd_registry(args) -> int:
         argv += ["--install-autostart"]
     if args.remove_autostart:
         argv += ["--remove-autostart"]
+    if args.watchdog:
+        argv += ["--watchdog"]
+    if args.watchdog_log:
+        argv += ["--watchdog-log", args.watchdog_log]
+    if args.watchdog_interval is not None:
+        argv += ["--watchdog-interval", f"{args.watchdog_interval:g}"]
+    if args.watchdog_failures is not None:
+        argv += ["--watchdog-failures", str(args.watchdog_failures)]
+    if args.stop:
+        argv += ["--stop"]
     return registry.main(argv)
 
 
