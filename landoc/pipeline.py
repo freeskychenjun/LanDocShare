@@ -32,6 +32,9 @@ PDF_EXTS = {".pdf"}
 SKIP_EXTS = {".xls", ".xlsx", ".et"}
 
 MAX_ATTEMPTS = 3  # 同一份文件连续失败超过这个次数就不再自动重试
+# 装/卸 Office、Acrobat 之后，旧的"没有可用的转换器"失败记录必须作废，否则同事机器
+# 补装完也永远不重试。只清这两类：它们说的是"机器缺东西"，不是"这份文件坏"。
+ENV_REASONS = frozenset({"no_office", "no_reader"})
 
 # store_content=False 时保留的正文前缀（设计 §6.6 "仅存片段"）。取值越大越保检索召回，
 # 越小越防"整库明文被拷走"；本库的取舍是召回优先，默认给足 20000 字（多数简报/汇报/规程
@@ -130,6 +133,40 @@ def _write_state(cfg, state: dict) -> None:
     _write_json_atomic(_state_path(cfg), state)
 
 
+def env_signature() -> dict:
+    """本机"有没有可用的转换器"的指纹（注册表查询，毫秒级，不启动任何进程）。
+
+    存进 state.json 之后，下一轮只要指纹变了就知道同事刚装了/卸了 Office 或 Acrobat，
+    可以放心把 no_office / no_reader 的失败记录作废重试。
+    """
+    def _probe(name: str) -> bool:
+        fn = getattr(probe, name, None)
+        if fn is None:  # 探针被裁掉（或非 Windows）时按"有"处理，别凭空清空失败记录
+            return True
+        try:
+            return bool(fn())
+        except Exception:  # noqa: BLE001 - 探测失败不该拦住建库
+            return True
+
+    return {"office": _probe("has_office"), "acrobat": _probe("has_acrobat")}
+
+
+def _drop_stale_env_failures(state: dict) -> int:
+    """环境指纹变了就丢掉 no_office / no_reader 的失败记录，返回丢掉的条数。"""
+    current = env_signature()
+    previous = state.get("env")
+    state["env"] = current
+    if not isinstance(previous, dict) or not previous:
+        return 0  # 第一次记账（老版本升级上来也一样）：只记指纹，不动历史失败
+    if previous == current:
+        return 0
+    failures = state.get("failures") or {}
+    stale = [rel for rel, item in failures.items() if str(item.get("reason", "")) in ENV_REASONS]
+    for rel in stale:
+        failures.pop(rel, None)
+    return len(stale)
+
+
 def _iter_docs(folders) -> list[tuple[Path, str]]:
     """返回 (绝对路径, 库内相对路径)；相对路径带顶层文件夹名，避免同名目录互相覆盖。"""
     out: list[tuple[Path, str]] = []
@@ -213,6 +250,8 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
     state = _read_state(cfg)
     files: dict = state.setdefault("files", {})
     failures: dict = state.setdefault("failures", {})
+    # 同事补装了 Office/Acrobat：旧的"没有可用转换器"失败记录要作废，否则永远不重试
+    _drop_stale_env_failures(state)
     processed = 0
     writer_session = None
     ppt_session = None
@@ -265,14 +304,19 @@ def run(cfg, index=None, limit: int | None = None) -> RunReport:
                 continue
 
             failed_before = failures.get(rel)
-            if (
-                failed_before
-                and failed_before.get("mtime") == stat.st_mtime
-                and failed_before.get("size") == stat.st_size
-                and failed_before.get("attempts", 0) < MAX_ATTEMPTS
-            ):
-                report.skip("known_failure")
-                continue
+            if failed_before:
+                # 两种跳过：这份文件还是上次失败的那个版本（I3：未变的文件不重复付超时）；
+                # 或者它已经失败到上限了。
+                # （曾经写成 `attempts < MAX_ATTEMPTS` 参与与运算，等于第 3 次之后
+                #  条件恒假 —— 坏了/带口令的文件每个空闲窗口都重付一次超时。）
+                attempts = int(failed_before.get("attempts", 0) or 0)
+                same_version = (
+                    failed_before.get("mtime") == stat.st_mtime
+                    and failed_before.get("size") == stat.st_size
+                )
+                if same_version or attempts >= MAX_ATTEMPTS:
+                    report.skip("known_failure")
+                    continue
 
             kind = probe.classify(path)
             if kind == "blocked":

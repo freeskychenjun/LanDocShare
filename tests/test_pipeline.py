@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -431,3 +432,106 @@ def test_prefix_cuts_at_line_boundary(cfg, monkeypatch):
     assert 0 < len(content) <= 300
     assert content.endswith("|")
     assert body.startswith(content)
+
+
+# ============ 失败重试上限 / 环境自愈 ============
+
+@pytest.fixture
+def one_bad_doc(tmp_path: Path) -> tuple[Config, Path]:
+    """只放一份"每次都会失败"的密文 docx，排除其它文件的干扰。"""
+    docs = tmp_path / "成果"
+    docs.mkdir()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    target = docs / "坏文件.docx"
+    target.write_bytes(ENCRYPTED_HEADER + b"cipher" * 8)
+    return Config(name="测试库", lib_dir=lib, folders=[docs]), target
+
+
+def test_gives_up_after_max_attempts(one_bad_doc, monkeypatch):
+    """1.1: 累计失败到上限就永久放弃 —— 不能每改一次又重付 120 秒超时。
+
+    回归点：旧条件里 `attempts < MAX_ATTEMPTS` 与其它条件与在一起，第 3 次之后
+    恒为假，于是每个空闲周期都重试，attempts 无限增长。
+    """
+    cfg, target = one_bad_doc
+
+    def always_timeout(*args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    for attempt in range(pipeline.MAX_ATTEMPTS):
+        # 每次换一版内容（大小也不同），模拟"主人又改了一版"
+        target.write_bytes(ENCRYPTED_HEADER + bytes([attempt]) * (8 + attempt))
+        report = pipeline.run(cfg, index=StubIndex())
+        assert [reason for _, reason in report.failed] == ["timeout"]
+        assert report.skipped.get("known_failure") is None
+
+    target.write_bytes(ENCRYPTED_HEADER + b"another version" * 4)
+    report = pipeline.run(cfg, index=StubIndex())
+    assert report.failed == []
+    assert report.skipped.get("known_failure") == 1
+
+
+def test_same_failing_version_is_skipped_before_hitting_the_cap(one_bad_doc, monkeypatch):
+    """1.1: 文件没变就别再试（哪怕还没到上限）。"""
+
+    def always_timeout(*args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    cfg, _target = one_bad_doc
+    pipeline.run(cfg, index=StubIndex())
+    report = pipeline.run(cfg, index=StubIndex())
+    assert report.skipped.get("known_failure") == 1
+    assert report.failed == []
+
+
+def test_installing_office_clears_no_office_failures(one_bad_doc, monkeypatch, flat_opc):
+    """1.2: 同事补装 Office 后，旧的 no_office 失败记录必须作废重试，不能永不自愈。"""
+    cfg, _target = one_bad_doc
+
+    def no_office(*args, **kwargs):
+        raise office_bridge.OfficeUnavailable("no office")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", no_office)
+    monkeypatch.setattr(pipeline, "env_signature", lambda: {"office": False, "acrobat": False})
+    first = pipeline.run(cfg, index=StubIndex())
+    assert [reason for _, reason in first.failed] == ["no_office"]
+    # 同一台机器再跑一轮：不重复付时空
+    again = pipeline.run(cfg, index=StubIndex())
+    assert again.skipped.get("known_failure") == 1
+    # 那台机器后来装了 Office
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc
+    )
+    monkeypatch.setattr(pipeline, "env_signature", lambda: {"office": True, "acrobat": False})
+    healed = pipeline.run(cfg, index=StubIndex())
+    assert healed.converted == 1
+    assert healed.failed == []
+
+
+def test_env_change_keeps_file_specific_failures(one_bad_doc, monkeypatch):
+    """1.2: 只清"机器缺东西"那两类；超时/损坏是文件自己的问题，装了 Office 也不该重试。"""
+    cfg, _target = one_bad_doc
+
+    def always_timeout(*args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    monkeypatch.setattr(pipeline, "env_signature", lambda: {"office": True, "acrobat": False})
+    pipeline.run(cfg, index=StubIndex())
+    monkeypatch.setattr(pipeline, "env_signature", lambda: {"office": True, "acrobat": True})
+    report = pipeline.run(cfg, index=StubIndex())
+    assert report.skipped.get("known_failure") == 1
+    assert report.failed == []
+
+
+def test_env_signature_is_recorded_in_state(one_bad_doc, monkeypatch):
+    """1.2: 指纹落在 state.json 里，下一轮才比得出来。"""
+    cfg, _target = one_bad_doc
+    monkeypatch.setattr(pipeline, "env_signature", lambda: {"office": True, "acrobat": False})
+    monkeypatch.setattr(pipeline, "convert_one", lambda *a, **k: ("正文", "direct"))
+    pipeline.run(cfg, index=StubIndex())
+    state = json.loads((Path(cfg.lib_dir) / pipeline.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["env"] == {"office": True, "acrobat": False}
