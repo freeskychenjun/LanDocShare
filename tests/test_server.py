@@ -89,6 +89,33 @@ def test_info_page_json_at_api_info(running):
     payload = client.json("/api/info")
     assert payload["service"] == "landoc"
     assert "/api/search" in payload["endpoints"]
+    assert "/api/recent" in payload["endpoints"]
+
+
+def test_recent_lists_newest_first(running):
+    """5.1：检索页一打开靠它显示「最近收录」，不用先进目录。"""
+    client, _, _ = running
+    payload = client.json("/api/recent")
+    assert payload["count"] == 2
+    assert [f["path"] for f in payload["files"]] == ["成果/溪霞.md", "成果/乐平.md"]
+    assert set(payload["files"][0]) == {"path", "title", "size"}
+
+
+def test_recent_limit_is_clamped(running):
+    client, _, _ = running
+    assert client.json("/api/recent?limit=1")["count"] == 1
+    assert client.json("/api/recent?limit=-5")["count"] == 1
+    assert client.json("/api/recent?limit=abc")["count"] == 2  # 坏参数回落默认，不是 500
+
+
+def test_root_page_renders_recent_and_loading_state(running):
+    """5.2：页面要有最近收录入口，搜索时要有「搜索中…」而不是干等着。"""
+    client, _, _ = running
+    status, body = client.get("/")
+    assert status == 200
+    assert "api/recent" in body
+    assert "最近收录" in body
+    assert "搜索中…" in body
 
 
 def test_search_returns_snippets(running):
@@ -254,6 +281,36 @@ def test_audit_written_per_request(running):
     log = Path(cfg.lib_dir) / "logs" / "access_log.jsonl"
     assert log.is_file()
     assert '"/api/stats"' in log.read_text(encoding="utf-8").replace('"api": ', "")
+
+
+def test_rate_limiter_is_shared_with_registry():
+    """库端与登记中心共用一份实现（原来两边各写一遍，改一处漏一处）。"""
+    from landoc import ratelimit, server
+
+    assert server.RateLimiter is ratelimit.RateLimiter
+    limiter = ratelimit.RateLimiter(max_req=2, window=60.0)
+    assert limiter.allow("10.0.0.1") is True
+    assert limiter.allow("10.0.0.1") is True
+    assert limiter.allow("10.0.0.1") is False  # 超限的请求不再占窗口
+    assert limiter.allow("10.0.0.2") is True  # 别的来源不受牵连
+    limiter.reset()
+    assert limiter.allow("10.0.0.1") is True
+
+
+def test_audit_rotates_instead_of_growing_forever(tmp_path):
+    """常年开着服务时 access_log 会一直长；超限后滚成 .1，别把盘写满。"""
+    from landoc.server import Audit
+
+    path = tmp_path / "logs" / "access_log.jsonl"
+    audit = Audit(path, max_bytes=300)
+    for i in range(50):
+        audit.log(ip="10.0.0.1", api="/api/search", status=200, q=f"第{i}次")
+    assert path.is_file()
+    assert path.stat().st_size <= 300
+    rotated = path.with_name(path.name + ".1")
+    assert rotated.is_file() and rotated.stat().st_size > 0
+    # 最近的一行一定在新文件里（滚走的是旧的，不是刚写的）
+    assert "第49次" in path.read_text(encoding="utf-8")
 
 
 def test_empty_cidrs_denies_all(lib):

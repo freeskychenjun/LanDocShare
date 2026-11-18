@@ -15,15 +15,14 @@ import json
 import threading
 import time
 import urllib.parse
-from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from landoc import __version__
 from landoc.index import MAX_LIMIT, Index
+from landoc.ratelimit import DEFAULT_RATE, RateLimiter
 
 MAX_QUERY_LEN = 200
-DEFAULT_RATE = 60
 
 # 同事用浏览器打开 / 时看到的单页检索界面（纯静态、无外部依赖，离网也可用）
 WEB_INDEX = Path(__file__).with_name("web") / "index.html"
@@ -63,45 +62,48 @@ def parse_query(qs: str) -> dict:
     return out
 
 
-class RateLimiter:
-    """每 IP 滑动窗口限流。"""
-
-    def __init__(self, max_req: int = DEFAULT_RATE, window: float = 60.0):
-        self.max = max_req
-        self.window = window
-        self._hits: dict[str, deque] = {}
-        self._lock = threading.Lock()
-
-    def allow(self, ip: str) -> bool:
-        now = time.time()
-        with self._lock:
-            dq = self._hits.setdefault(ip, deque())
-            while dq and now - dq[0] > self.window:
-                dq.popleft()
-            if len(dq) >= self.max:
-                return False
-            dq.append(now)
-            if len(self._hits) > 4096:
-                self._hits = {k: v for k, v in self._hits.items() if v and now - v[-1] <= self.window}
-            return True
-
-
 class Audit:
     """JSONL 审计：一行一事件；写失败不阻断服务。"""
 
-    def __init__(self, path: Path | None):
+    # 超过这个大小就滚到 <name>.1（整体替换）：常年开着服务，access_log 不能无限长
+    MAX_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, path: Path | None, max_bytes: int = 0):
         self.path = Path(path) if path else None
+        self.max_bytes = int(max_bytes or self.MAX_BYTES)
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._size = self._current_size()
+
+    def _current_size(self) -> int:
+        try:
+            return self.path.stat().st_size if self.path else 0
+        except OSError:
+            return 0
+
+    def _rotate(self) -> None:
+        rotated = self.path.with_name(self.path.name + ".1")
+        try:
+            if rotated.exists():
+                rotated.unlink()
+            self.path.replace(rotated)
+        except OSError:
+            pass
+        self._size = 0
 
     def log(self, **fields) -> None:
         if not self.path:
             return
         record = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), **fields}
+        line = json.dumps(record, ensure_ascii=False) + "\n"
         try:
-            with self._lock, open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            with self._lock:
+                if self._size + len(line.encode("utf-8")) > self.max_bytes:
+                    self._rotate()
+                with open(self.path, "a", encoding="utf-8") as fh:
+                    fh.write(line)
+                self._size += len(line.encode("utf-8"))
         except OSError:
             pass
 
@@ -289,6 +291,15 @@ class Handler(BaseHTTPRequestHandler):
             rows = self.index.list_dir(path)
             self._record(ip, name, route, 200, count=len(rows))
             return self._json({"path": path, "count": len(rows), "files": rows})
+        if route == "/api/recent":
+            limit = params.get("limit") or "50"
+            try:
+                limit_int = max(1, min(int(limit), 100))
+            except ValueError:
+                limit_int = 50
+            rows = self.index.recent(limit_int)
+            self._record(ip, name, route, 200, count=len(rows))
+            return self._json({"count": len(rows), "files": rows})
         if route == "/api/tables":
             path = (params.get("path") or "").strip()
             if not path:
@@ -318,6 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/search": "q=查询词 & dir=可选目录前缀 & limit=1~30",
                 "/api/tree": "path=可选目录，返回子目录聚合",
                 "/api/list": "path=目录，返回文件列表（≤500）",
+                "/api/recent": "limit=1~100，返回最近收录的文档",
                 "/api/tables": "path=文档路径，返回该文档内的表格",
             },
         }

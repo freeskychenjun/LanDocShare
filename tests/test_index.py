@@ -141,3 +141,21 @@ def test_delete_removes_row_and_fts(idx: Index):
     idx.commit()
     assert idx.stats()["total"] == 0
     assert idx.search("乐平")[0] == []
+
+
+def test_recent_orders_by_indexed_at_then_rowid(idx: Index):
+    """最近收录：新入库的排前面，同一秒入库的靠 rowid 稳定兜底。"""
+    idx.upsert("old.md", "老文档", "docx", "/s/old.docx", 10, 1.0, "老内容")
+    idx.upsert("new.md", "新文档", "docx", "/s/new.docx", 10, 1.0, "新内容")
+    idx.conn.execute("UPDATE documents SET indexed_at = '2026-01-01 00:00:00' WHERE rel_path = 'old.md'")
+    idx.conn.execute("UPDATE documents SET indexed_at = '2026-11-18 09:00:00' WHERE rel_path = 'new.md'")
+    idx.commit()
+    assert [r["path"] for r in idx.recent()] == ["new.md", "old.md"]
+
+
+def test_recent_honours_limit_and_empty_library(idx: Index):
+    assert idx.recent() == []
+    for i in range(5):
+        idx.upsert(f"f{i}.md", f"文档{i}", "docx", f"/s/f{i}.docx", 10, 1.0, "乐平")
+    assert len(idx.recent(limit=3)) == 3
+    assert len(idx.recent(limit=0)) == 1  # 下界夹到 1，绝不返回空列表骗前端

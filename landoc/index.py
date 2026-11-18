@@ -328,6 +328,20 @@ class Index:
         ).fetchall()
         return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
 
+    def recent(self, limit: int = 50) -> list[dict]:
+        """最近收录的文档（按入库时间倒序）：检索页一打开就能看见库里有东西。
+
+        indexed_at 是文本时间戳（"YYYY-MM-DD HH:MM:SS"），同一秒入库的多篇用 rowid
+        兜底排序，保证顺序稳定、不会每次刷新都跳。
+        """
+        limit = max(1, min(int(limit), MAX_LIST))
+        rows = self.conn.execute(
+            """SELECT rel_path, title, src_size FROM documents
+               ORDER BY COALESCE(indexed_at, '') DESC, rowid DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
+
     def tables(self, rel_path: str, max_bytes: int = 300_000) -> list[dict] | None:
         """返回该文档内的全部表格（GFM + HTML）。路径必须存在于索引且不越界，否则 None。"""
         rel = (rel_path or "").replace("\\", "/").strip().lstrip("/")
