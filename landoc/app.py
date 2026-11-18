@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from landoc import __version__
@@ -25,6 +27,30 @@ def _post_json(url: str, payload: dict, timeout: float = 3.0) -> dict:
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - 地址来自本机配置
         return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+_LOG_MAX_BYTES = 1024 * 1024
+_LOG_LOCK = threading.Lock()
+
+
+def app_log_path(lib_dir) -> Path:
+    """状态窗口给库主人看的是"最后一句话"，一重启就没了；细节落到 logs/app.log。"""
+    return Path(lib_dir) / "logs" / "app.log"
+
+
+def log_event(lib_dir, message: str) -> None:
+    """写一行运行日志（超过 1 MB 滚成 .1）；写不进去就算了，不能让日志拖垮服务。"""
+    path = app_log_path(lib_dir)
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n"
+    try:
+        with _LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > _LOG_MAX_BYTES:
+                path.replace(path.with_name(path.name + ".1"))
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+    except OSError:
+        pass
 
 
 @dataclass
@@ -108,6 +134,7 @@ class LibraryApp:
         self._status = AppStatus()
         self._threads: list[threading.Thread] = []
         self.httpd = None
+        self._registry_ok: bool | None = None  # None = 还没试过（用来只记状态切换）
 
     # ---- 生命周期 ----
     def start(self) -> None:
@@ -143,6 +170,7 @@ class LibraryApp:
             self._update(phase="serving", port=actual, doc_count=total, last_scan=state.get("last_scan_ts", ""))
         except Exception:  # noqa: BLE001 - 读不到就用默认值，别拦住启动
             self._update(phase="serving", port=actual)
+        log_event(self.cfg.lib_dir, f"库服务启动：端口 {actual}，版本 {__version__}")
         self._spawn(self.httpd.serve_forever, "landoc-server")
         self._spawn(self._worker, "landoc-worker")
         if str(getattr(self.cfg, "registry_url", "") or "").strip():
@@ -349,7 +377,9 @@ class LibraryApp:
             try:
                 report = self._runner()
             except Exception as exc:  # noqa: BLE001 - 单轮失败等下一轮
-                self._update(phase="error", message=f"{exc.__class__.__name__}: {exc}")
+                message = f"{exc.__class__.__name__}: {exc}"
+                log_event(self.cfg.lib_dir, f"扫描失败：{message}")
+                self._update(phase="error", message=message)
                 return total
             total += report.converted
             self._refresh_counts()
@@ -393,8 +423,18 @@ class LibraryApp:
                 reply = self._poster(url, self._register_payload())
                 self.last_register = reply
                 stamp = str((reply or {}).get("server_time") or "")
+                if self._registry_ok is False:
+                    log_event(self.cfg.lib_dir, "登记中心恢复连接")
+                self._registry_ok = True
                 self._update(registry=f"已登记 {stamp}".strip())
-            except Exception:  # noqa: BLE001 - 中心不可达就跳过这一轮
+            except Exception as exc:  # noqa: BLE001 - 中心不可达就跳过这一轮
+                # 只在"从通到不通"这一刻记一行：否则中心断一晚，日志会被 60 s 一条刷满
+                if self._registry_ok is not False:
+                    log_event(
+                        self.cfg.lib_dir,
+                        f"连不上登记中心（{url}）：{exc.__class__.__name__}: {exc}",
+                    )
+                self._registry_ok = False
                 self.last_register = None
                 self._update(registry="连不上登记中心")
             self._stop.wait(self._heartbeat_seconds)

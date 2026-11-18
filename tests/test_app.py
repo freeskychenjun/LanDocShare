@@ -212,6 +212,73 @@ def test_no_heartbeat_without_registry_url(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# 运行日志：状态窗口只说最后一句话，细节要留在 logs/app.log
+# --------------------------------------------------------------------------- #
+def test_start_writes_app_log(tmp_path):
+    from landoc.app import app_log_path
+
+    app = make_app(tmp_path, idle_check=lambda: False, server_factory=lambda cfg: FakeServer(port=18082))
+    app.start()
+    try:
+        log = app_log_path(tmp_path)
+        assert log.is_file()
+        assert "库服务启动" in log.read_text(encoding="utf-8")
+    finally:
+        app.stop()
+
+
+def test_failed_scan_is_logged_not_only_shown_in_status(tmp_path):
+    """转换线程里的异常原来只写进状态窗口的 message，重启窗口就查不到了。"""
+
+    def boom():
+        raise RuntimeError("COM 挂了")
+
+    app = make_app(
+        tmp_path,
+        idle_check=lambda: True,
+        server_factory=lambda cfg: FakeServer(port=18083),
+    )
+    app._runner = boom
+    app.start()
+    try:
+        from landoc.app import app_log_path
+
+        log = app_log_path(tmp_path)
+        assert wait_for(lambda: log.is_file() and "扫描失败" in log.read_text(encoding="utf-8"))
+        assert "COM 挂了" in app.status.message  # 状态窗口那句还在（下一轮会把 phase 改回 serving）
+        assert "COM 挂了" in log.read_text(encoding="utf-8")
+    finally:
+        app.stop()
+
+
+def test_registry_outage_logged_once_per_transition(tmp_path):
+    """中心断线只记一行：断一晚不能被 60 秒一条刷满整份日志。"""
+
+    def poster(url, payload):
+        raise OSError("中心不可达")
+
+    app = make_app(
+        tmp_path,
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18084),
+        poster=poster,
+        heartbeat_seconds=0.02,
+    )
+    app.cfg.registry_url = "http://10.91.1.197:8767"
+    app.start()
+    try:
+        from landoc.app import app_log_path
+
+        log = app_log_path(tmp_path)
+        assert wait_for(lambda: log.is_file() and "连不上登记中心" in log.read_text(encoding="utf-8"))
+        time.sleep(0.2)  # 放开好几轮心跳，它们都该被合并成同一行
+        rows = [line for line in log.read_text(encoding="utf-8").splitlines() if "连不上登记中心" in line]
+        assert len(rows) == 1
+    finally:
+        app.stop()
+
+
+# --------------------------------------------------------------------------- #
 # 自动更新：状态、摘要、安装前置条件
 # --------------------------------------------------------------------------- #
 def _staged(tmp_path) -> updater.StagedUpdate:
