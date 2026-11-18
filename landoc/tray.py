@@ -255,6 +255,11 @@ class TrayApp:
     def run(self) -> None:
         import pystray
 
+        # pystray 发 NIM_ADD 时把 uID 传成 0（结构体字段叫 uID，它传的是 hID），
+        # Windows 就只建一个空槽：托盘占位、没图标、右键也点不出来。
+        from landoc import notifyicon
+
+        notifyicon.patch_pystray_uid()
         self.icon = pystray.Icon(
             "landoc",
             make_icon_image(),
