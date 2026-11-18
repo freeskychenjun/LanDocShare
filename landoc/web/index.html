@@ -137,6 +137,23 @@ async function api(path, params) {
 
 function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
+// 请求期间给个"看得见的动静"：按钮置灰 + 面板写"搜索中…"。
+// 库里几千篇时，一次查询要几百毫秒，什么都不显示会让人以为页面卡死、反复点。
+function setBusy(on) {
+  const btn = $('searchform').querySelector('button[type=submit]');
+  if (btn) { btn.disabled = on; btn.textContent = on ? '搜索中…' : '搜索'; }
+}
+
+function hitCard(title, ext, path) {
+  const card = el(`<div class="hit">
+    <div class="row"><h3>${esc(title)}</h3><span class="tag">${esc(ext || '')}</span></div>
+    <div class="path">${esc(path)}</div>
+    <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
+  </div>`);
+  card.querySelector('button').onclick = () => openTables(path);
+  return card;
+}
+
 async function loadHeader() {
   try {
     const meta = await api('/api/meta');
@@ -178,47 +195,74 @@ async function search(q, dir) {
   state.q = q; state.dir = dir || '';
   $('q').value = q;
   crumb(state.dir ? state.dir.split('/') : []);
-  const data = await api('/api/search', {q, dir: state.dir, limit: 30});
-  const panel = $('panel'); panel.innerHTML = '';
+  const panel = $('panel');
+  panel.innerHTML = '<div class="empty">搜索中…</div>';
+  setBusy(true);
+  let data;
+  try {
+    data = await api('/api/search', {q, dir: state.dir, limit: 30});
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  } finally {
+    setBusy(false);
+  }
+  panel.innerHTML = '';
   const head = el(`<p class="meta">“${esc(q)}” 命中 ${esc(data.count)} 篇${data.fallback ? '（精确匹配不足，已放宽为任一词命中）' : ''}</p>`);
   panel.appendChild(head);
   if (!data.results.length) { panel.appendChild(el('<div class="empty">没有命中。换个词，或试试 2 字关键词。</div>')); return; }
   for (const r of data.results) {
-    const hit = el(`<div class="hit">
-      <div class="row"><h3>${esc(r.title)}</h3><span class="tag">${esc(r.ext)}</span></div>
-      <div class="path">${esc(r.path)}</div>
-      <p>${snippetHtml(r.snippet)}</p>
-      <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
-    </div>`);
-    hit.querySelector('button').onclick = () => openTables(r.path);
+    const hit = hitCard(r.title, r.ext, r.path);
+    hit.insertBefore(el(`<p>${snippetHtml(r.snippet)}</p>`), hit.querySelector('.row:last-child'));
     panel.appendChild(hit);
   }
+}
+
+// 一进页面就让人看见"库里有东西"：不输关键词只能逐级点目录，第一次打开的同事
+// 会以为没收录成功。取最近入库的 50 篇；取不到就退回原来那句提示。
+async function showRecent() {
+  const panel = $('panel');
+  panel.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api('/api/recent', {limit: 50});
+  } catch (e) {
+    panel.innerHTML = '<div class="empty">输入关键词开始检索，或从左侧目录进入。</div>';
+    return;
+  }
+  panel.innerHTML = '';
+  if (!data.files.length) {
+    panel.innerHTML = '<div class="empty">库里还没有文档。把资料放进共享目录，等库端扫描完再来。</div>';
+    return;
+  }
+  panel.appendChild(el(`<p class="meta">最近收录 · ${esc(data.count)} 篇</p>`));
+  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path));
 }
 
 async function showFiles(dir) {
   state.dir = dir;
   $('q').value = '';
   crumb(dir.split('/'));
-  const data = await api('/api/list', {path: dir});
-  const panel = $('panel'); panel.innerHTML = '';
+  const panel = $('panel');
+  panel.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api('/api/list', {path: dir});
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  panel.innerHTML = '';
   panel.appendChild(el(`<p class="meta">${esc(dir)} · ${esc(data.count)} 篇</p>`));
   if (!data.files.length) { panel.appendChild(el('<div class="empty">这个目录下没有文档。</div>')); return; }
-  for (const f of data.files) {
-    const row = el(`<div class="hit">
-      <div class="row"><h3>${esc(f.title)}</h3><span class="tag">${esc(f.ext)}</span></div>
-      <div class="path">${esc(f.path)}</div>
-      <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
-    </div>`);
-    row.querySelector('button').onclick = () => openTables(f.path);
-    panel.appendChild(row);
-  }
+  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path));
 }
 
 async function goDir(dir) {
   state.dir = dir;
   try {
     await loadTree(dir);
-    if (dir) await showFiles(dir); else { $('panel').innerHTML = '<div class="empty">输入关键词开始检索，或从左侧目录进入。</div>'; crumb([]); }
+    if (dir) await showFiles(dir); else { crumb([]); await showRecent(); }
   } catch (e) { $('panel').innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
