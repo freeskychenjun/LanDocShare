@@ -7,8 +7,6 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
-
 ROOT = Path(SPECPATH).parent  # noqa: F821 - PyInstaller 注入
 
 datas = [
@@ -18,8 +16,6 @@ datas = [
     # 登记中心的 /skill.zip 现场打包要用这份模板（设计 §9 分发）
     (str(ROOT / "skill" / "lan-lib-search"), "skill/lan-lib-search"),
 ]
-# jieba 的词典是数据文件，不显式收进来打包后就分词失败
-datas += collect_data_files("jieba")
 
 hiddenimports = [
     "win32com.client",
@@ -38,6 +34,7 @@ hiddenimports = [
 # 分析会顺着可选 import 把它们拖进来，整包会从 ~150 MB 膨胀到 1.2 GB。
 # 库软件运行时不 import 它们（已用 sys.modules 验证），所以在这里整包排除。
 EXCLUDES = [
+    "jieba",  # 检索走 FTS5 trigram，代码里从来没 import 过它（旧依赖留下的）
     "torch",
     "torchvision",
     "torchaudio",

@@ -1,22 +1,22 @@
 [project]
 name = "landoc"
-version = "0.2.7"
+version = "0.2.8"
 description = "局域网个人资料库共享：加密/明文办公文档转 Markdown、FTS5 索引、只读检索服务"
 requires-python = ">=3.12"
 dependencies = [
-    "jieba",
     "python-docx",
     "python-pptx",
     "pymupdf",
     "pywin32",
     "pystray",
     "Pillow",
-    "pytest",
 ]
 
 [project.optional-dependencies]
 # 打包用：只有出安装包的那台机器需要
 build = ["pyinstaller>=6.0"]
+# 开发用：跑测试才需要，装到同事机器上会白占几十 MB
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -33,14 +33,17 @@ python -m landoc people --lib-dir D:\MyLib                    # 看名单
 
 检索接口（只读，只给片段与表格，永不给全文/下载）：
 
-同事直接用浏览器打开 `http://<内网IP>:8766/` 就是检索页（搜索框 + 目录树 + 表格查看，纯静态无外链）；下面这些是给 AI 助手/脚本用的。
+同事直接用浏览器打开 `http://<内网IP>:8766/` 就是检索页（搜索框 + 目录树 + 表格查看，纯静态无外链）。打开就先显示「最近收录」50 篇（不输关键词也有东西看），搜索时按钮变「搜索中…」、面板写「搜索中…」——库大时查一次要几百毫秒，没有动静会被当成卡死反复点（连点会撞上每 IP 每分钟 60 次的限流，页面会提示"查询太频繁"）。下面这些是给 AI 助手/脚本用的。
 
 ```bash
 curl --get "http://<内网IP>:8766/api/search" --data-urlencode "q=马斯京根" --data-urlencode "limit=5"
 curl --get "http://<内网IP>:8766/api/tables" --data-urlencode "path=成果/乐平.docx.md"
+curl --get "http://<内网IP>:8766/api/recent" --data-urlencode "limit=20"
 ```
 
-端点：`/`（网页）、`/api/info`、`/api/health`、`/api/meta`、`/api/stats`、`/api/search`、`/api/tree`、`/api/list`、`/api/tables`。
+端点：`/`（网页）、`/api/info`、`/api/health`、`/api/meta`、`/api/stats`、`/api/search`、`/api/tree`、`/api/list`、`/api/recent`、`/api/tables`。
+
+`/api/recent` 按入库时间倒序返回（默认 50 篇，上限 100），只含 `path`/`title`/`size` 三个字段——和 `/api/list` 一样不暴露源文件路径。网页一打开就调它显示「最近收录」，省得第一次用的人对着空面板以为没收录成功。
 
 收紧共享（隐私开关，默认都开；`init` 时一次设好，之后 `status` 会显示当前策略）：
 
@@ -79,6 +82,14 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 - **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
 - **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`，双击回落 `D:\MyLib` 或开向导。
 - **包体**：约 175 MB（onedir）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
+
+### 日志与失败文件（远程排障用）
+
+库端现在有自己的一份运行日志 `<库目录>\logs\app.log`（单文件 1 MB，超了滚成 `app.log.1`，只留一份）：启动那行记端口与版本，每轮扫描失败记一行「扫描失败：…」，登记中心断线/恢复只在**状态翻转**时各记一行（断一晚也只留两行，不会被 60 秒一条的心跳刷满）。状态窗口只看得到最后一条 message，重启就没了，所以让同事"翻 `logs\app.log`"比让他复现一次靠谱。
+
+同目录另有 `access_log.jsonl`（谁查了什么，按 4 MB 轮转，也留一份 `.1`）与 `update.log`（自动更新）。
+
+转换失败的文件记在 `<库目录>\failures.json`，每篇带 `attempts`/`reason`/`mtime`/`size`：同一版本连续失败一次就不再自动重试，累计 3 次也停；装好 Office/Acrobat 后环境指纹变化会自动把 `no_office`/`no_reader` 这类失败放回队列。要人工重试某篇，删掉它在 `failures.json` 里的那条（或改一下源文件让 mtime 变化）即可。
 
 ## 登记中心（P2，8767）
 
@@ -217,10 +228,12 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 | 加密 docx 用 python 读会 `BadZipFile` | 透明加密驱动只对白名单进程（winword/wps/acrobat/acad…）透明解密 | `probe.classify` / `office_bridge` |
 | Office 另存为的中间文件读不出来 | **加密与否取决于"谁写"**：白名单进程写盘一律是密文 | 故一律"Office 内存取字符串 → python 落盘" |
 | 加密 docx 如何转 md | `doc.Content.WordOpenXML` 取 Flat OPC → python 补 `[Content_Types].xml` 重建 docx → `python-docx` 解析 | `office_bridge` |
-| 加密 pdf 如何转文本 | **本机有 Acrobat 就用它**（`PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、不落明文副本）；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录用 `init --acrobat-tool-dir` 指定（不给则自动探测 `D:\应用软件\右键解密`） | `pdf_conv` |
+| 加密 pdf 如何转文本 | **本机有 Acrobat 就用它**（`PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、不落明文副本）；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录查找顺序：`init --acrobat-tool-dir` → 环境变量 `LANDOC_ACROBAT_TOOL_DIR` → exe 同级的 `工具\`（打包版，同事机器用这个）→ 仓库根 `工具\` 与开发路径（仅源码运行时） | `pdf_conv` / `cli.acrobat_tool_candidates` |
 | Acrobat 取文本为什么要拼接 | `GetText(i)` 返回的是**单个字符**，直接 join 会得到逐字断行的碎片，trigram 命中率归零；`_join_tokens` 做中文不加空格/ASCII 补空格 | `pdf_conv._join_tokens` |
 | 一批文档为什么共用一个 Office | 每篇重启 Office 要白付 6 秒；`OfficeSession` 把整批固定在同一 COM 线程 | `office_bridge` |
 | `.doc/.ppt/.dps/.wps` 为什么也走 COM | 这些是 OLE 容器，python-docx/python-pptx 不认；判据是"是否加密 或 不是 zip" | `pipeline.convert_one` |
+| 失败的文件会不会每轮都重试 | **同一版本**（mtime+size 都没变）连续失败 1 次就不再碰；版本变了或累计到 `MAX_ATTEMPTS=3` 次也停，记在 `failures.json` 等人工看 | `pipeline.run` / `MAX_ATTEMPTS` |
+| 装了 Office / Acrobat 之后老失败会不会自愈 | run() 开头探一次环境指纹（`office`/`acrobat`）存进 `state.json`，指纹一变就清掉 `no_office`/`no_reader` 这类**环境性**失败记录（`timeout` 等文件自身的失败保留） | `pipeline.env_signature` / `_drop_stale_env_failures` |
 | 中文检索为什么用 trigram | jieba 分词边界对不上就零命中（查"马斯京根"vs 索引里"马斯京根法"）；trigram 做子串匹配 | `index.build_match_query` |
 | 2 字查询（"乐平""洪水"） | 低于 trigram 最小长度，改走 `instr` 子串扫描 | `index._like_search` |
 | 想"只共享片段、不落盘" | `--no-store-content` 只把前 `snippet_only_chars` 字（默认 20000，可调）写进索引（超出部分搜不到是刻意的）；`--no-render-md` 不落 md 副本、清掉旧副本 | `pipeline.run` / `Config` |
