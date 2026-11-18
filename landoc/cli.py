@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -44,15 +45,34 @@ def pick_port(start: int, host: str = "0.0.0.0", tries: int = 20) -> int:
     raise RuntimeError(f"{start}..{start + tries - 1} 端口都被占用（已跳过保留端口 {sorted(RESERVED_PORTS)}）")
 
 
-ACROBAT_TOOL_CANDIDATES = (
+ACROBAT_TOOL_DIR_ENV = "LANDOC_ACROBAT_TOOL_DIR"
+# 开发机上的历史位置：只在源码运行（没打包）时才去探，免得包里带着别人家的目录名
+_DEV_ACROBAT_TOOL_CANDIDATES = (
     Path(r"D:\应用软件\右键解密"),
     Path(r"D:\Claude Code\解密平台\工具\单个解密"),
 )
 
 
+def acrobat_tool_candidates() -> tuple[Path, ...]:
+    """兜底工具目录的候选位置，按优先级排。
+
+    环境变量 LANDOC_ACROBAT_TOOL_DIR 优先（换机器不用改代码），其次是程序旁边的
+    `工具/`（打包分发时把工具放这儿最省事），最后才是开发机上的历史路径。
+    """
+    found: list[Path] = []
+    env = os.environ.get(ACROBAT_TOOL_DIR_ENV, "").strip()
+    if env:
+        found.append(Path(env))
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    found.append(base / "工具")
+    if not getattr(sys, "frozen", False):
+        found.extend(_DEV_ACROBAT_TOOL_CANDIDATES)
+    return tuple(found)
+
+
 def _find_acrobat_tool_dir() -> Path | None:
     """找现成的兜底工具目录（有 acrobat.exe 才算）。"""
-    for candidate in ACROBAT_TOOL_CANDIDATES:
+    for candidate in acrobat_tool_candidates():
         if (candidate / "acrobat.exe").is_file():
             return candidate
     return None
@@ -496,6 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     registry_cmd.add_argument("--package-zip", default=None, help="库软件 zip 路径（/download 用）")
     registry_cmd.add_argument("--manifest", default=None, help="版本清单 latest.json 路径（默认与 zip 同目录）")
     registry_cmd.add_argument("--advertise", default=None, help="对外公布的中心地址，默认按请求 Host 推断")
+    registry_cmd.add_argument("--roster", default=None, help="部门授权名单 roster.csv 的存放位置")
     registry_cmd.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run，带看门狗）后退出")
     registry_cmd.add_argument("--remove-autostart", action="store_true", help="删掉开机自启后退出")
     registry_cmd.add_argument("--watchdog", action="store_true", help="常驻看门狗：中心退出/卡死时自动拉起")
@@ -510,34 +531,50 @@ def build_parser() -> argparse.ArgumentParser:
 def _cmd_registry(args) -> int:
     from landoc import registry
 
-    argv: list[str] = []
-    if args.port is not None:
-        argv += ["--port", str(args.port)]
-    if args.state_dir:
-        argv += ["--state-dir", args.state_dir]
-    if args.allow_cidrs:
-        argv += ["--allow-cidrs", args.allow_cidrs]
-    if args.package_zip:
-        argv += ["--package-zip", args.package_zip]
-    if args.manifest:
-        argv += ["--manifest", args.manifest]
-    if args.advertise:
-        argv += ["--advertise", args.advertise]
-    if args.install_autostart:
-        argv += ["--install-autostart"]
-    if args.remove_autostart:
-        argv += ["--remove-autostart"]
-    if args.watchdog:
-        argv += ["--watchdog"]
-    if args.watchdog_log:
-        argv += ["--watchdog-log", args.watchdog_log]
-    if args.watchdog_interval is not None:
-        argv += ["--watchdog-interval", f"{args.watchdog_interval:g}"]
-    if args.watchdog_failures is not None:
-        argv += ["--watchdog-failures", str(args.watchdog_failures)]
-    if args.stop:
-        argv += ["--stop"]
+    argv = _registry_argv(args)
     return registry.main(argv)
+
+
+# 顺序照 CLI 里写的来：同一组参数转发后读起来与输入一致（测试也按这个顺序断言）
+_REGISTRY_ARGS = (
+    ("port", "--port", False),
+    ("state_dir", "--state-dir", False),
+    ("allow_cidrs", "--allow-cidrs", False),
+    ("package_zip", "--package-zip", False),
+    ("manifest", "--manifest", False),
+    ("advertise", "--advertise", False),
+    ("roster", "--roster", False),
+    ("install_autostart", "--install-autostart", True),
+    ("remove_autostart", "--remove-autostart", True),
+    ("watchdog", "--watchdog", True),
+    ("watchdog_log", "--watchdog-log", False),
+    ("watchdog_interval", "--watchdog-interval", None),
+    ("watchdog_failures", "--watchdog-failures", None),
+    ("stop", "--stop", True),
+)
+
+
+def _registry_argv(args) -> list[str]:
+    """把 `landoc registry …` 收到的参数原样转给 registry.main。
+
+    以前这里是一个个 if 手工搬，加参数时两边各写一遍很容易漏（`--roster` 就这么
+    漏了很久：命令行收了，登记中心却还是用默认名单）。
+    """
+    argv: list[str] = []
+    for name, flag, kind in _REGISTRY_ARGS:
+        value = getattr(args, name, None)
+        if kind is True:
+            if value:
+                argv.append(flag)
+        elif value is None or value == "":
+            continue
+        elif name == "watchdog_interval":
+            argv += [flag, f"{float(value):g}"]
+        elif name == "watchdog_failures":
+            argv += [flag, str(int(value))]
+        else:
+            argv += [flag, str(value)]
+    return argv
 
 
 def main(argv: list[str] | None = None) -> int:

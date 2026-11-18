@@ -261,6 +261,31 @@ def test_registry_command_forwards_watchdog_flags(monkeypatch):
     ]
 
 
+def test_registry_command_forwards_roster_path(monkeypatch):
+    """4.4: --roster 以前没被转发，`landoc registry --roster …` 会静默退回默认名单。"""
+    from landoc import registry
+
+    seen: dict = {}
+
+    def fake_main(argv):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(registry, "main", fake_main)
+    assert cli.main(["registry", "--roster", "share/roster.csv"]) == 0
+    assert seen["argv"] == ["--roster", "share/roster.csv"]
+
+
+def test_registry_command_omits_defaults(monkeypatch):
+    """没给的参数不要凭空造出来：登记中心那边自己带默认值。"""
+    from landoc import registry
+
+    seen: dict = {}
+    monkeypatch.setattr(registry, "main", lambda argv: seen.setdefault("argv", argv) or 0)
+    assert cli.main(["registry"]) == 0
+    assert seen["argv"] == []
+
+
 def test_init_records_registry_url(tmp_path: Path):
     lib = tmp_path / "lib"
     cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://10.91.1.197:8767"])
