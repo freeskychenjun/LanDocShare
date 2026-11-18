@@ -556,3 +556,167 @@ def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
     assert args[10:12] == ["--watchdog-log", str(Path("logs/registry.log").resolve())]
     assert args[12:14] == ["--watchdog-interval", "60"]
     assert args[14:16] == ["--watchdog-failures", "5"]
+
+
+# ============ 落盘只在真删掉时才发生 / 名单缓存 / 本机地址现查 ============
+
+def test_prune_does_not_rewrite_state_file_when_nothing_expires(tmp_path):
+    """1.3: 说明页每次刷新都会 prune，没有过期库时不该跟着写一次盘。"""
+    path = tmp_path / "registry.json"
+    store = RegistryStore(path, forget_ttl=3600)
+    store.register("127.0.0.1", {"name": "老王", "port": 8766, "allow_cidrs": ["127.0.0.1"]})
+    before = path.stat().st_mtime_ns
+    assert len(store.libraries(prune=True)) == 1
+    assert path.stat().st_mtime_ns == before
+
+
+def test_prune_persists_when_entries_really_expire(tmp_path):
+    """1.3: 真的删掉了才落盘（否则重启后过期库又活过来）。"""
+    path = tmp_path / "registry.json"
+    store = RegistryStore(path, forget_ttl=-1)  # 全部算过期：模拟很久没心跳
+    store.register("127.0.0.1", {"name": "老王", "port": 8766, "allow_cidrs": ["127.0.0.1"]})
+    assert store.libraries(prune=True) == []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["libraries"] == []
+
+
+def test_roster_state_is_cached_until_file_changes(tmp_path, monkeypatch):
+    """1.4: 一次请求会问好几遍名单，按 mtime+size 缓存，发布后自然失效。"""
+    from landoc import registry
+
+    csv_path = tmp_path / "roster.csv"
+    csv_path.write_text("陈鋆,127.0.0.1,规划一所\n老王,10.0.0.9,水文所\n", encoding="utf-8")
+    handler = object.__new__(registry.RegistryHandler)
+    handler.roster_path = csv_path
+
+    calls = {"n": 0}
+    real_parse = registry.parse_roster
+
+    def counting(text):
+        calls["n"] += 1
+        return real_parse(text)
+
+    monkeypatch.setattr(registry, "parse_roster", counting)
+    assert handler._roster_state()["count"] == 2
+    assert handler._roster_state()["count"] == 2
+    assert calls["n"] == 1
+    # 中心重新发布名单（内容与长度都变了）→ 缓存失效，读到新人数
+    csv_path.write_text("陈鋆,127.0.0.1,规划一所\n", encoding="utf-8")
+    assert handler._roster_state()["count"] == 1
+    assert calls["n"] == 2
+
+
+def test_roster_admin_ips_follow_current_machine_addresses(monkeypatch):
+    """3.1: 没显式给名单时按"本机当前地址"判，而不是启动那一刻的快照。
+
+    笔记本换了网/接手机热点后，中心进程常常几天不重启；用快照会让人在自己机器上
+    被 403 挡住，还看不出原因。
+    """
+    from landoc import registry
+
+    registry._LOCAL_IPS_CACHE["at"] = 0.0
+    monkeypatch.setattr(registry, "_local_ips", lambda: frozenset({"10.9.9.9", "127.0.0.1"}))
+    handler = object.__new__(registry.RegistryHandler)
+    handler.roster_admin_ips = frozenset({"127.0.0.1"})  # 启动那一刻的快照早就过期了
+    handler.client_address = ("10.9.9.9", 5555)
+
+    handler._roster_admin_dynamic = True
+    assert handler._is_local_request() is True
+    # 显式收窄过名单时照样只认它（不当"看起来像本机"就放行）
+    handler._roster_admin_dynamic = False
+    assert handler._is_local_request() is False
+
+
+def test_local_ips_single_source_of_truth():
+    """3.2: 中心的 `_local_ips()` 只是 netinfo 的别名，别再各自实现一遍。"""
+    from landoc import netinfo, registry
+
+    assert registry._local_ips() == netinfo.local_ips()
+    assert "127.0.0.1" in registry._local_ips()
+
+
+def test_registry_rate_limit_stops_registration_flood(tmp_path):
+    """2.3: 中心挂上每 IP 限流，别让一台机器把清单刷爆。"""
+    from landoc.ratelimit import RateLimiter
+
+    store = RegistryStore(tmp_path / "registry.json")
+    httpd = make_registry_server(store, port=0, allow_cidrs=["127.0.0.1"], rate=RateLimiter(max_req=3))
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        codes = []
+        for i in range(5):
+            try:
+                code, _body = post_json(
+                    f"{base}/register",
+                    {
+                        "name": "老王",
+                        "lib_name": f"库{i}",
+                        "port": 8760 + i,
+                        "doc_count": 1,
+                        "version": __version__,
+                        "allow_cidrs": ["127.0.0.1"],
+                    },
+                )
+            except urllib.error.HTTPError as exc:
+                code = exc.code
+            codes.append(code)
+        assert codes[:3] == [200, 200, 200]
+        assert codes[-1] == 429
+        # 被挡掉的登记不能进清单
+        assert len(store.libraries()) == 3
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
+def test_registry_without_limiter_accepts_many_requests(tmp_path):
+    """没显式挂限流器时不限（测试/本机自用场景），别把默认行为改严。"""
+    base, httpd, thread = _serve(tmp_path)
+    try:
+        codes = []
+        for i in range(8):
+            code, _body = post_json(
+                f"{base}/register",
+                {
+                    "name": "老王",
+                    "lib_name": f"库{i}",
+                    "port": 8766,
+                    "doc_count": 1,
+                    "version": __version__,
+                    "allow_cidrs": ["127.0.0.1"],
+                },
+            )
+            codes.append(code)
+        assert codes == [200] * 8
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
+def test_skill_zip_is_cached_until_template_changes(tmp_path, monkeypatch):
+    """2.6: 每份 zip 内容都一样，同事点了十次不该压十次。"""
+    from landoc import registry
+
+    root = tmp_path / "lan-lib-search"
+    (root / "scripts").mkdir(parents=True)
+    (root / "SKILL.md").write_text("# 模板\n", encoding="utf-8")
+    (root / "scripts" / "query.py").write_text("print('hi')\n", encoding="utf-8")
+    monkeypatch.setattr(registry, "skill_root", lambda: root)
+    registry._SKILL_ZIP_CACHE.clear()
+
+    first = registry.build_skill_zip("http://10.91.1.197:8767")
+    second = registry.build_skill_zip("http://10.91.1.197:8767")
+    assert first is second  # 直接命中缓存，连字节都没重新生成
+
+    # 模板改了 → 签名变了 → 重新打一份（缓存不会给出过期内容）
+    (root / "SKILL.md").write_text("# 模板 v2\n", encoding="utf-8")
+    third = registry.build_skill_zip("http://10.91.1.197:8767")
+    assert third != first
+
+    # 换了中心地址也是另一份（config.json 里的地址不同）
+    other = registry.build_skill_zip("http://10.91.1.198:8767")
+    assert other != third

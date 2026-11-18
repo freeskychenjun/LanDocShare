@@ -40,7 +40,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import sys
 import threading
 import time
@@ -49,7 +48,8 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from landoc import __version__
+from landoc import __version__, netinfo
+from landoc.ratelimit import RateLimiter
 from landoc.roster import (
     MAX_ROSTER_BYTES,
     ROSTER_NAME,
@@ -76,6 +76,7 @@ MAX_AUDIENCE_CIDRS = 64
 MAX_AUDIENCE_PEOPLE = 512
 MAX_AUDIENCE_NAME = 80
 LATEST_VERSION = __version__
+REGISTRY_RATE = 120  # 每 IP 每分钟请求上限：一台机器可挂多个库，留足心跳余量
 SKILL_DIR_NAME = "lan-lib-search"
 PACKAGE_NAME = "LanDocShare.zip"
 MANIFEST_NAME = "latest.json"
@@ -205,15 +206,43 @@ def load_manifest(path: Path | None) -> dict | None:
     return manifest
 
 
+_SKILL_ZIP_CACHE: dict[str, tuple[tuple, bytes]] = {}
+_SKILL_ZIP_LOCK = threading.Lock()
+
+
+def _skill_template_signature(root: Path) -> tuple:
+    """模板里每个文件的名字+mtime+大小：任何一个改了都会换签名。"""
+    items = []
+    for path in root.rglob("*"):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:  # 刚好被删掉/占用：这次签名少一项，下次自然重建
+            continue
+        items.append((path.relative_to(root).as_posix(), stat.st_mtime_ns, stat.st_size))
+    return tuple(sorted(items))
+
+
 def build_skill_zip(registry_url: str) -> bytes:
-    """把 skill 模板打成一个 zip，附上写好中心地址的 config.json。"""
+    """把 skill 模板打成一个 zip，附上写好中心地址的 config.json。
+
+    打包结果是按"模板签名 + 中心地址"缓存的：每份 zip 都一样，没必要每个同事点一次
+    就重新读一遍文件、重新压一遍（模板十几个文件，压一次几十毫秒，还会占满请求线程）。
+    """
     root = skill_root()
     if not root.is_dir():
         raise FileNotFoundError(f"skill 模板不存在：{root}")
+    url = registry_url.rstrip("/")
+    signature = _skill_template_signature(root)
+    with _SKILL_ZIP_LOCK:
+        cached = _SKILL_ZIP_CACHE.get(url)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
     import io
 
     buffer = io.BytesIO()
-    config = json.dumps({"registry": registry_url.rstrip("/")}, ensure_ascii=False).encode("utf-8")
+    config = json.dumps({"registry": url}, ensure_ascii=False).encode("utf-8")
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(root.rglob("*")):
             if not path.is_file() or "__pycache__" in path.parts:
@@ -225,7 +254,10 @@ def build_skill_zip(registry_url: str) -> bytes:
         info = zipfile.ZipInfo(f"{SKILL_DIR_NAME}/scripts/config.json", date_time=(2026, 1, 1, 0, 0, 0))
         info.compress_type = zipfile.ZIP_DEFLATED
         zf.writestr(info, config)
-    return buffer.getvalue()
+    blob = buffer.getvalue()
+    with _SKILL_ZIP_LOCK:
+        _SKILL_ZIP_CACHE[url] = (signature, blob)
+    return blob
 
 
 def _now_iso(ts: float | None = None) -> str:
@@ -399,10 +431,13 @@ class RegistryStore:
             self._save()
         return entry
 
-    def _prune_locked(self) -> None:
+    def _prune_locked(self) -> int:
+        """丢掉超过 forget_ttl 没心跳的库，返回真的删掉了几条。"""
         now = time.time()
-        for key in [k for k, e in self._entries.items() if now - e["last_seen"] > self.forget_ttl]:
+        stale = [k for k, e in self._entries.items() if now - e["last_seen"] > self.forget_ttl]
+        for key in stale:
             self._entries.pop(key, None)
+        return len(stale)
 
     def libraries(
         self, *, prune: bool = True, viewer_ip: str | None = None, viewer_name: str = ""
@@ -413,8 +448,9 @@ class RegistryStore:
         """
         now = time.time()
         with self._lock:
-            if prune:
-                self._prune_locked()
+            if prune and self._prune_locked():
+                # 只有真删掉了才落盘：说明页每次刷新都 prune 一次，无条件写盘会把
+                # 磁盘 IO 变成"每个请求一次"（手机反复刷新首页就能把中心拖卡）。
                 self._save()
             entries = list(self._entries.values())
         out = []
@@ -476,17 +512,35 @@ def _audience_allows(entry: dict, viewer_ip: str, viewer_name: str) -> bool:
     return reason is None
 
 
+_ROSTER_CACHE: dict[str, tuple[tuple[int, int], dict | None]] = {}
+_ROSTER_CACHE_LOCK = threading.Lock()
+
+_LOCAL_IPS_TTL = 60.0
+_LOCAL_IPS_CACHE: dict[str, object] = {"at": 0.0, "ips": frozenset()}
+_LOCAL_IPS_LOCK = threading.Lock()
+
+
 def _local_ips() -> frozenset[str]:
-    """本机所有地址：名单发布只认这些来源（含回环）。"""
-    found = {"127.0.0.1", "::1"}
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None):
-            address = info[4][0]
-            if address:
-                found.add(address)
-    except OSError:
-        pass
-    return frozenset(found)
+    """本机所有地址：名单发布只认这些来源（含回环）。
+
+    口径与 `netinfo.local_ips()` 是同一套（"这台机器是不是中心"全项目只该有一个答案），
+    这里只保留一个名字，实现交给 netinfo，免得两处各自漂移。
+    """
+    return netinfo.local_ips()
+
+
+def _current_local_ips() -> frozenset[str]:
+    """`_local_ips()` 的 60 秒缓存版：每个请求都 getaddrinfo 会拖慢说明页。"""
+    now = time.time()
+    with _LOCAL_IPS_LOCK:
+        cached_at = float(_LOCAL_IPS_CACHE["at"])  # type: ignore[arg-type]
+        if cached_at and now - cached_at < _LOCAL_IPS_TTL:
+            return _LOCAL_IPS_CACHE["ips"]  # type: ignore[return-value]
+    ips = _local_ips()
+    with _LOCAL_IPS_LOCK:
+        _LOCAL_IPS_CACHE["at"] = now
+        _LOCAL_IPS_CACHE["ips"] = ips
+    return ips
 
 
 _ROSTER_PAGE_STYLE = """
@@ -591,6 +645,10 @@ class RegistryHandler(BaseHTTPRequestHandler):
     advertise: str = ""
     roster_path: Path | None = None
     roster_admin_ips: frozenset[str] = frozenset({"127.0.0.1", "::1"})
+    # True = 没显式给名单，认"本机当前地址"；此时每次判权限都现查（60 秒缓存）
+    _roster_admin_dynamic: bool = False
+    # 每 IP 限流（可选）：只在真正对外开服务时挂上，测试里默认不限
+    rate: "RateLimiter | None" = None
     server_version = f"landoc-registry/{__version__}"
 
     def log_message(self, *args):  # 不刷 stderr，审计靠库端日志
@@ -741,20 +799,38 @@ class RegistryHandler(BaseHTTPRequestHandler):
 
     # ---- 名单 ----
     def _roster_state(self) -> dict | None:
-        """已发布名单的 (人数, 更新时间, 部门分布)；没发布或读不出来返回 None。"""
+        """已发布名单的 (人数, 更新时间, 部门分布)；没发布或读不出来返回 None。
+
+        按 mtime+size 缓存：说明页/`/api/info` 一次请求会问好几遍，每次重新读盘再把
+        上千行 CSV 解析一遍是白花的 IO（名单发布时 mtime 变，缓存自然失效）。
+        """
         path = self.roster_path
-        if path is None or not path.is_file():
+        if path is None:
             return None
         try:
+            stat = path.stat()
+        except OSError:
+            return None  # 没发布
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+        key = str(path)
+        with _ROSTER_CACHE_LOCK:
+            cached = _ROSTER_CACHE.get(key)
+            if cached is not None and cached[0] == fingerprint:
+                return cached[1]
+        state: dict | None
+        try:
             roster, _warnings = parse_roster(path.read_text(encoding="utf-8-sig"))
-            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+            state = {
+                "count": len(roster),
+                "updated": stamp,
+                "departments": roster.department_counts(),
+            }
         except (OSError, ValueError):
-            return None
-        return {
-            "count": len(roster),
-            "updated": stamp,
-            "departments": roster.department_counts(),
-        }
+            state = None
+        with _ROSTER_CACHE_LOCK:
+            _ROSTER_CACHE[key] = (fingerprint, state)
+        return state
 
     def _roster_rows(self) -> list[tuple[str, str, str]]:
         """已发布名单，按「部门首次出现顺序 → 部门内 IP」排好；没发布就是空列表。"""
@@ -767,13 +843,24 @@ class RegistryHandler(BaseHTTPRequestHandler):
             return []
         return sorted_entries(book)
 
+    def _admin_ips(self) -> frozenset[str]:
+        """名单管理权限的地址清单。
+
+        没显式指定时（`roster_admin_ips` 缺省）认"本机当前地址"，而不是启动那一刻的
+        快照：笔记本换了网/接了手机热点之后，中心进程往往几天不重启，用快照会让人在
+        自己机器上被 403 挡住，而且完全看不出是为什么。
+        """
+        if self._roster_admin_dynamic:
+            return _current_local_ips()
+        return self.roster_admin_ips
+
     def _is_local_request(self) -> bool:
         """这个请求是不是中心这台机器自己发的：来源 IP 必须在本机地址清单里。
 
         清单默认由 `_local_ips()` 取（回环 + 各网卡地址），也可以用
         `roster_admin_ips` 显式收窄——所以这里只认清单，不做任何"看起来像本机"的猜测。
         """
-        return self._client_ip() in self.roster_admin_ips
+        return self._client_ip() in self._admin_ips()
 
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 的命名约定
         parsed = urllib.parse.urlparse(self.path)
@@ -782,6 +869,8 @@ class RegistryHandler(BaseHTTPRequestHandler):
         viewer_name = str(query.get("name") or "").strip()[:MAX_AUDIENCE_NAME]
         if not _cidr_allowed(ip, self.allow_cidrs):
             return self._error(403, "cidr not allowed")
+        if self.rate is not None and not self.rate.allow(ip):
+            return self._error(429, "rate limit exceeded")
         if route == "/":
             return self._html(self._landing_html(ip, viewer_name))
         if route == "/api/update":
@@ -1235,6 +1324,9 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
         if not _cidr_allowed(ip, self.allow_cidrs):
             self._drain_request_body()
             return self._error(403, "cidr not allowed")
+        if self.rate is not None and not self.rate.allow(ip):
+            self._drain_request_body()
+            return self._error(429, "rate limit exceeded")
         if parsed.path in ("/roster", "/roster.csv"):
             return self._save_roster()
         if parsed.path == "/roster/edit":
@@ -1313,6 +1405,7 @@ def make_registry_server(
     advertise: str = "",
     roster_path: Path | None = None,
     roster_admin_ips=None,
+    rate: "RateLimiter | None" = None,
 ) -> ThreadingHTTPServer:
     handler = type(
         "BoundRegistryHandler",
@@ -1325,6 +1418,8 @@ def make_registry_server(
             "advertise": advertise,
             "roster_path": Path(roster_path) if roster_path else None,
             "roster_admin_ips": frozenset(roster_admin_ips) if roster_admin_ips else _local_ips(),
+            "_roster_admin_dynamic": not roster_admin_ips,
+            "rate": rate,
         },
     )
     httpd = ThreadingHTTPServer(("0.0.0.0", port), handler)
@@ -1500,6 +1595,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest_path,
             advertise=args.advertise,
             roster_path=roster_path,
+            rate=RateLimiter(REGISTRY_RATE),
         )
     except OSError as exc:
         from landoc import watchdog
