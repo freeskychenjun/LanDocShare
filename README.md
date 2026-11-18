@@ -221,7 +221,7 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 
 - **只用标准库**，Python 3.8+ 直接跑；没有 Python 时按 `SKILL.md` 里的 curl 命令逐库查、AI 合并。
 - 合并规则：各库 score 先归一到本库最佳，再乘库级权重（`config.json` 的 `weights`），同库保持原序，取前 20。
-- 中心连不上时用 24 h 缓存 + 逐库 `/api/health` 探活；某个库没响应只记脚注"在线 X/Y 个库返回结果"。
+- 中心连不上时用 24 h 缓存 + **并发**逐库 `/api/health` 探活（12 路，20 个库 20 秒 → 2 秒）；某个库没响应只记脚注"在线 X/Y 个库返回结果"。
 - 输出按库分组，每条都带**库主人 + 相对路径 + 命中片段**；只给片段和表格，不给原文、不给下载。
 
 
