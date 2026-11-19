@@ -281,7 +281,16 @@ def run_wizard(
 
     result: dict[str, Config | None] = {"config": None}
 
-    root = tk.Tk()
+    # 一个进程里只该有一个 Tk 解释器，也只该有一个线程碰它：托盘程序的状态窗口
+    # 已经在自己的线程里建了 Tk 根窗口，向导再在那个线程之外 tk.Tk() 就会变成
+    # 两个解释器跨线程，Windows 上直接崩在 tcl86t.dll（0x80000003，用户看到的是
+    # "点了保存，程序就消失了"）。所以有 parent 就挂在它上面开 Toplevel，
+    # 没有 parent（首次建库、命令行 --wizard）才自己当根窗口。
+    if parent is not None:
+        root = tk.Toplevel(parent)
+        root.transient(parent.winfo_toplevel())
+    else:
+        root = tk.Tk()
     root.title("LanDocShare · 建库向导" if current is None else "LanDocShare · 修改建库设置")
     root.resizable(False, False)
     frame = ttk.Frame(root, padding=16)
@@ -496,12 +505,31 @@ def run_wizard(
     ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
         row=0, column=1
     )
+    # 回车=保存、Esc=取消：填完最后一格不用再去够鼠标
+    root.bind("<Return>", lambda _event: confirm())
+    root.bind("<Escape>", lambda _event: root.destroy())
 
     sync_scope_state()
     poll_estimate()
     kick_estimate()
-    root.mainloop()
+    if parent is None:
+        root.mainloop()
+    else:
+        # 挂在状态窗口上时不能自己 mainloop（那条线程已经有一个了），
+        # 用 grab + wait_window 做成模态：窗口关掉才返回。
+        try:
+            root.grab_set()
+        except Exception:  # noqa: BLE001 - 抢占失败也只是不模态
+            pass
+        parent.wait_window(root)
     cfg = result["config"]
+    if parent is None:
+        # 自己当过根窗口：销毁后把 tkinter 的"默认根"清掉，否则后面在别的线程
+        # 再建 Tk 时会继续引用这个已销毁的解释器（Windows 上崩在 tcl86t.dll）
+        try:
+            tk._default_root = None
+        except Exception:  # noqa: BLE001 - 老版本 tkinter 没这个全局
+            pass
     if cfg is not None and save:
         cfg.lib_dir.mkdir(parents=True, exist_ok=True)
         cfg.save()

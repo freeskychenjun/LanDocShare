@@ -229,20 +229,36 @@ def test_saving_library_settings_starts_a_scan_right_away(tmp_path, monkeypatch)
 
     edited = tray.Config(name="陈鋆的资料库", lib_dir=lib_dir)
     edited.folders = [tmp_path / "测试目录", new_folder]
-    monkeypatch.setattr("landoc.wizard.run_wizard", lambda *a, **k: edited)
+    seen: list[object] = []
+
+    def fake_wizard(lib_dir, parent=None, **kwargs):
+        # 向导必须拿到 parent（挂在状态窗口的 Tk 上），不能自己另开一个解释器
+        seen.append(parent)
+        return edited
+
+    monkeypatch.setattr("landoc.wizard.run_wizard", fake_wizard)
 
     app = _FakeApp()
     notes: list[str] = []
+    modal_calls: list[object] = []
+
+    def run_modal(fn):
+        # 面板把 fn 排进自己的 Tk 线程并等它结束；这里用哨兵代替真实的 root
+        modal_calls.append(fn)
+        return fn("panel-root")
+
     owner = types.SimpleNamespace(
         cfg=cfg,
         app=app,
         notes=notes,
-        panel=types.SimpleNamespace(show=lambda: notes.append("panel")),
+        panel=types.SimpleNamespace(show=lambda: notes.append("panel"), run_modal=run_modal),
         _notify=notes.append,
     )
 
     tray.TrayApp._apply_library_edits(owner)
 
+    assert len(modal_calls) == 1  # 向导走的是面板线程，不是新线程新解释器
+    assert seen == ["panel-root"]  # 并且拿到了面板的 Tk 当 parent
     assert app.calls == ["update"]  # 强制扫描的请求确实发给了 LibraryApp
     assert cfg.folders == [tmp_path / "测试目录", new_folder]
     assert new_folder.name in (lib_dir / "config.json").read_text(encoding="utf-8")
@@ -263,7 +279,7 @@ def test_cancelling_library_settings_changes_nothing(tmp_path, monkeypatch):
         cfg=cfg,
         app=app,
         notes=notes,
-        panel=types.SimpleNamespace(show=lambda: notes.append("panel")),
+        panel=types.SimpleNamespace(show=lambda: notes.append("panel"), run_modal=lambda fn: fn(None)),
         _notify=notes.append,
     )
 

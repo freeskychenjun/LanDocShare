@@ -205,10 +205,16 @@ class TrayApp:
 
         单拎出来是为了能不开线程地测：保存后必须真的**马上**开始解析新文件夹，
         而不是等下一次空闲扫描（用户加了目录就想立刻能搜到）。
+
+        向导必须开在状态窗口那条 Tk 线程上（`panel.run_modal`）：自己另起线程
+        再 tk.Tk() 会和状态窗口组成两个解释器，保存时进程直接崩在 tcl86t.dll。
         """
         from landoc.wizard import apply_config, run_wizard
 
-        chosen = run_wizard(self.cfg.lib_dir, save=False, current=self.cfg)
+        def ask(master):
+            return run_wizard(self.cfg.lib_dir, master, save=False, current=self.cfg)
+
+        chosen = self.panel.run_modal(ask)
         if chosen is None:
             return
         apply_config(self.cfg, chosen)
@@ -406,6 +412,11 @@ def main(argv: list[str] | None = None) -> int:
         "--autostart", action="store_true", help="开机自启模式：只驻留托盘，不自动打开页面"
     )
     parser.add_argument("--headless", action="store_true", help="不显示托盘，只起服务与调度（排错用）")
+    parser.add_argument(
+        "--edit-settings",
+        action="store_true",
+        help="直接打开「修改建库设置」（等同托盘菜单里那一条，排错/做快捷方式用）",
+    )
     args = parser.parse_args(argv)
 
     lib_dir = Path(args.lib_dir) if args.lib_dir else _default_lib_dir()
@@ -432,6 +443,26 @@ def main(argv: list[str] | None = None) -> int:
             print("\n[停止] 已退出")
         finally:
             app.stop()
+        return 0
+
+    if args.edit_settings:
+        # 走的就是托盘菜单「修改建库设置」那条路（同一个 _apply_library_edits），
+        # 只是从命令行喊起来——排错时不必去点托盘图标。
+        if not acquire_single_instance():
+            print("已经在运行：请从托盘菜单打开「修改建库设置」", file=sys.stderr)
+            return 1
+        tray_app = TrayApp(cfg, show_panel_on_start=False)
+        tray_app.app.start()
+        threading.Thread(
+            target=tray_app._apply_library_edits, name="landoc-wizard", daemon=True
+        ).start()
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            print("\n[停止] 已退出")
+        finally:
+            tray_app.panel.close()
+            tray_app.app.stop()
         return 0
 
     if not acquire_single_instance():

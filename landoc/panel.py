@@ -291,6 +291,36 @@ class StatusPanel:
             # 留给主线程回收（那样退出时会报 Tcl_AsyncDelete）
             thread.join(timeout=2.0)
 
+    def run_modal(self, fn):
+        """在窗口线程里跑 `fn(master)`，等它返回，返回它的结果。
+
+        Tk 解释器只能由创建它的那条线程碰。要在托盘里弹一个对话框（建库向导、
+        选文件夹……）时，必须把这件事排进窗口线程，而不是自己另起线程再开一个
+        `tk.Tk()`——两个解释器跨线程，Windows 上会直接崩在 tcl86t.dll。
+        """
+        self._ensure_thread()
+        box: dict[str, object] = {}
+        done = threading.Event()
+
+        # 先把状态窗口摆出来：对话框是它的 transient，主窗口收着的时候
+        # 子窗口也会跟着不显示（看起来就是"点了没反应"）。
+        self._queue.put(("show", None))
+
+        def wrapper(root):
+            try:
+                box["value"] = fn(root)
+            except BaseException as exc:  # noqa: BLE001 - 原样抛回调用线程
+                box["error"] = exc
+            finally:
+                done.set()
+
+        self._queue.put(("call", wrapper))
+        done.wait()
+        error = box.get("error")
+        if error is not None:
+            raise error  # type: ignore[misc]
+        return box.get("value")
+
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -377,7 +407,7 @@ class StatusPanel:
             return
         try:
             while True:
-                command, _payload = self._queue.get_nowait()
+                command, payload = self._queue.get_nowait()
                 if command == "show":
                     # 先摆正中再显示：浮动窗口每次出现在屏幕中心，不用去边角找
                     center_window(root)
@@ -385,6 +415,11 @@ class StatusPanel:
                     root.lift()
                     root.focus_force()
                     self._refresh()
+                elif command == "call":
+                    # 调用方在自己的线程里等结果；这里可以直接跑（模态时它会
+                    # 一直占着窗口线程，直到对话框关掉——正是想要的效果）
+                    if callable(payload):
+                        payload(root)
                 elif command == "hide":
                     root.withdraw()
                 elif command == "close":
