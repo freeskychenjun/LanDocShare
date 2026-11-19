@@ -40,8 +40,8 @@ def test_roster_url_requires_registry():
 
 
 def test_center_host_parsing():
-    assert roster.center_host("http://10.91.1.197:8767") == "10.91.1.197"
-    assert roster.center_host("10.91.1.197:8767/") == "10.91.1.197"
+    assert roster.center_host("http://172.16.1.197:8767") == "172.16.1.197"
+    assert roster.center_host("172.16.1.197:8767/") == "172.16.1.197"
     assert roster.center_host("") == ""
 
 
@@ -49,40 +49,40 @@ def test_is_center_machine_only_on_the_registry_host():
     # 中心地址就是本机地址 → 管理员机器，能发布
     assert roster.is_center_machine("http://127.0.0.1:8767") is True
     assert roster.is_center_machine("http://localhost:8767") is True
-    assert roster.is_center_machine("http://10.91.1.197:8767", ips={"10.91.1.197"}) is True
+    assert roster.is_center_machine("http://172.16.1.197:8767", ips={"172.16.1.197"}) is True
     # 同事的机器：中心在别人那里 → 只能拉取，不给发布
-    assert roster.is_center_machine("http://10.91.1.197:8767", ips={"10.91.1.50"}) is False
+    assert roster.is_center_machine("http://172.16.1.197:8767", ips={"172.16.1.50"}) is False
     # 没配中心 / 认不出 → 当"不是"
     assert roster.is_center_machine("") is False
 
 
 def test_validate_entry_normalises_and_rejects():
     with pytest.raises(ValueError):
-        roster.validate_entry("  陈鋆 ", "", "")
-    assert roster.validate_entry("郑泽锋", " 10.91.1.206 ", " 规划一所 ") == (
+        roster.validate_entry("  赵六 ", "", "")
+    assert roster.validate_entry("郑泽锋", " 172.16.1.206 ", " 规划一所 ") == (
         "郑泽锋",
-        "10.91.1.206",
+        "172.16.1.206",
         "规划一所",
     )
 
     with pytest.raises(ValueError):
-        roster.validate_entry("", "10.91.1.1")
+        roster.validate_entry("", "172.16.1.1")
     with pytest.raises(ValueError):
-        roster.validate_entry("a=b", "10.91.1.1")
+        roster.validate_entry("a=b", "172.16.1.1")
     with pytest.raises(ValueError):
-        roster.validate_entry("张三", "10.91.1.999")
+        roster.validate_entry("张三", "172.16.1.999")
     with pytest.raises(ValueError):
-        roster.validate_entry("张三", "10.91.1.1", "规划一所,水文所")
+        roster.validate_entry("张三", "172.16.1.1", "规划一所,水文所")
 
 
 def test_sorted_entries_groups_by_department_then_ip():
     book = roster.Roster(
-        {"老王": "", "郑泽锋": "10.91.1.206", "杨欢": "10.91.5.238", "陈鋆": "10.91.1.197"},
-        {"郑泽锋": "水文所", "陈鋆": "水文所", "杨欢": "规划二所"},
+        {"老王": "", "郑泽锋": "172.16.1.206", "杨欢": "172.16.5.238", "赵六": "172.16.1.197"},
+        {"郑泽锋": "水文所", "赵六": "水文所", "杨欢": "规划二所"},
     )
     order = [name for name, _ip, _dept in roster.sorted_entries(book)]
     # 部门内按 IP 排，没部门的沉底
-    assert order[:2] == ["陈鋆", "郑泽锋"]
+    assert order[:2] == ["赵六", "郑泽锋"]
     assert order[2] == "杨欢"
     assert order[3] == "老王"
 
@@ -90,7 +90,7 @@ def test_sorted_entries_groups_by_department_then_ip():
 def test_sorted_entries_keeps_department_insertion_order():
     # 部门先后取决于名单里第一次出现的先后（跟导入的 CSV 走），不是按名称字符排
     book = roster.Roster(
-        {"a": "10.91.1.5", "b": "10.91.1.6"},
+        {"a": "172.16.1.5", "b": "172.16.1.6"},
         {"a": "规划二所", "b": "水文所"},
     )
     assert [dept for _n, _ip, dept in roster.sorted_entries(book)] == ["规划二所", "水文所"]
@@ -102,11 +102,11 @@ def test_department_counts_and_unnamed_group():
 
 
 def test_apply_pull_merges_people_and_departments():
-    current = roster.Roster({"陈鋆": "10.91.1.197", "老王": ""}, {"老王": "水文所"})
-    incoming = roster.Roster({"郑泽锋": "10.91.1.206", "陈鋆": "10.91.1.198"}, {"郑泽锋": "规划一所"})
+    current = roster.Roster({"赵六": "172.16.1.197", "老王": ""}, {"老王": "水文所"})
+    incoming = roster.Roster({"郑泽锋": "172.16.1.206", "赵六": "172.16.1.198"}, {"郑泽锋": "规划一所"})
     merged, note = roster.apply_pull(current, incoming)
-    assert merged.people["郑泽锋"] == "10.91.1.206"
-    assert merged.people["陈鋆"] == "10.91.1.198"  # 同名以中心为准
+    assert merged.people["郑泽锋"] == "172.16.1.206"
+    assert merged.people["赵六"] == "172.16.1.198"  # 同名以中心为准
     assert merged.people["老王"] == ""  # 本地独有保留
     assert merged.departments == {"老王": "水文所", "郑泽锋": "规划一所"}
     assert "已并入中心名单" in note
@@ -115,11 +115,11 @@ def test_apply_pull_merges_people_and_departments():
 def test_apply_pull_replaces_when_asked():
     merged, note = roster.apply_pull(
         roster.Roster({"老王": ""}, {"老王": "水文所"}),
-        roster.Roster({"陈鋆": "10.91.1.197"}, {"陈鋆": "规划一所"}),
+        roster.Roster({"赵六": "172.16.1.197"}, {"赵六": "规划一所"}),
         replace=True,
     )
-    assert merged.people == {"陈鋆": "10.91.1.197"}
-    assert merged.departments == {"陈鋆": "规划一所"}
+    assert merged.people == {"赵六": "172.16.1.197"}
+    assert merged.departments == {"赵六": "规划一所"}
     assert "替换" in note
 
 
@@ -132,9 +132,9 @@ def test_roster_to_config_prunes_orphans(tmp_path):
     from landoc.config import Config
 
     cfg = Config(name="库", lib_dir=tmp_path)
-    roster.Roster({"陈鋆": "10.91.1.197"}, {"陈鋆": "规划一所", "已删除的人": "水文所"}).to_config(cfg)
-    assert cfg.allow_people == {"陈鋆": "10.91.1.197"}
-    assert cfg.people_departments == {"陈鋆": "规划一所"}
+    roster.Roster({"赵六": "172.16.1.197"}, {"赵六": "规划一所", "已删除的人": "水文所"}).to_config(cfg)
+    assert cfg.allow_people == {"赵六": "172.16.1.197"}
+    assert cfg.people_departments == {"赵六": "规划一所"}
 
 
 def test_fetch_before_publish_says_not_published(center):
@@ -147,8 +147,8 @@ def test_fetch_before_publish_says_not_published(center):
 def test_publish_then_fetch_roundtrip_keeps_departments(center):
     base, path, _httpd = center
     book = roster.Roster(
-        {"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206"},
-        {"陈鋆": "规划一所", "郑泽锋": "水文所"},
+        {"赵六": "172.16.1.197", "郑泽锋": "172.16.1.206"},
+        {"赵六": "规划一所", "郑泽锋": "水文所"},
     )
     payload = roster.publish_roster(base, book)
     assert payload["ok"] is True and payload["count"] == 2
@@ -180,7 +180,7 @@ def test_publish_only_from_center_machine(tmp_path):
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
         with pytest.raises(roster.RosterError) as info:
-            roster.publish_roster(base, roster.Roster({"陈鋆": "10.91.1.197"}))
+            roster.publish_roster(base, roster.Roster({"赵六": "172.16.1.197"}))
         assert "只允许" in str(info.value)
     finally:
         httpd.shutdown()
@@ -196,7 +196,7 @@ def test_landing_page_lists_published_roster_with_departments(center):
 
     roster.publish_roster(
         base,
-        roster.Roster({"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206"}, {"陈鋆": "规划一所"}),
+        roster.Roster({"赵六": "172.16.1.197", "郑泽锋": "172.16.1.206"}, {"赵六": "规划一所"}),
     )
 
     with urllib.request.urlopen(base + "/", timeout=3) as resp:
@@ -208,5 +208,5 @@ def test_landing_page_lists_published_roster_with_departments(center):
     with urllib.request.urlopen(base + "/roster.csv", timeout=3) as resp:
         assert resp.status == 200
         csv_text = resp.read().decode("utf-8-sig")
-    assert "陈鋆" in csv_text
+    assert "赵六" in csv_text
     assert "规划一所" in csv_text

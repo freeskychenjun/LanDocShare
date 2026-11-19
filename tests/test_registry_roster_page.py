@@ -91,8 +91,8 @@ def post_expect_error(url: str, fields) -> tuple[int, str]:
 
 def _published(path, *, replace_lines: str | None = None):
     book = Roster(
-        {"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206"},
-        {"陈鋆": "规划一所", "郑泽锋": "水文所"},
+        {"赵六": "172.16.1.197", "郑泽锋": "172.16.1.206"},
+        {"赵六": "规划一所", "郑泽锋": "水文所"},
     )
     path.write_text(replace_lines if replace_lines is not None else format_roster(book), encoding="utf-8-sig")
 
@@ -102,12 +102,12 @@ def _published(path, *, replace_lines: str | None = None):
 
 def test_raw_rows_from_form_pairs_repeated_fields_and_skips_blank_rows():
     fields = {
-        "name": ["陈鋆", "", "郑泽锋"],
-        "ip": ["10.91.1.197", "", ""],
+        "name": ["赵六", "", "郑泽锋"],
+        "ip": ["172.16.1.197", "", ""],
         "dept": ["规划一所", "", ""],
     }
     assert raw_rows_from_form(fields) == [
-        ("陈鋆", "10.91.1.197", "规划一所"),
+        ("赵六", "172.16.1.197", "规划一所"),
         ("郑泽锋", "", ""),
     ]
 
@@ -115,13 +115,13 @@ def test_raw_rows_from_form_pairs_repeated_fields_and_skips_blank_rows():
 def test_roster_from_form_reports_all_errors_at_once():
     book, errors = roster_from_form(
         [
-            ("陈鋆", "10.91.1.197", "规划一所"),
-            ("郑泽锋", "10.91.1.999", "水文所"),
-            ("陈鋆", "10.91.1.200", ""),
-            ("", "10.91.1.201", ""),
+            ("赵六", "172.16.1.197", "规划一所"),
+            ("郑泽锋", "172.16.1.999", "水文所"),
+            ("赵六", "172.16.1.200", ""),
+            ("", "172.16.1.201", ""),
         ]
     )
-    assert len(book) == 1 and book.people["陈鋆"] == "10.91.1.197"
+    assert len(book) == 1 and book.people["赵六"] == "172.16.1.197"
     assert len(errors) == 3
     assert any("第 2 行" in text for text in errors)
     assert any("重复" in text for text in errors)
@@ -136,7 +136,7 @@ def test_edit_page_lists_published_roster_for_center_machine(center):
     code, page = get_text(f"{base}/roster/edit")
     assert code == 200
     assert "部门授权名单 · 编辑" in page
-    assert "陈鋆" in page and "10.91.1.197" in page and "规划一所" in page
+    assert "赵六" in page and "172.16.1.197" in page and "规划一所" in page
     assert "2 人 · 2 个部门" in page
     assert "<form method=\"post\" action=\"/roster/edit\">" in page
 
@@ -150,7 +150,7 @@ def test_edit_page_refuses_other_machines_without_leaking_roster(other_machine):
     page = info.value.read().decode("utf-8")
     assert "只有登记中心那台机器能编辑名单" in page
     assert "/roster/edit" in page  # 告诉同事去中心那台机器上打开
-    assert "陈鋆" not in page and "10.91.1.197" not in page
+    assert "赵六" not in page and "172.16.1.197" not in page
 
 
 def test_landing_page_only_links_editor_on_center_machine(center, other_machine):
@@ -170,11 +170,11 @@ def test_save_from_table_writes_roster_and_redirects(center):
     base, path = center
     fields = [
         ("action", "save"),
-        ("name", "陈鋆"),
-        ("ip", "10.91.1.197"),
+        ("name", "赵六"),
+        ("ip", "172.16.1.197"),
         ("dept", "规划一所"),
         ("name", "郑泽锋"),
-        ("ip", "10.91.1.206"),
+        ("ip", "172.16.1.206"),
         ("dept", "水文所"),
     ]
     code, headers, _body = post_form(f"{base}/roster/edit", fields, follow=False)
@@ -182,8 +182,8 @@ def test_save_from_table_writes_roster_and_redirects(center):
     assert headers["Location"] == "/roster/edit?saved=2&warn=0"
 
     saved = path.read_text(encoding="utf-8-sig")
-    assert "陈鋆,10.91.1.197,规划一所" in saved
-    assert "郑泽锋,10.91.1.206,水文所" in saved
+    assert "赵六,172.16.1.197,规划一所" in saved
+    assert "郑泽锋,172.16.1.206,水文所" in saved
 
     # 303 之后跟着跳回来能看到提示，且刷新不会重复提交
     code, page = get_text(f"{base}/roster/edit?saved=2&warn=0")
@@ -204,12 +204,12 @@ def test_save_rejects_rows_without_ip_but_allows_empty_department(center):
 
     code, _headers, _body = post_form(
         f"{base}/roster/edit",
-        [("action", "save"), ("name", "老王"), ("ip", "10.91.1.50"), ("dept", "")],
+        [("action", "save"), ("name", "老王"), ("ip", "172.16.1.50"), ("dept", "")],
         follow=False,
     )
     assert code == 303
     saved = path.read_text(encoding="utf-8-sig")
-    assert "老王,10.91.1.50" in saved and "陈鋆" not in saved
+    assert "老王,172.16.1.50" in saved and "赵六" not in saved
 
 
 def test_save_rejects_bad_ip_and_keeps_published_file(center):
@@ -218,7 +218,7 @@ def test_save_rejects_bad_ip_and_keeps_published_file(center):
     before = path.read_bytes()
     code, page = post_expect_error(
         f"{base}/roster/edit",
-        [("action", "save"), ("name", "老王"), ("ip", "10.91.1.999"), ("dept", "水文所")],
+        [("action", "save"), ("name", "老王"), ("ip", "172.16.1.999"), ("dept", "水文所")],
     )
     assert code == 400
     assert "第 1 行" in page
@@ -232,11 +232,11 @@ def test_save_rejects_duplicate_names(center):
         f"{base}/roster/edit",
         [
             ("action", "save"),
-            ("name", "陈鋆"),
-            ("ip", "10.91.1.197"),
+            ("name", "赵六"),
+            ("ip", "172.16.1.197"),
             ("dept", ""),
-            ("name", "陈鋆"),
-            ("ip", "10.91.1.198"),
+            ("name", "赵六"),
+            ("ip", "172.16.1.198"),
             ("dept", ""),
         ],
     )
@@ -258,7 +258,7 @@ def test_other_machine_cannot_save(other_machine):
     before = path.read_bytes()
     code, _page = post_expect_error(
         f"{base}/roster/edit",
-        [("action", "save"), ("name", "陌生人"), ("ip", "10.91.1.9"), ("dept", "")],
+        [("action", "save"), ("name", "陌生人"), ("ip", "172.16.1.9"), ("dept", "")],
     )
     assert code == 403
     assert path.read_bytes() == before
@@ -274,7 +274,7 @@ def test_rejected_post_with_large_body_still_gets_the_403_page(other_machine):
     _published(path)
     code, page = post_expect_error(
         f"{base}/roster/edit",
-        [("action", "import"), ("csv", "姓名,IP,部门\n" + "老王,10.91.1.50,水文所\n" * 4000)],
+        [("action", "import"), ("csv", "姓名,IP,部门\n" + "老王,172.16.1.50,水文所\n" * 4000)],
     )
     assert code == 403
     assert "只有登记中心那台机器能编辑名单" in page
@@ -286,7 +286,7 @@ def test_rejected_post_with_large_body_still_gets_the_403_page(other_machine):
 def test_import_csv_replaces_published_roster(center):
     base, path = center
     _published(path)
-    csv_text = "姓名,IP,部门\n老王,10.91.1.50,水文所\n小李,10.91.1.51,规划二所\n"
+    csv_text = "姓名,IP,部门\n老王,172.16.1.50,水文所\n小李,172.16.1.51,规划二所\n"
     code, _headers, _body = post_form(
         f"{base}/roster/edit",
         [("action", "import"), ("csv", csv_text), ("replace", "1")],
@@ -294,9 +294,9 @@ def test_import_csv_replaces_published_roster(center):
     )
     assert code == 303
     saved = path.read_text(encoding="utf-8-sig")
-    assert "老王,10.91.1.50,水文所" in saved
+    assert "老王,172.16.1.50,水文所" in saved
     assert "小李" in saved
-    assert "陈鋆" not in saved  # 整体替换
+    assert "赵六" not in saved  # 整体替换
 
 
 def test_import_csv_merges_when_replace_unchecked(center):
@@ -304,13 +304,13 @@ def test_import_csv_merges_when_replace_unchecked(center):
     _published(path)
     code, _headers, _body = post_form(
         f"{base}/roster/edit",
-        [("action", "import"), ("csv", "老王,10.91.1.50,水文所")],
+        [("action", "import"), ("csv", "老王,172.16.1.50,水文所")],
         follow=False,
     )
     assert code == 303
     saved = path.read_text(encoding="utf-8-sig")
-    assert "陈鋆,10.91.1.197,规划一所" in saved  # 原有保留
-    assert "老王,10.91.1.50,水文所" in saved
+    assert "赵六,172.16.1.197,规划一所" in saved  # 原有保留
+    assert "老王,172.16.1.50,水文所" in saved
 
 
 def test_import_csv_rejects_blank_ip(center):
@@ -319,7 +319,7 @@ def test_import_csv_rejects_blank_ip(center):
     before = path.read_bytes()
     code, page = post_expect_error(
         f"{base}/roster/edit",
-        [("action", "import"), ("csv", "姓名,IP,部门\n老王,10.91.1.50,水文所\n小李,,规划二所\n")],
+        [("action", "import"), ("csv", "姓名,IP,部门\n老王,172.16.1.50,水文所\n小李,,规划二所\n")],
     )
     assert code == 400 and "IP 为空" in page
     assert path.read_bytes() == before

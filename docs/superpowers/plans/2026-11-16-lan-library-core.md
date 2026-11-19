@@ -20,7 +20,7 @@
 - 不转换 `.xls/.xlsx/.et`（跳过并计入统计）。
 - 检索服务只输出片段与表格，**永不输出全文/下载/`source_path`**。
 - 端口默认 8766；被占用时自动 8768、8769…（跳过 8767：二期 registry 保留），实际端口写入 `meta`。
-- 权限默认 `allow_cidrs=["10.91.0.0/16"]`；越权 403、姓名未登记 401。
+- 权限默认 `allow_cidrs=["172.16.0.0/16"]`；越权 403、姓名未登记 401。
 - 审计：JSONL，一行一事件，本地保留 30 天。
 - 中文界面与中文错误信息；代码标识符英文。
 - 所有落盘写操作必须原子（临时文件 + `os.replace`）。
@@ -106,7 +106,7 @@ def test_sample_report_counts(tmp_path):
 ```python
 # tests/test_config.py
 def test_config_roundtrip(tmp_path):
-    cfg = Config(name="测试库", lib_dir=tmp_path, folders=[tmp_path / "docs"], allow_cidrs=["10.91.0.0/16"])
+    cfg = Config(name="测试库", lib_dir=tmp_path, folders=[tmp_path / "docs"], allow_cidrs=["172.16.0.0/16"])
     cfg.save()
     assert Config.load(tmp_path).folders == [tmp_path / "docs"]
 ```

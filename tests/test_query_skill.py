@@ -130,9 +130,9 @@ def test_fetch_libraries_passes_name_and_separates_cache(q, monkeypatch, tmp_pat
         return {"libraries": [], "latest_version": "0.2.0"}
 
     monkeypatch.setattr(q, "_get_json", fake)
-    libraries, source = q.fetch_libraries("陈鋆")
+    libraries, source = q.fetch_libraries("赵六")
     assert (libraries, source) == ([], "registry")
-    assert f"name={urllib.parse.quote('陈鋆')}" in calls[0]
+    assert f"name={urllib.parse.quote('赵六')}" in calls[0]
     assert list((tmp_path / "home").glob("cache_libraries_*.json"))
     # 匿名查询写自己的缓存，不会蹭到姓名缓存
     q.fetch_libraries()
@@ -141,7 +141,7 @@ def test_fetch_libraries_passes_name_and_separates_cache(q, monkeypatch, tmp_pat
 
 def test_cmd_libs_sends_identity(q, monkeypatch, tmp_path):
     (tmp_path / "home").mkdir(parents=True)
-    (tmp_path / "home" / "identity.txt").write_text("陈鋆", encoding="utf-8")
+    (tmp_path / "home" / "identity.txt").write_text("赵六", encoding="utf-8")
     urls: list[str] = []
 
     def fake(url, timeout=3.0):
@@ -150,7 +150,7 @@ def test_cmd_libs_sends_identity(q, monkeypatch, tmp_path):
 
     monkeypatch.setattr(q, "_get_json", fake)
     assert q.cmd_libs(type("A", (), {"json": False})()) == 3
-    assert f"name={urllib.parse.quote('陈鋆')}" in urls[0]
+    assert f"name={urllib.parse.quote('赵六')}" in urls[0]
 
 
 def test_fetch_libraries_reports_none_without_cache(q, monkeypatch):
@@ -171,12 +171,12 @@ def test_registry_url_env_wins(q, monkeypatch):
 def test_upgrade_note_names_stale_libraries(q):
     q._LATEST["version"] = "0.2.0"
     libs = [
-        {"name": "陈鋆", "version": "0.1.0"},
+        {"name": "赵六", "version": "0.1.0"},
         {"name": "老王", "version": "0.2.0"},
         {"name": "小李", "version": ""},  # 老版本没上报，不判定
     ]
     note = q.upgrade_note(libs)
-    assert "1 个库版本落后" in note and "陈鋆" in note and "老王" not in note
+    assert "1 个库版本落后" in note and "赵六" in note and "老王" not in note
 
     q._LATEST["version"] = "0.2.0"
     assert q.upgrade_note([{"name": "老王", "version": "0.2.0"}]) == ""
@@ -186,7 +186,7 @@ def test_script_dir_config_is_used_for_distribution(q, monkeypatch, tmp_path):
     """分发包里 scripts/config.json 写了中心地址，用户不用手工配。"""
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "config.json").write_text(json.dumps({"registry": "http://10.91.1.197:8767"}), encoding="utf-8")
+    (scripts / "config.json").write_text(json.dumps({"registry": "http://172.16.1.197:8767"}), encoding="utf-8")
     monkeypatch.setattr(q, "script_dir", lambda: scripts)
-    assert q.load_config()["registry"] == "http://10.91.1.197:8767"
-    assert q.registry_url() == "http://10.91.1.197:8767"
+    assert q.load_config()["registry"] == "http://172.16.1.197:8767"
+    assert q.registry_url() == "http://172.16.1.197:8767"

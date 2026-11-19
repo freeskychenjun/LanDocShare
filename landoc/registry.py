@@ -66,7 +66,7 @@ from landoc.server import authorize_person, decode_param, parse_query
 from landoc.updater import is_newer, parse_version, sha256_file
 
 DEFAULT_PORT = 8767
-DEFAULT_CIDRS = ["10.91.0.0/16"]
+DEFAULT_CIDRS = ["172.16.0.0/16"]
 WATCHDOG_DEFAULT_INTERVAL = 30.0
 WATCHDOG_DEFAULT_FAILURES = 3
 ONLINE_TTL = 300.0  # 5 分钟内有心跳 = 在线
@@ -1271,7 +1271,7 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
 <summary>从 CSV 粘贴导入</summary>
 <form method="post" action="/roster/edit">
 <input type="hidden" name="action" value="import">
-<textarea name="csv" rows="8" spellcheck="false" placeholder="姓名,IP,部门&#10;张三,10.91.1.23,水文所&#10;李四,10.91.1.24,规划所"></textarea>
+<textarea name="csv" rows="8" spellcheck="false" placeholder="姓名,IP,部门&#10;张三,172.16.1.23,水文所&#10;李四,172.16.1.24,规划所"></textarea>
 <p class="tools">
 <label><input type="checkbox" name="replace" value="1" checked> 整体替换现有名单（不勾选 = 按姓名合并）</label>
 </p>
@@ -1543,7 +1543,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=f"版本清单 {MANIFEST_NAME} 的路径（默认与 zip 同目录；发布后按 mtime 重读，不用重启中心）",
     )
-    parser.add_argument("--advertise", default="", help="对外公布的中心地址，如 http://10.91.1.197:8767（默认用请求 Host）")
+    parser.add_argument("--advertise", default="", help="对外公布的中心地址，如 http://172.16.1.197:8767（默认用请求 Host）")
     parser.add_argument(
         "--roster",
         default=None,

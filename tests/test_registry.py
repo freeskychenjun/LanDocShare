@@ -67,7 +67,7 @@ def test_register_then_list(center):
     base, _store = center
     code, body = post_json(
         f"{base}/register",
-        {"name": "陈鋆", "lib_name": "陈鋆的资料库", "port": 8768, "doc_count": 13, "version": __version__,
+        {"name": "赵六", "lib_name": "赵六的资料库", "port": 8768, "doc_count": 13, "version": __version__,
          "allow_cidrs": ["127.0.0.1"]},
     )
     assert code == 200 and body["ok"] is True
@@ -78,7 +78,7 @@ def test_register_then_list(center):
     assert code == 200
     assert libs["count"] == 1 and libs["online"] == 1
     entry = libs["libraries"][0]
-    assert entry["name"] == "陈鋆"
+    assert entry["name"] == "赵六"
     assert entry["ip"] == "127.0.0.1"  # 取连接对端，不信自报
     assert entry["port"] == 8768
     assert entry["doc_count"] == 13
@@ -112,10 +112,10 @@ def get_bytes(url: str) -> tuple[int, bytes]:
 
 def test_landing_page_is_html_with_download_links(center):
     base, _store = center
-    post_json(f"{base}/register", {"name": "陈鋆", "port": 8768, "doc_count": 13, "allow_cidrs": ["127.0.0.1"]})
+    post_json(f"{base}/register", {"name": "赵六", "port": 8768, "doc_count": 13, "allow_cidrs": ["127.0.0.1"]})
     code, page = get_text(f"{base}/")
     assert code == 200
-    assert page.startswith("<!doctype html>") and "陈鋆" in page
+    assert page.startswith("<!doctype html>") and "赵六" in page
     assert "/skill.zip" in page
     # 没配库软件包时给出"还没放好"的说明，而不是死链
     assert "库软件包暂未放好" in page and "/download" not in page
@@ -178,19 +178,19 @@ def test_download_streams_package_zip(tmp_path):
 
 def test_advertise_overrides_request_host(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
-    httpd = make_registry_server(store, port=0, allow_cidrs=["127.0.0.1"], advertise="http://10.91.1.197:8767")
+    httpd = make_registry_server(store, port=0, allow_cidrs=["127.0.0.1"], advertise="http://172.16.1.197:8767")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
         _code, page = get_text(f"{base}/")
-        assert "http://10.91.1.197:8767" in page
+        assert "http://172.16.1.197:8767" in page
         import io
         import zipfile
 
         _code, blob = get_bytes(f"{base}/skill.zip")
         with zipfile.ZipFile(io.BytesIO(blob)) as zf:
             config = json.loads(zf.read("lan-lib-search/scripts/config.json"))
-        assert config["registry"] == "http://10.91.1.197:8767"
+        assert config["registry"] == "http://172.16.1.197:8767"
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -198,7 +198,7 @@ def test_advertise_overrides_request_host(tmp_path):
 
 def test_libraries_ttl_marks_offline_then_forgets(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
-    entry = store.register("10.91.1.50", {"name": "小李", "port": 8768, "doc_count": 2})
+    entry = store.register("172.16.1.50", {"name": "小李", "port": 8768, "doc_count": 2})
     assert store.libraries()[0]["online"] is True
 
     store._entries[entry["key"]]["last_seen"] = time.time() - 600  # 10 分钟没心跳
@@ -212,7 +212,7 @@ def test_libraries_ttl_marks_offline_then_forgets(tmp_path):
 def test_registry_persists_and_reloads(tmp_path):
     path = tmp_path / "registry.json"
     store = RegistryStore(path)
-    store.register("10.91.1.50", {"name": "小李", "port": 8768, "doc_count": 2})
+    store.register("172.16.1.50", {"name": "小李", "port": 8768, "doc_count": 2})
     assert path.exists()
     assert json.loads(path.read_text(encoding="utf-8"))["libraries"][0]["name"] == "小李"
 
@@ -223,7 +223,7 @@ def test_registry_persists_and_reloads(tmp_path):
 
 def test_rejects_sources_outside_allowed_cidrs(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
-    httpd = make_registry_server(store, port=0, allow_cidrs=["10.91.0.0/16"])  # 不含回环
+    httpd = make_registry_server(store, port=0, allow_cidrs=["172.16.0.0/16"])  # 不含回环
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
@@ -256,7 +256,7 @@ def register(base: str, **payload):
 def test_libraries_filtered_by_cidr_and_legacy_hidden(center):
     base, _store = center
     register(base, name="开给本机", port=8768, allow_cidrs=["127.0.0.1"])
-    register(base, name="开给别处", port=8769, allow_cidrs=["10.91.0.0/16"])
+    register(base, name="开给别处", port=8769, allow_cidrs=["172.16.0.0/16"])
     register(base, name="旧版没上报", port=8770)
     register(base, name="暂停共享", port=8771, allow_cidrs=[])
     register(
@@ -298,7 +298,7 @@ def test_center_deny_cidrs_blocks_even_allowed_source(tmp_path):
 def test_health_info_and_landing_only_count_visible(center):
     base, _store = center
     register(base, name="可见库", port=8768, allow_cidrs=["127.0.0.1"])
-    register(base, name="隐藏库", port=8769, allow_cidrs=["10.91.0.0/16"])
+    register(base, name="隐藏库", port=8769, allow_cidrs=["172.16.0.0/16"])
 
     _code, health = get_json(f"{base}/health")
     assert health["libraries"] == 1
@@ -318,45 +318,45 @@ def test_landing_page_has_no_name_form(center):
 def test_store_audience_by_person_and_ip(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
     store.register(
-        "10.91.1.50",
+        "172.16.1.50",
         {
-            "name": "陈鋆",
+            "name": "赵六",
             "port": 8768,
-            "allow_cidrs": ["10.91.0.0/16"],
-            "allow_people": {"陈鋆": "10.91.1.50"},
+            "allow_cidrs": ["172.16.0.0/16"],
+            "allow_people": {"赵六": "172.16.1.50"},
         },
     )
-    visible = [lib["name"] for lib in store.libraries(viewer_ip="10.91.1.50", viewer_name="陈鋆")]
-    assert visible == ["陈鋆"]
-    assert store.libraries(viewer_ip="10.91.1.51", viewer_name="陈鋆") == []  # 姓名对但 IP 不对
-    assert store.libraries(viewer_ip="10.91.1.50", viewer_name="王五") == []  # 姓名不在名单
-    assert [lib["name"] for lib in store.libraries(viewer_ip="10.91.1.50")] == ["陈鋆"]  # 匿名按 IP
-    assert store.libraries(viewer_ip="10.91.1.51") == []
+    visible = [lib["name"] for lib in store.libraries(viewer_ip="172.16.1.50", viewer_name="赵六")]
+    assert visible == ["赵六"]
+    assert store.libraries(viewer_ip="172.16.1.51", viewer_name="赵六") == []  # 姓名对但 IP 不对
+    assert store.libraries(viewer_ip="172.16.1.50", viewer_name="王五") == []  # 姓名不在名单
+    assert [lib["name"] for lib in store.libraries(viewer_ip="172.16.1.50")] == ["赵六"]  # 匿名按 IP
+    assert store.libraries(viewer_ip="172.16.1.51") == []
 
 
 def test_store_deny_cidrs_wins_over_allow(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
     store.register(
-        "10.91.1.50",
+        "172.16.1.50",
         {
             "name": "整段开放但挡一台",
             "port": 8768,
-            "allow_cidrs": ["10.91.0.0/16"],
-            "deny_cidrs": ["10.91.1.50/32"],
+            "allow_cidrs": ["172.16.0.0/16"],
+            "deny_cidrs": ["172.16.1.50/32"],
         },
     )
-    assert store.libraries(viewer_ip="10.91.1.50") == []
-    assert [lib["name"] for lib in store.libraries(viewer_ip="10.91.1.51")] == ["整段开放但挡一台"]
+    assert store.libraries(viewer_ip="172.16.1.50") == []
+    assert [lib["name"] for lib in store.libraries(viewer_ip="172.16.1.51")] == ["整段开放但挡一台"]
 
 
 @pytest.mark.parametrize(
     "extra",
     [
-        {"allow_cidrs": "10.91.0.0/16"},
+        {"allow_cidrs": "172.16.0.0/16"},
         {"allow_cidrs": ["not-a-cidr"]},
         {"deny_cidrs": ["not-a-cidr"]},
-        {"deny_cidrs": "10.91.1.50"},
-        {"allow_people": ["陈鋆"]},
+        {"deny_cidrs": "172.16.1.50"},
+        {"allow_people": ["赵六"]},
     ],
 )
 def test_rejects_bad_audience(center, extra):
@@ -368,8 +368,8 @@ def test_rejects_bad_audience(center, extra):
 
 def test_sort_puts_online_first(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
-    store.register("10.91.1.60", {"name": "B 库", "port": 8768})
-    stale = store.register("10.91.1.50", {"name": "A 库", "port": 8768})
+    store.register("172.16.1.60", {"name": "B 库", "port": 8768})
+    stale = store.register("172.16.1.50", {"name": "A 库", "port": 8768})
     store._entries[stale["key"]]["last_seen"] = time.time() - 600
     names = [lib["name"] for lib in store.libraries()]
     assert names == ["B 库", "A 库"]
@@ -602,7 +602,7 @@ def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
         allow_cidrs="10.0.0.0/8",
         package_zip="distribution/LanDocShare.zip",
         manifest=None,
-        advertise="http://10.91.1.197:8767",
+        advertise="http://172.16.1.197:8767",
         roster="roster.csv",
         watchdog_log="logs/registry.log",
         watchdog_interval=60.0,
@@ -612,7 +612,7 @@ def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
     assert args[:2] == ["--state-dir", str(tmp_path.resolve())]
     assert args[2:4] == ["--allow-cidrs", "10.0.0.0/8"]
     assert args[4:6] == ["--package-zip", str(Path("distribution/LanDocShare.zip").resolve())]
-    assert args[6:8] == ["--advertise", "http://10.91.1.197:8767"]
+    assert args[6:8] == ["--advertise", "http://172.16.1.197:8767"]
     assert args[8:10] == ["--roster", str(Path("roster.csv").resolve())]
     # 看门狗自己的参数也要活过重启：否则开机后日志写到别处、探测间隔也回默认
     assert args[10:12] == ["--watchdog-log", str(Path("logs/registry.log").resolve())]
@@ -656,7 +656,7 @@ def test_roster_state_is_cached_until_file_changes(tmp_path, monkeypatch):
     from landoc import registry
 
     csv_path = tmp_path / "roster.csv"
-    csv_path.write_text("陈鋆,127.0.0.1,规划一所\n老王,10.0.0.9,水文所\n", encoding="utf-8")
+    csv_path.write_text("赵六,127.0.0.1,规划一所\n老王,10.0.0.9,水文所\n", encoding="utf-8")
     handler = object.__new__(registry.RegistryHandler)
     handler.roster_path = csv_path
 
@@ -672,7 +672,7 @@ def test_roster_state_is_cached_until_file_changes(tmp_path, monkeypatch):
     assert handler._roster_state()["count"] == 2
     assert calls["n"] == 1
     # 中心重新发布名单（内容与长度都变了）→ 缓存失效，读到新人数
-    csv_path.write_text("陈鋆,127.0.0.1,规划一所\n", encoding="utf-8")
+    csv_path.write_text("赵六,127.0.0.1,规划一所\n", encoding="utf-8")
     assert handler._roster_state()["count"] == 1
     assert calls["n"] == 2
 
@@ -779,17 +779,17 @@ def test_skill_zip_is_cached_until_template_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(registry, "skill_root", lambda: root)
     registry._SKILL_ZIP_CACHE.clear()
 
-    first = registry.build_skill_zip("http://10.91.1.197:8767")
-    second = registry.build_skill_zip("http://10.91.1.197:8767")
+    first = registry.build_skill_zip("http://172.16.1.197:8767")
+    second = registry.build_skill_zip("http://172.16.1.197:8767")
     assert first is second  # 直接命中缓存，连字节都没重新生成
 
     # 模板改了 → 签名变了 → 重新打一份（缓存不会给出过期内容）
     (root / "SKILL.md").write_text("# 模板 v2\n", encoding="utf-8")
-    third = registry.build_skill_zip("http://10.91.1.197:8767")
+    third = registry.build_skill_zip("http://172.16.1.197:8767")
     assert third != first
 
     # 换了中心地址也是另一份（config.json 里的地址不同）
-    other = registry.build_skill_zip("http://10.91.1.198:8767")
+    other = registry.build_skill_zip("http://172.16.1.198:8767")
     assert other != third
 
 
@@ -797,7 +797,7 @@ def test_roster_csv_is_local_only_unless_public(tmp_path, monkeypatch):
     """名单是全院姓名+IP：默认不给网段内其他人下载，显式 --roster-public 才放开。"""
     store = RegistryStore(tmp_path / "registry.json")
     roster = tmp_path / "roster.csv"
-    roster.write_text("姓名,IP\n陈鋆,10.91.1.50\n", encoding="utf-8-sig")
+    roster.write_text("姓名,IP\n赵六,172.16.1.50\n", encoding="utf-8-sig")
 
     def start(*, public: bool):
         httpd = make_registry_server(
@@ -830,7 +830,7 @@ def test_roster_csv_is_local_only_unless_public(tmp_path, monkeypatch):
     try:
         with urllib.request.urlopen(f"{base}/roster.csv", timeout=3) as resp:
             assert resp.status == 200
-            assert "陈鋆" in resp.read().decode("utf-8-sig")
+            assert "赵六" in resp.read().decode("utf-8-sig")
     finally:
         httpd.shutdown()
         httpd.server_close()

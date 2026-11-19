@@ -123,14 +123,14 @@ def test_user_activity_blocks_conversion(tmp_path):
 
 def test_pause_clears_cidrs_and_resume_restores(tmp_path):
     app = make_app(tmp_path, idle_check=lambda: False)
-    app.cfg.allow_cidrs = ["10.91.0.0/16", "127.0.0.1"]
+    app.cfg.allow_cidrs = ["172.16.0.0/16", "127.0.0.1"]
     app.pause_share()
     assert app.cfg.allow_cidrs == []
     assert app.paused is True
     assert app.status.phase == "paused"
     app.pause_share()  # 重复暂停不覆盖备份
     app.resume_share()
-    assert app.cfg.allow_cidrs == ["10.91.0.0/16", "127.0.0.1"]
+    assert app.cfg.allow_cidrs == ["172.16.0.0/16", "127.0.0.1"]
     assert app.paused is False
 
 
@@ -157,17 +157,17 @@ def test_heartbeat_registers_with_registry(tmp_path):
         poster=poster,
         heartbeat_seconds=0.05,
     )
-    app.cfg.registry_url = "http://10.91.1.197:8767/"
+    app.cfg.registry_url = "http://172.16.1.197:8767/"
     app.start()
     try:
         assert wait_for(lambda: calls)
         url, payload = calls[0]
-        assert url == "http://10.91.1.197:8767/register"
+        assert url == "http://172.16.1.197:8767/register"
         assert payload["name"] == "测试库"
         assert payload["doc_count"] == 13
         assert payload["port"] == 18080
         assert payload["version"]
-        assert payload["allow_cidrs"] == ["10.91.0.0/16"]
+        assert payload["allow_cidrs"] == ["172.16.0.0/16"]
         assert payload["deny_cidrs"] == []
         assert payload["allow_people"] == {}
         assert app.last_register["ok"] is True
@@ -192,7 +192,7 @@ def test_heartbeat_reports_empty_audience_when_paused(tmp_path):
         poster=poster,
         heartbeat_seconds=0.05,
     )
-    app.cfg.registry_url = "http://10.91.1.197:8767"
+    app.cfg.registry_url = "http://172.16.1.197:8767"
     app.pause_share()
     app.start()
     try:
@@ -266,7 +266,7 @@ def test_registry_outage_logged_once_per_transition(tmp_path):
         poster=poster,
         heartbeat_seconds=0.02,
     )
-    app.cfg.registry_url = "http://10.91.1.197:8767"
+    app.cfg.registry_url = "http://172.16.1.197:8767"
     app.start()
     try:
         from landoc.app import app_log_path
@@ -294,7 +294,7 @@ def _update_app(tmp_path, monkeypatch, *, fetch, prepare=None, **kwargs) -> Libr
         tmp_path,
         idle_check=lambda: False,
         server_factory=lambda cfg: FakeServer(port=18080),
-        # 心跳得挡住：否则这些用例会真的往生产登记中心注册一个假库（10.91.1.197:18080）
+        # 心跳得挡住：否则这些用例会真的往生产登记中心注册一个假库（172.16.1.197:18080）
         poster=lambda url, payload: {"ok": True},
         update_fetch=fetch,
         update_prepare=prepare or (lambda info, progress=None: _staged(tmp_path)),
@@ -302,7 +302,7 @@ def _update_app(tmp_path, monkeypatch, *, fetch, prepare=None, **kwargs) -> Libr
         update_interval=3600,
         **kwargs,
     )
-    app.cfg.registry_url = "http://10.91.1.197:8767"
+    app.cfg.registry_url = "http://172.16.1.197:8767"
     return app
 
 

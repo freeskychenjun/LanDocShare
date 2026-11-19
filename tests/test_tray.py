@@ -227,7 +227,7 @@ def test_saving_library_settings_starts_a_scan_right_away(tmp_path, monkeypatch)
     cfg.folders = [tmp_path / "测试目录"]
     cfg.save()
 
-    edited = tray.Config(name="陈鋆的资料库", lib_dir=lib_dir)
+    edited = tray.Config(name="赵六的资料库", lib_dir=lib_dir)
     edited.folders = [tmp_path / "测试目录", new_folder]
     seen: list[object] = []
 

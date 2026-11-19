@@ -352,7 +352,7 @@
   </div>
   <div class="card">
     <h4>你是同事</h4>
-    <p>打开 <code>http://10.91.1.197:8767/</code> 找库，或直接用库主人给你的地址搜。不需要装任何东西。</p>
+    <p>打开 <code>http://172.16.1.197:8767/</code> 找库，或直接用库主人给你的地址搜。不需要装任何东西。</p>
   </div>
 </div>
 
@@ -379,7 +379,7 @@
   <tr><td>Office</td><td>装了 Office 或 WPS 才能转 <code>.doc/.docx/.ppt/.pptx</code>；没有也能用，只是这几类记失败</td></tr>
   <tr><td>Acrobat</td><td>可选。有 Acrobat 时加密 PDF 读得更快更稳；没有则走随包的兜底工具</td></tr>
   <tr><td>磁盘</td><td>库目录 ≈ 原文档 1~2 倍（存 Markdown 副本 + 索引）</td></tr>
-  <tr><td>网络</td><td>和同事在同一网段（默认 <code>10.91.0.0/16</code>）</td></tr>
+  <tr><td>网络</td><td>和同事在同一网段（默认 <code>172.16.0.0/16</code>）</td></tr>
 </table>
 
 <h3>第一次启动</h3>
@@ -412,7 +412,7 @@
 
 <h3>资料库</h3>
 <ul>
-  <li><b>库名称</b>：同事看到的库名，比如「陈鋆的资料库」。写清楚是谁的，同事才知道该找谁。</li>
+  <li><b>库名称</b>：同事看到的库名，比如「赵六的资料库」。写清楚是谁的，同事才知道该找谁。</li>
   <li><b>库位置</b>：索引、Markdown 副本、日志放哪。默认在「我的文档」下，可以改。改建库设置时这一项是锁定的——搬库不做。</li>
 </ul>
 
@@ -427,12 +427,12 @@
 <h3>谁能查</h3>
 <table>
   <tr><th style="width:30%">选项</th><th>效果</th></tr>
-  <tr><td>公司内网</td><td>「允许的网段」里的机器都能查，不认人。默认 <code>10.91.0.0/16</code>，可改成更小的网段（如只给本科室 <code>10.91.1.0/24</code>）。</td></tr>
+  <tr><td>公司内网</td><td>「允许的网段」里的机器都能查，不认人。默认 <code>172.16.0.0/16</code>，可改成更小的网段（如只给本科室 <code>172.16.1.0/24</code>）。</td></tr>
   <tr><td>仅指定名单</td><td>只有名单里登记过 IP 的人能查。<b>按 IP 放行，姓名只用于日志</b>——知道姓名进不来。名单在「授权名单…」窗口维护。</td></tr>
   <tr><td>仅本机</td><td>只有这台电脑能查，同事打不开。临时不想共享时用这个。</td></tr>
 </table>
 
-<p><b>允许的网段</b>：多个用逗号分隔，如 <code>10.91.1.0/24, 10.91.2.0/24</code>。<br>
+<p><b>允许的网段</b>：多个用逗号分隔，如 <code>172.16.1.0/24, 172.16.2.0/24</code>。<br>
 <b>拒绝的网段</b>：留空 = 不拒绝；填了就是黑名单，<b>优先于允许网段和名单</b>。别把自己（<code>127.0.0.1</code>）写进去，写了本机也打不开。</p>
 
 <div class="callout tip">
@@ -452,7 +452,7 @@
   <tr><td>待收录</td><td>只在新文档还没转完时出现</td></tr>
   <tr><td>共享范围</td><td>网段 / 名单几人 / 仅本机；用了黑名单会显示「· 拒绝 N 段」</td></tr>
   <tr><td>扫描件 OCR</td><td>走的是「Windows 系统 OCR」还是「Tesseract 兜底」；两条都没有时这行不显示</td></tr>
-  <tr><td>服务地址</td><td>发给同事的网址，例如 <code>http://10.91.1.197:8768/</code></td></tr>
+  <tr><td>服务地址</td><td>发给同事的网址，例如 <code>http://172.16.1.197:8768/</code></td></tr>
   <tr><td>上次扫描</td><td>最近一次检查新文档的时间</td></tr>
   <tr><td>版本</td><td>本机版本；有新版本时显示「v0.2.20 → v0.2.21（已下载）」</td></tr>
 </table>
@@ -542,7 +542,7 @@ LanDocShare.exe prune --lib-dir D:\MyLib --gone   # 真删</code></pre>
 <h2 id="search"><span class="num">10</span>同事怎么查（网页）</h2>
 
 <ol>
-  <li>打开库主人给你的地址，例如 <code>http://10.91.1.197:8768/</code>；或在登记中心 <code>http://10.91.1.197:8767/</code> 首页看「对你开放的库」，点进去。</li>
+  <li>打开库主人给你的地址，例如 <code>http://172.16.1.197:8768/</code>；或在登记中心 <code>http://172.16.1.197:8767/</code> 首页看「对你开放的库」，点进去。</li>
   <li>搜索框输入关键词，回车。左边是目录树，可以点进某个文件夹只看它。</li>
   <li>结果给的是<b>命中片段</b>（关键词前后几行）和表格；没有全文下载，这是设计如此。</li>
   <li>两个字的词（「洪水」「乐平」）也能搜——走的是另一条索引路径，结果一样。</li>
@@ -655,8 +655,8 @@ LanDocShare.exe prune --lib-dir D:\MyLib --gone   # 真删</code></pre>
 <p>给愿意动手的人。全部命令都可以在程序目录下执行（打包版用 <code>LanDocShare.exe</code>，源码运行用 <code>python -m landoc.cli</code>）。</p>
 
 <pre><code># 建库（可重复 --folder；--allow-cidrs 支持逗号分隔）
-LanDocShare.exe init --lib-dir D:\MyLib --name 陈鋆的资料库 ^
-    --folder D:\资料 --allow-cidrs 10.91.1.0/24
+LanDocShare.exe init --lib-dir D:\MyLib --name 赵六的资料库 ^
+    --folder D:\资料 --allow-cidrs 172.16.1.0/24
 
 # 体检：抽样看明/密比例、本机有没有 Office / Acrobat
 LanDocShare.exe probe --lib-dir D:\MyLib
@@ -688,7 +688,7 @@ LanDocShare.exe registry --install-autostart --port 8767 --package-zip D:\分发
 LanDocShare.exe registry --stop</code></pre>
 
 <h3>让库去登记</h3>
-<pre><code>LanDocShare.exe init --lib-dir D:\MyLib --registry-url http://10.91.1.197:8767</code></pre>
+<pre><code>LanDocShare.exe init --lib-dir D:\MyLib --registry-url http://172.16.1.197:8767</code></pre>
 <p>之后每次启动、每 60 秒自动心跳，不用再管。</p>
 
 <!-- 16 -->

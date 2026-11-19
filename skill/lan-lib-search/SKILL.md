@@ -13,8 +13,8 @@ description: 检索院内同事们共享的个人资料库（LanDocShare）。�
 ```bash
 python scripts/query.py libs            # 谁对你开放、各多少篇
 python scripts/query.py search 马斯京根   # 对你开放的库一起查
-python scripts/query.py search 玉田水库 --lib 陈鋆
-python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库除险加固初步设计.docx.md"
+python scripts/query.py search 玉田水库 --lib 赵六
+python scripts/query.py tables --lib 赵六 --path "2026年项目/玉田水库除险加固初步设计.docx.md"
 ```
 
 脚本只用标准库（Python 3.8+ 可直接跑），不需要 pip 装任何东西。
@@ -57,7 +57,7 @@ python scripts/query.py tables --lib 陈鋆 --path "2026年项目/玉田水库�
 
 ```bash
 # 1) 名单（带了 name 就按姓名+IP 过滤；不带只按 IP）
-curl -s "http://10.91.1.197:8767/libraries?name=<你的姓名，URL 编码>"
+curl -s "http://172.16.1.197:8767/libraries?name=<你的姓名，URL 编码>"
 # 2) 逐库查（把 <ip>:<port> 换成分名单里的 url；q 用 UTF-8 URL 编码）
 curl -s "http://<ip>:<port>/api/search?q=%E9%A9%AC%E6%96%AF%E4%BA%AC%E6%A0%B9&limit=8&name=<你的姓名，URL 编码>"
 # 3) 表格
@@ -68,9 +68,9 @@ curl -s "http://<ip>:<port>/api/tables?path=<URL 编码后的相对路径>&name=
 
 ## 配置（一般不用改）
 
-- 登记中心默认 `http://10.91.1.197:8767`；换地址有三种方式（优先级从高到低）：
+- 登记中心默认 `http://172.16.1.197:8767`；换地址有三种方式（优先级从高到低）：
   环境变量 `LANLIB_REGISTRY`、`%LOCALAPPDATA%\lan-lib-search\config.json` 里的 `"registry"`、脚本里的默认值。
-- `config.json` 还可以给某个库加权重：`{"weights": {"陈鋆": 1.3}}`（同分时让某人的库排前面）。
+- `config.json` 还可以给某个库加权重：`{"weights": {"赵六": 1.3}}`（同分时让某人的库排前面）。
 - 缓存 `cache_libraries.json` 24 h 有效，只在中心连不上时启用（并逐库探活）。
   **带身份查询时缓存按姓名分成 `cache_libraries_<hash>.json`**，换了姓名不会拿别人的清单。
 - 数据目录默认 `%LOCALAPPDATA%\lan-lib-search`，可用 `LANLIB_HOME` 改。

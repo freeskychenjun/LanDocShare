@@ -88,11 +88,11 @@ def _payload(version="0.3.0", **extra):
 
 def test_fetch_update_info_builds_absolute_url():
     info = updater.fetch_update_info(
-        "http://10.91.1.197:8767/", "0.2.0", opener=_json_opener(_payload())
+        "http://172.16.1.197:8767/", "0.2.0", opener=_json_opener(_payload())
     )
     assert info is not None
     assert info.version == "0.3.0"
-    assert info.url == "http://10.91.1.197:8767/download/0.3.0"
+    assert info.url == "http://172.16.1.197:8767/download/0.3.0"
     assert info.notes == ("修了检索偶发 500",)
     assert info.size == 123
 
@@ -116,17 +116,17 @@ def test_fetch_update_info_understands_flat_center_payload():
         "version": "0.3.0",
         "update": True,
         "manual_only": False,
-        "download": "http://10.91.1.197:8767/download/0.3.0",
+        "download": "http://172.16.1.197:8767/download/0.3.0",
         "sha256": "a" * 64,
         "size": 95,
         "notes": ["修了检索偶发 500"],
         "released_at": "2026-11-18 00:00",
         "platform": "windows-x64",
     }
-    info = updater.fetch_update_info("http://10.91.1.197:8767", "0.2.0", opener=_json_opener(flat))
+    info = updater.fetch_update_info("http://172.16.1.197:8767", "0.2.0", opener=_json_opener(flat))
     assert info is not None
     assert info.version == "0.3.0"
-    assert info.url == "http://10.91.1.197:8767/download/0.3.0"
+    assert info.url == "http://172.16.1.197:8767/download/0.3.0"
     assert info.size == 95
 
 

@@ -22,9 +22,9 @@ SCOPE_LAN = "lan"
 SCOPE_PEOPLE = "people"
 SCOPE_LOCAL = "local"
 SCOPE_CIDRS = {
-    SCOPE_LAN: ["10.91.0.0/16"],
+    SCOPE_LAN: ["172.16.0.0/16"],
     # 名单是在网段之上再叠一层：先过网段，再认 IP（认不出 IP 时才看姓名）
-    SCOPE_PEOPLE: ["10.91.0.0/16"],
+    SCOPE_PEOPLE: ["172.16.0.0/16"],
     SCOPE_LOCAL: ["127.0.0.1"],
 }
 
@@ -202,12 +202,12 @@ def _parse_networks(text: str) -> tuple[list[str], str | None]:
         try:
             networks.append(str(ipaddress.ip_network(part, strict=False)))
         except ValueError:
-            return [], f"“{part}” 不是网段（示例：10.91.0.0/16 或 10.91.1.0/24）"
+            return [], f"“{part}” 不是网段（示例：172.16.0.0/16 或 172.16.1.0/24）"
     return networks, None
 
 
 def parse_cidrs(text: str) -> tuple[list[str], str | None]:
-    """把"10.91.0.0/16, 10.91.1.0/24"这类输入解析成规范网段列表。
+    """把"172.16.0.0/16, 172.16.1.0/24"这类输入解析成规范网段列表。
 
     返回 (网段列表, 错误说明)；空输入按默认网段处理（允许名单不能空着）。
     """
@@ -220,7 +220,7 @@ def parse_cidrs(text: str) -> tuple[list[str], str | None]:
 def parse_deny_cidrs(text: str) -> tuple[list[str], str | None]:
     """解析「拒绝网段」：空输入表示不额外拒绝，**不能**像允许名单那样回落默认网段。
 
-    否则"清空拒绝网段"会变成"拒绝 10.91.0.0/16"，整个内网都被挡在外面。
+    否则"清空拒绝网段"会变成"拒绝 172.16.0.0/16"，整个内网都被挡在外面。
     """
     return _parse_networks(text)
 
@@ -489,7 +489,7 @@ def run_wizard(
         else SCOPE_CIDRS[SCOPE_LAN]
     )
     cidr_var = tk.StringVar(master=root, value=default_cidrs.replace("、", ", "))
-    # 网段输入框横跨后两列：默认 20 字符宽装不下 "10.91.0.0/16, 127.0.0.1/32"，
+    # 网段输入框横跨后两列：默认 20 字符宽装不下 "172.16.0.0/16, 127.0.0.1/32"，
     # 右边还会被提示文字挤掉，所以提示统一挪到下面一行。
     cidr_entry = ttk.Entry(scope_panel, textvariable=cidr_var)
     cidr_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=(8, 0))

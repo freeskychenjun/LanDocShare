@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_ALLOW_CIDRS = ["10.91.0.0/16"]
+DEFAULT_ALLOW_CIDRS = ["172.16.0.0/16"]
 CONFIG_NAME = "config.json"
 # 配置文件的语义版本：只用于"这个字段在新版里含义变了"时的迁移钩子，不参与鉴权/比对。
 # 加字段不用升；只有当同一个键的语义变了（比如 allow_cidrs 从"额外放行"改成"唯一口径"）才升。
@@ -34,7 +34,7 @@ class Config:
     "整库明文被拷走"。本机的取舍是**召回优先**，所以默认给到 20000 字（多数简报/汇报/规程
     可整篇保留），而不是一个抠搜的小数字。改开关后重跑 `convert` 就会按新策略收紧/补齐已有文档。
 
-    registry_url 是登记中心地址（如 `http://10.91.1.197:8767`）：非空时库软件每 60 s
+    registry_url 是登记中心地址（如 `http://172.16.1.197:8767`）：非空时库软件每 60 s
     心跳一次，中心据此下发"谁在线、谁的库有多少篇"；留空则只在本机局域网里被发现。
 
     check_updates / auto_download 是自动更新开关（设计 §9，默认都开）：启动后约半分钟

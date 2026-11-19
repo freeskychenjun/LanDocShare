@@ -12,7 +12,7 @@ def test_build_config_falls_back_to_default_name(tmp_path):
     assert cfg.name == "我的资料库"
     assert cfg.folders == [tmp_path]
     assert cfg.lib_dir == tmp_path / "lib"
-    assert cfg.allow_cidrs == ["10.91.0.0/16"]
+    assert cfg.allow_cidrs == ["172.16.0.0/16"]
 
 
 def test_build_config_local_scope_allows_only_loopback(tmp_path):
@@ -80,63 +80,63 @@ def test_build_config_people_scope_keeps_roster(tmp_path):
         [tmp_path],
         wizard.SCOPE_PEOPLE,
         tmp_path / "lib",
-        people={"陈鋆": "10.91.1.197", "张三": ""},
+        people={"赵六": "172.16.1.197", "张三": ""},
     )
-    assert cfg.allow_cidrs == ["10.91.0.0/16"]  # 先过网段，再核姓名
-    assert cfg.allow_people == {"陈鋆": "10.91.1.197", "张三": ""}
+    assert cfg.allow_cidrs == ["172.16.0.0/16"]  # 先过网段，再核姓名
+    assert cfg.allow_people == {"赵六": "172.16.1.197", "张三": ""}
 
 
 def test_build_config_ignores_roster_when_scope_is_lan(tmp_path):
     cfg = wizard.build_config(
-        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", people={"陈鋆": "10.91.1.197"}
+        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", people={"赵六": "172.16.1.197"}
     )
     assert cfg.allow_people == {}
 
 
 def test_parse_cidrs_normalises_and_rejects_junk():
-    assert wizard.parse_cidrs("10.91.1.0/24, 10.91.10.0/24") == (
-        ["10.91.1.0/24", "10.91.10.0/24"],
+    assert wizard.parse_cidrs("172.16.1.0/24, 172.16.10.0/24") == (
+        ["172.16.1.0/24", "172.16.10.0/24"],
         None,
     )
     # 只给 IP 时按单主机网段处理；全角逗号/空格也认
-    assert wizard.parse_cidrs("10.91.1.5") == (["10.91.1.5/32"], None)
-    assert wizard.parse_cidrs("10.91.1.0/24，10.91.2.0/24")[0] == ["10.91.1.0/24", "10.91.2.0/24"]
-    assert wizard.parse_cidrs("")[0] == ["10.91.0.0/16"]
-    assert wizard.parse_cidrs("10.91.300.0/24")[1] is not None
+    assert wizard.parse_cidrs("172.16.1.5") == (["172.16.1.5/32"], None)
+    assert wizard.parse_cidrs("172.16.1.0/24，172.16.2.0/24")[0] == ["172.16.1.0/24", "172.16.2.0/24"]
+    assert wizard.parse_cidrs("")[0] == ["172.16.0.0/16"]
+    assert wizard.parse_cidrs("172.16.300.0/24")[1] is not None
 
 
 def test_build_config_uses_custom_cidrs(tmp_path):
     cfg = wizard.build_config(
-        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", cidrs=["10.91.1.0/24"]
+        "小库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", cidrs=["172.16.1.0/24"]
     )
-    assert cfg.allow_cidrs == ["10.91.1.0/24"]
+    assert cfg.allow_cidrs == ["172.16.1.0/24"]
 
 
 def test_build_config_local_scope_ignores_custom_cidrs(tmp_path):
     cfg = wizard.build_config(
-        "小库", [tmp_path], wizard.SCOPE_LOCAL, tmp_path / "lib", cidrs=["10.91.0.0/16"]
+        "小库", [tmp_path], wizard.SCOPE_LOCAL, tmp_path / "lib", cidrs=["172.16.0.0/16"]
     )
     assert cfg.allow_cidrs == ["127.0.0.1"]
 
 
 def test_validate_person_rules():
     cidrs = wizard.SCOPE_CIDRS[wizard.SCOPE_PEOPLE]
-    assert wizard.validate_person("", "10.91.1.197", cidrs) == "姓名不能为空"
+    assert wizard.validate_person("", "172.16.1.197", cidrs) == "姓名不能为空"
     assert "不要带" in wizard.validate_person("陈=鋆", "", cidrs)
-    assert "不是合法的 IP" in wizard.validate_person("陈鋆", "10.91.1", cidrs)
-    assert "IP 不能为空" in wizard.validate_person("陈鋆", "", cidrs)
-    assert wizard.validate_person("陈鋆", "10.91.1.197", cidrs) is None
-    assert "不在允许的网段" in wizard.validate_person("陈鋆", "192.168.1.9", cidrs)
+    assert "不是合法的 IP" in wizard.validate_person("赵六", "172.16.1", cidrs)
+    assert "IP 不能为空" in wizard.validate_person("赵六", "", cidrs)
+    assert wizard.validate_person("赵六", "172.16.1.197", cidrs) is None
+    assert "不在允许的网段" in wizard.validate_person("赵六", "192.168.1.9", cidrs)
 
 
 def test_apply_config_copies_people(tmp_path):
     target = wizard.build_config("旧名", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
     source = wizard.build_config(
-        "新名", [tmp_path], wizard.SCOPE_PEOPLE, tmp_path / "lib", people={"陈鋆": "10.91.1.197"}
+        "新名", [tmp_path], wizard.SCOPE_PEOPLE, tmp_path / "lib", people={"赵六": "172.16.1.197"}
     )
     wizard.apply_config(target, source)
-    assert target.allow_people == {"陈鋆": "10.91.1.197"}
-    assert target.allow_cidrs == ["10.91.0.0/16"]
+    assert target.allow_people == {"赵六": "172.16.1.197"}
+    assert target.allow_cidrs == ["172.16.0.0/16"]
 
 
 def _make_home(tmp_path: Path, *subdirs: str) -> Path:
@@ -214,26 +214,26 @@ def test_validate_lib_dir_accepts_fresh_folder_and_strips_quotes(tmp_path):
 
 
 def test_parse_deny_cidrs_empty_means_no_deny():
-    """空输入=不额外拒绝；绝不能像允许名单那样回落到 10.91.0.0/16。"""
+    """空输入=不额外拒绝；绝不能像允许名单那样回落到 172.16.0.0/16。"""
     assert wizard.parse_deny_cidrs("") == ([], None)
     assert wizard.parse_deny_cidrs("   ") == ([], None)
 
 
 def test_parse_deny_cidrs_normalises_and_rejects_junk():
-    assert wizard.parse_deny_cidrs("10.91.1.50，10.91.2.0/24") == (
-        ["10.91.1.50/32", "10.91.2.0/24"],
+    assert wizard.parse_deny_cidrs("172.16.1.50，172.16.2.0/24") == (
+        ["172.16.1.50/32", "172.16.2.0/24"],
         None,
     )
-    networks, error = wizard.parse_deny_cidrs("10.91.0.0/16, 乱写")
+    networks, error = wizard.parse_deny_cidrs("172.16.0.0/16, 乱写")
     assert networks == []
     assert "乱写" in error
 
 
 def test_build_config_carries_deny_cidrs(tmp_path):
     cfg = wizard.build_config(
-        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["10.91.9.0/24"]
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["172.16.9.0/24"]
     )
-    assert cfg.deny_cidrs == ["10.91.9.0/24"]
+    assert cfg.deny_cidrs == ["172.16.9.0/24"]
     # 不给就是"不额外拒绝"，不是继承某个默认网段
     assert wizard.build_config("库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib").deny_cidrs == []
 
@@ -254,12 +254,12 @@ def test_apply_config_copies_deny_cidrs(tmp_path):
     """改建库设置时，向导里显示并回写的拒绝网段要真的生效（不能只改不存）。"""
     target = wizard.build_config("旧库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
     source = wizard.build_config(
-        "新库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["10.91.1.50/32"]
+        "新库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["172.16.1.50/32"]
     )
 
     wizard.apply_config(target, source)
 
-    assert target.deny_cidrs == ["10.91.1.50/32"]
+    assert target.deny_cidrs == ["172.16.1.50/32"]
 
 
 def test_validate_lib_dir_allows_current_library_in_edit_mode(tmp_path):
@@ -279,10 +279,10 @@ def test_build_config_keeps_departments_for_people_only(tmp_path):
         [tmp_path],
         wizard.SCOPE_PEOPLE,
         tmp_path / "lib",
-        people={"陈鋆": "10.91.1.197", "老王": ""},
-        departments={"陈鋆": "规划一所", "不相干的人": "水文所"},
+        people={"赵六": "172.16.1.197", "老王": ""},
+        departments={"赵六": "规划一所", "不相干的人": "水文所"},
     )
-    assert cfg.people_departments == {"陈鋆": "规划一所"}
+    assert cfg.people_departments == {"赵六": "规划一所"}
 
 
 def test_apply_config_copies_departments(tmp_path):
@@ -291,9 +291,9 @@ def test_apply_config_copies_departments(tmp_path):
         [tmp_path],
         wizard.SCOPE_PEOPLE,
         tmp_path / "lib",
-        people={"陈鋆": "10.91.1.197"},
-        departments={"陈鋆": "规划一所"},
+        people={"赵六": "172.16.1.197"},
+        departments={"赵六": "规划一所"},
     )
     target = wizard.Config(name="旧", lib_dir=tmp_path / "old")
     wizard.apply_config(target, source)
-    assert target.people_departments == {"陈鋆": "规划一所"}
+    assert target.people_departments == {"赵六": "规划一所"}

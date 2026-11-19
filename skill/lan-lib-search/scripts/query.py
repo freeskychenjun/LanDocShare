@@ -5,9 +5,9 @@
 用法：
     python query.py libs                       # 列出在线库
     python query.py search 马斯京根             # 对你开放的库一起查
-    python query.py search 马斯京根 --lib 陈鋆   # 只查某人的库
-    python query.py tables --lib 陈鋆 --path "2026年项目/xxx.docx.md"
-    python query.py whoami --set 陈鋆          # 登记自己的名字（可选）
+    python query.py search 马斯京根 --lib 赵六   # 只查某人的库
+    python query.py tables --lib 赵六 --path "2026年项目/xxx.docx.md"
+    python query.py whoami --set 赵六          # 登记自己的名字（可选）
     python query.py search 乐平 --json          # 给程序读
 
 网络约定（设计 §7 / §8）：
@@ -32,7 +32,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-DEFAULT_REGISTRY = "http://10.91.1.197:8767"
+DEFAULT_REGISTRY = "http://172.16.1.197:8767"
 PER_LIB_LIMIT = 8
 TAKE = 20
 TIMEOUT = 2.0

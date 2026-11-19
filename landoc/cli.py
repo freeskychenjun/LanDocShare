@@ -466,7 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-cidrs",
         default=None,
         metavar="CIDR[,CIDR…]",
-        help="允许访问的网段，逗号分隔（默认 10.91.0.0/16；想只给本院就填 10.91.1.0/24）；不给则沿用现有配置",
+        help="允许访问的网段，逗号分隔（默认 172.16.0.0/16；想只给本院就填 172.16.1.0/24）；不给则沿用现有配置",
     )
     init.add_argument(
         "--deny-cidrs",
@@ -497,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--registry-url",
         default=None,
         metavar="URL",
-        help="登记中心地址（如 http://10.91.1.197:8767）；给了才会每 60 s 心跳登记，不给则保持原值",
+        help="登记中心地址（如 http://172.16.1.197:8767）；给了才会每 60 s 心跳登记，不给则保持原值",
     )
     init.set_defaults(func=_cmd_init)
 

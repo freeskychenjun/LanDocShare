@@ -25,76 +25,76 @@ from landoc.roster_ui import RosterWindow
 
 
 def _cfg(tmp_path, **overrides):
-    data = dict(name="陈鋆的资料库", lib_dir=str(tmp_path), folders=[])
+    data = dict(name="赵六的资料库", lib_dir=str(tmp_path), folders=[])
     data.update(overrides)
     return Config(**data)
 
 
 def test_status_rows_show_scope_and_address(tmp_path):
-    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16", "127.0.0.1"])
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16", "127.0.0.1"])
     status = AppStatus(phase="serving", doc_count=13, last_scan="2026-11-17 12:40", port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["文档"] == "13 篇"
-    assert rows["共享范围"] == "10.91.0.0/16、127.0.0.1"
-    assert rows["服务地址"] == "http://10.91.1.197:8768/"
+    assert rows["共享范围"] == "172.16.0.0/16、127.0.0.1"
+    assert rows["服务地址"] == "http://172.16.1.197:8768/"
     assert rows["上次扫描"] == "2026-11-17 12:40"
 
 
 def test_status_rows_show_deny_count_in_scope(tmp_path):
     """拒绝网段优先于允许网段：只显示允许范围会让人以为这些地址也能查。"""
-    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"], deny_cidrs=["10.91.1.50/32", "10.91.9.0/24"])
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"], deny_cidrs=["172.16.1.50/32", "172.16.9.0/24"])
     status = AppStatus(phase="serving", doc_count=13, port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
-    assert rows["共享范围"] == "10.91.0.0/16 · 拒绝 2 段"
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
+    assert rows["共享范围"] == "172.16.0.0/16 · 拒绝 2 段"
 
 
 def test_status_rows_surface_failed_conversions(tmp_path):
     """失败篇数要常驻可见，不然只有翻日志才知道有些文件一直没收进来。"""
-    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])
     status = AppStatus(phase="serving", doc_count=13, failed=3, port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["文档"] == "13 篇 · 3 篇转换失败"
 
 
 def test_status_rows_mark_paused_and_empty_scan(tmp_path):
-    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])
     status = AppStatus(phase="paused", paused=True, doc_count=0, port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert "暂停" in rows["共享范围"]
     assert rows["上次扫描"] == "还没扫过"
     assert rows["文档"] == "0 篇"
 
 
 def test_status_rows_show_roster_instead_of_cidrs(tmp_path):
-    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
-    cfg.allow_people = {"陈鋆": "10.91.1.197", "张三": ""}
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])
+    cfg.allow_people = {"赵六": "172.16.1.197", "张三": ""}
     status = AppStatus(phase="serving", doc_count=13, port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["共享范围"] == "仅指定名单（2 人）"
 
 
 def test_status_rows_show_registry_when_configured(tmp_path):
     cfg = _cfg(tmp_path)
-    cfg.registry_url = "http://10.91.1.197:8767"
+    cfg.registry_url = "http://172.16.1.197:8767"
     status = AppStatus(phase="serving", doc_count=13, port=8768, registry="已登记 2026-11-17 20:18:11")
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["登记中心"] == "已登记 2026-11-17 20:18:11"
 
     status.registry = ""
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["登记中心"] == "等待心跳…"
 
 
 def test_status_rows_hide_registry_when_not_configured(tmp_path):
     cfg = _cfg(tmp_path)
-    rows = {row.label for row in status_rows(cfg, AppStatus(), lan_ip="10.91.1.197")}
+    rows = {row.label for row in status_rows(cfg, AppStatus(), lan_ip="172.16.1.197")}
     assert "登记中心" not in rows
 
 
 def test_phase_text_does_not_repeat_counts(tmp_path):
     cfg = _cfg(tmp_path)
     status = AppStatus(phase="serving", doc_count=13, last_scan="2026-11-17 17:39", port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["状态"] == "正在共享"
     assert "13 篇" not in rows["状态"]
     assert phase_text(AppStatus(phase="converting", converted=5)) == "建库中：已转换 5 篇"
@@ -108,12 +108,12 @@ def test_phase_text_and_rows_show_backlog(tmp_path):
 
     assert phase_text(status) == "建库中：已转换 300 篇 · 还剩 700 篇（约 1 小时 2 分）"
 
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["待收录"] == "700 篇（约 1 小时 2 分）"
     # 没积压时不显示这一行（否则空闲的库窗口里永远挂着一行 0 篇）
     rows = {
         row.label: row.value
-        for row in status_rows(cfg, AppStatus(phase="serving"), lan_ip="10.91.1.197")
+        for row in status_rows(cfg, AppStatus(phase="serving"), lan_ip="172.16.1.197")
     }
     assert "待收录" not in rows
 
@@ -168,7 +168,7 @@ def test_close_waits_for_window_thread(tmp_path, monkeypatch):
 def test_version_row_shows_current_version_only(tmp_path):
     cfg = _cfg(tmp_path)
     status = AppStatus(phase="serving", doc_count=13, port=8768)
-    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
     assert rows["版本"] == f"v{__version__}"
     assert status_rows(cfg, status, lan_ip="x")[-1].label == "版本"  # 放最后一行
 

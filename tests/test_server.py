@@ -41,7 +41,7 @@ def gbk_urlencode(text: str) -> str:
 def lib(tmp_path: Path):
     lib_dir = tmp_path / "lib"
     lib_dir.mkdir()
-    # 测试从 127.0.0.1 连入，故把本机回环列为允许网段（默认是 10.91.0.0/16）
+    # 测试从 127.0.0.1 连入，故把本机回环列为允许网段（默认是 172.16.0.0/16）
     cfg = Config(name="测试库", lib_dir=lib_dir, allow_cidrs=["127.0.0.1"])
     index = Index(cfg.db_path, md_root=lib_dir / "md")
     index.upsert("成果/乐平.md", "乐平下闸蓄水", "docx", "/secret/a.docx", 10, 1.0, "马斯京根法河道洪水演算")
@@ -248,35 +248,35 @@ def test_cidr_not_allowed_is_403(lib):
 def test_authorize_person_prefers_ip_and_name_is_not_a_credential():
     from landoc.server import authorize_person
 
-    roster = {"陈鋆": "10.91.1.197", "张三": "", "李四": "10.91.1.50"}
+    roster = {"赵六": "172.16.1.197", "张三": "", "李四": "172.16.1.50"}
     # 来源 IP 在名单里：不报姓名也放行，审计记那条的姓名
-    assert authorize_person(roster, "10.91.1.197", None) == ("陈鋆", None)
-    assert authorize_person(roster, "10.91.1.197", "陈鋆") == ("陈鋆", None)
+    assert authorize_person(roster, "172.16.1.197", None) == ("赵六", None)
+    assert authorize_person(roster, "172.16.1.197", "赵六") == ("赵六", None)
     # 冒名：姓名的登记 IP 与来源不一致
-    assert authorize_person(roster, "10.91.1.197", "李四") == ("李四", "ip mismatch for name")
+    assert authorize_person(roster, "172.16.1.197", "李四") == ("李四", "ip mismatch for name")
     # 不在名单里的人
-    assert authorize_person(roster, "10.91.1.197", "王五") == ("王五", "name not registered")
+    assert authorize_person(roster, "172.16.1.197", "王五") == ("王五", "name not registered")
     # IP 不在名单、也没报姓名
-    assert authorize_person(roster, "10.91.1.99", None) == (None, "ip not registered")
+    assert authorize_person(roster, "172.16.1.99", None) == (None, "ip not registered")
     # 空 IP 条目：知道姓名也不能进（姓名不是口令）
-    assert authorize_person(roster, "10.91.1.99", "张三") == ("张三", "name has no IP registered")
-    assert authorize_person(roster, "10.91.1.197", "张三") == ("张三", "name has no IP registered")
+    assert authorize_person(roster, "172.16.1.99", "张三") == ("张三", "name has no IP registered")
+    assert authorize_person(roster, "172.16.1.197", "张三") == ("张三", "name has no IP registered")
 
 
 def test_authorize_person_lets_loopback_through_and_empty_roster_is_open():
     from landoc.server import authorize_person
 
-    assert authorize_person({"陈鋆": "10.91.1.197"}, "127.0.0.1", None) == ("本机", None)
-    assert authorize_person({"陈鋆": "10.91.1.197"}, "::1", None) == ("本机", None)
+    assert authorize_person({"赵六": "172.16.1.197"}, "127.0.0.1", None) == ("本机", None)
+    assert authorize_person({"赵六": "172.16.1.197"}, "::1", None) == ("本机", None)
     # 名单为空 = 只靠网段把关，报不报姓名都无所谓
-    assert authorize_person({}, "10.91.1.197", None) == (None, None)
-    assert authorize_person({}, "10.91.1.197", "陈鋆") == ("陈鋆", None)
+    assert authorize_person({}, "172.16.1.197", None) == (None, None)
+    assert authorize_person({}, "172.16.1.197", "赵六") == ("赵六", None)
 
 
 def test_roster_is_live_and_loopback_owner_always_passes(lib):
     """名单里有 IP 条目时，127.0.0.1 自检不被挡（主人本机调试、状态窗口都走回环）。"""
     cfg, index = lib
-    cfg.allow_people = {"陈鋆": "10.91.1.197"}
+    cfg.allow_people = {"赵六": "172.16.1.197"}
     httpd = make_server(cfg, index=index, port=0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -285,7 +285,7 @@ def test_roster_is_live_and_loopback_owner_always_passes(lib):
         client = Client(f"http://127.0.0.1:{port}")
         assert client.get("/api/search?q=x")[0] == 200
         # 名单改动即时生效（服务端每请求现读 cfg，不用重启）
-        cfg.allow_people = {"陈鋆": "10.91.1.197", "张三": "10.91.1.50"}
+        cfg.allow_people = {"赵六": "172.16.1.197", "张三": "172.16.1.50"}
         assert client.get("/api/meta")[0] == 200
     finally:
         httpd.shutdown()
@@ -294,7 +294,7 @@ def test_roster_is_live_and_loopback_owner_always_passes(lib):
 
 def test_meta_never_requires_name_even_with_blank_ip_entries(lib):
     cfg, index = lib
-    cfg.allow_people = {"陈鋆": "127.0.0.1"}
+    cfg.allow_people = {"赵六": "127.0.0.1"}
     httpd = make_server(cfg, index=index, port=0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -305,12 +305,12 @@ def test_meta_never_requires_name_even_with_blank_ip_entries(lib):
         assert status == 200
         body = json.loads(raw)
         assert body["name_required"] is False  # 全是 IP 条目，不用报姓名
-        assert "陈鋆" not in raw
+        assert "赵六" not in raw
     finally:
         httpd.shutdown()
         httpd.server_close()
 
-    cfg.allow_people = {"陈鋆": "127.0.0.1", "张三": ""}
+    cfg.allow_people = {"赵六": "127.0.0.1", "张三": ""}
     httpd = make_server(cfg, index=index, port=0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

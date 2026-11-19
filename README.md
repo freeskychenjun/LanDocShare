@@ -76,8 +76,8 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的状态窗口打开。托盘菜单：显示状态窗口 / 打开库主页 / **检查更新（发现新版后变成「下载新版本 v…」→「升级到 v…」）** / **立即重建索引（正在建库时变成「停止建库」）** / 修改建库设置… / 暂停共享 / 打开库目录 / 开机自启 / 查看日志 / 退出。
 
 - **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。**名单编辑不在向导里**：向导只显示「已登记 N 人」，增删改到「授权名单…」窗口做；首次建库先选公司内网或仅本机，建好后去授权名单窗口添加人员，再回来改「仅指定名单」。窗口本身分三组（资料库 / 共享哪些文件夹 / 谁能查），每组带边框，左列标签统一 10 字宽、右缘对齐，输入框左缘成一条竖线；文件夹列表带横、竖两条滚动条（共享十几个目录、路径又长时不用猜后面还有什么）；弹出时按实际大小摆到**屏幕正中**（`panel.center_window` 支持传入还没映射的窗口尺寸——Tk 那时只会报 1×1，照它算就跑到左上角去了），多显示器跟着鼠标所在的屏、1080 屏上不压任务栏。
-- **「谁能查」三档**：公司内网（默认网段 10.91.0.0/16，**可改**，如只给本院填 10.91.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；**姓名只用于日志/分组，不能当作访问凭证**——空 IP 的条目一律不授权，知道姓名也进不来。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（恒 false，仅为旧客户端兼容）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；每行必须有 IP，空 IP 会整批拒绝并报行号；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 10.91.1.0/24,10.91.10.0/24`。改名单**即时生效**，不用重启服务。
-- **要“整段放行、只挡几台”**：`deny_cidrs` 是黑名单，命中即 403，**优先于允许网段和名单**（连 `127.0.0.1` 也会被挡，别把本机写进去）。`init --deny-cidrs 10.91.1.50,10.91.1.0/28` 设置，`--deny-cidrs ""`（或 `无`）清空；中心侧同名参数 `registry --deny-cidrs` 挡的是“能打开中心页面/清单”的来源。库端与中心都在路由分发**之前**判黑名单，网页、`/api/*`、skill 一视同仁。建库向导「允许的网段」下面一行就是「拒绝的网段」（留空=不拒绝，全角逗号/分号都认），改完当场生效；状态窗口的「共享范围」会显示「· 拒绝 N 段」，不用去翻 `config.json` 才知道黑名单有几条。
+- **「谁能查」三档**：公司内网（默认网段 172.16.0.0/16，**可改**，如只给本院填 172.16.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；**姓名只用于日志/分组，不能当作访问凭证**——空 IP 的条目一律不授权，知道姓名也进不来。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（恒 false，仅为旧客户端兼容）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；每行必须有 IP，空 IP 会整批拒绝并报行号；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 172.16.1.0/24,172.16.10.0/24`。改名单**即时生效**，不用重启服务。
+- **要“整段放行、只挡几台”**：`deny_cidrs` 是黑名单，命中即 403，**优先于允许网段和名单**（连 `127.0.0.1` 也会被挡，别把本机写进去）。`init --deny-cidrs 172.16.1.50,172.16.1.0/28` 设置，`--deny-cidrs ""`（或 `无`）清空；中心侧同名参数 `registry --deny-cidrs` 挡的是“能打开中心页面/清单”的来源。库端与中心都在路由分发**之前**判黑名单，网页、`/api/*`、skill 一视同仁。建库向导「允许的网段」下面一行就是「拒绝的网段」（留空=不拒绝，全角逗号/分号都认），改完当场生效；状态窗口的「共享范围」会显示「· 拒绝 N 段」，不用去翻 `config.json` 才知道黑名单有几条。
 - **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数（有转换失败时显示「N 篇 · M 篇转换失败」）、共享范围、服务地址、上次扫描、**扫描件 OCR 走哪条路**（`Windows 系统 OCR` / `Tesseract 兜底` / 两条都没有时这一行不显示）、**版本**，带「打开检索页 / 立即更新 / **检查更新（有新版时变「下载更新」/「升级到 v…」）** / 暂停共享 / 授权名单 / 复制地址 / **清理…**」按钮。**清理…** 是「库只增不减」的唯一出口：源文件已不在的文档攒到 N 篇时按钮亮起、写「清理 N 篇」，点一下先问「要删掉这些文档的副本和索引行吗」，确认后才删（删之前源文档回来了就自动从名单里消失）；命令行等价物 `LanDocShare.exe prune --lib-dir … --gone`，打包版也走同一条路（`CLI_COMMANDS` 里已含 `prune`）。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。**每次打开都回到屏幕正中**（`center_window`：按光标所在显示器的工作区居中，多屏时跟着鼠标走、任务栏不算在内；把窗口拖到别处后再打开，仍回正中）。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
 - **「立即重建索引」是真的立即**（旧版只是叫醒调度线程，仍要过空闲门控——正在用电脑时点了没反应）：点下去就置 `_force`，本轮门控与每篇开始前的收工检查都放行，**一直跑到没有新增为止**（不是跑一轮就收工），状态窗口同时显示"已转换 N 篇 · 还剩 M 篇（约 X 分钟）"。转换起的是独立的隐藏 Office/WPS 进程（`DispatchEx` + `Visible=False`），不碰你正开着的窗口，只占 CPU。跑完弹回音：有新增说"已收录 N 篇，可被检索"，没有新增说"已是最新：没有需要收录的新文档"（有失败则报失败篇数）——点了没动静和"按钮坏了"看着一样，所以必须有这句话。**停下**：建库期间托盘那一项和状态窗按钮都变成「停止建库」；「暂停共享」也会把它撤掉（恢复共享后不会自己又跑起来）。
 - **扫描件 PDF 会 OCR**（0.2.16）：没有文字层的 PDF（扫描件）不再直接记失败——先用 Windows 自带的 OCR（`zh-Hans-CN` 语言包，0 体积），识别不出来再退回随包的 Tesseract（`landoc/tools/tesseract` 约 8.4 MB + `landoc/tools/tessdata` 的 fast 模型 6.3 MB，chi_sim+eng）。只对"整页是图"的 PDF 动手（文字少但没有图的短通知不白跑），默认 300 dpi、最多前 60 页；识别结果带 `<!-- page N -->` 锚点与提示行「（扫描件：以下文字由 OCR 识别，可能有错字）」。开关在 `config.json`：`ocr_scanned_pdfs`（默认 true，关掉就完全不渲染）、`ocr_dpi`、`ocr_max_pages`。体量参考：2 页意见函约 2.2 秒 / 1648 字；38 篇 175 页约 7 分钟。质量：打印体公文基本可读（`赣` 可能认成 `考` 这类），手写、表格线密的效果一般，所以正文里留了提示行——别把 OCR 结果当原文引用。
@@ -102,16 +102,16 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 让同事们**只发现对自己开放的库**：一台常开机器跑登记中心，各库每 60 s 报一次"我在线、我有多少篇、对谁开放"；中心按请求来源 IP 过滤（客户端带的姓名只用于核对，不能提升权限），才把库的地址/篇数返回给客户端。
 
 ```bash
-# 在常开的那台机器上（本机就是 10.91.1.197）
+# 在常开的那台机器上（本机就是 172.16.1.197）
 python -m landoc.registry --port 8767            # 或 python -m landoc.cli registry
 # 也可用打包版：LanDocShare.exe registry --port 8767
 
 # 让某个库去登记（写进它的 config.json；之后每次启动/每 60 s 自动心跳）
-python -m landoc.cli init --lib-dir D:\MyLib --name 陈鋆的资料库 --folder D:\资料 ^
-    --registry-url http://10.91.1.197:8767
+python -m landoc.cli init --lib-dir D:\MyLib --name 赵六的资料库 --folder D:\资料 ^
+    --registry-url http://172.16.1.197:8767
 ```
 
-- `POST /register`：库端心跳（`{name, lib_name, port, doc_count, version, allow_cidrs, deny_cidrs, allow_people}`）。**IP 取连接对端，不信自报**；只接受 `10.91.0.0/16`（`--allow-cidrs` 可改，`--deny-cidrs` 可挡）。`allow_cidrs` / `deny_cidrs` / `allow_people` 是库主人当前的授权范围；**没上报授权范围的旧版库、以及暂停共享（空列表）的库一律不显示**。`deny_cidrs` 优先，命中即隐藏。返回 `latest_version` 与 `upgrade`。
+- `POST /register`：库端心跳（`{name, lib_name, port, doc_count, version, allow_cidrs, deny_cidrs, allow_people}`）。**IP 取连接对端，不信自报**；只接受 `172.16.0.0/16`（`--allow-cidrs` 可改，`--deny-cidrs` 可挡）。`allow_cidrs` / `deny_cidrs` / `allow_people` 是库主人当前的授权范围；**没上报授权范围的旧版库、以及暂停共享（空列表）的库一律不显示**。`deny_cidrs` 优先，命中即隐藏。返回 `latest_version` 与 `upgrade`。
 - `GET /libraries?name=你的姓名`：只返回**对来源 IP 有权限**的在线库（5 分钟内有心跳 = 在线，30 分钟无心跳 = 移除）。姓名只用于核对，不填也按 IP 匹配；填错不会提升权限，反而可能因同名条目对不上而看不到该库。说明页、`GET /health`、`GET /api/info` 的库计数同样只算对你可见的。
 - `GET /health`：中心自身状态。
 - `GET /libraries` 响应里不回传各库的授权名单，只回库名/地址/篇数/在线状态。
@@ -125,7 +125,7 @@ python -m landoc.cli init --lib-dir D:\MyLib --name 陈鋆的资料库 --folder 
 
 ## 分发（P2，`/` 一页装完）
 
-登记中心同时是**分发入口**：同事打开 `http://10.91.1.197:8767/` 就能下载，不用谁手工发文件、填地址。
+登记中心同时是**分发入口**：同事打开 `http://172.16.1.197:8767/` 就能下载，不用谁手工发文件、填地址。
 
 ```bash
 # 1) 打包库软件 zip（PyInstaller 之后跑一次；产物默认 distribution/LanDocShare.zip）
@@ -140,7 +140,7 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip
 - `GET /skill.zip`：**现场生成**客户端 skill 包，里面 `scripts/config.json` 写好了本中心地址——同事解压到 skills 目录即可用，无需配置；`query.py` 读配置的顺序是「环境变量 > 用户目录 > 包内」。
 - `GET /download`：流式发库软件 zip（不整包读内存）；没放包时返回 404 + 中文提示，说明页上也显示"暂未放好"而不是死链。
 - `GET /download/<版本>`：指定版本下载，支持 `Range: bytes=N-` 断点续传，带 `X-Landoc-Sha256` 头；只放行最新版，老版本返回 404（提示已下架）。
-- 升级提示：`/libraries` 带 `latest_version`（以 `latest.json` 为准），每个库带自己的 `version`；`query.py libs` 会把落后的库列一行（"N 个库版本落后，最新 0.2.0：陈鋆、老王"）。
+- 升级提示：`/libraries` 带 `latest_version`（以 `latest.json` 为准），每个库带自己的 `version`；`query.py libs` 会把落后的库列一行（"N 个库版本落后，最新 0.2.0：赵六、老王"）。
 
 ## 自动更新（同事怎么升级）
 
@@ -194,7 +194,7 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip   # 
 ```bash
 python -m landoc.cli people --lib-dir D:\MyLib --pull                # 从 config 里的 registry_url 拉取
 python -m landoc.cli people --lib-dir D:\MyLib --publish             # 发布到中心（同样只认中心那台机器）
-python -m landoc.cli people --lib-dir D:\MyLib --dept 陈鋆=规划一所    # 给某人标部门（部门留空 = 清掉）
+python -m landoc.cli people --lib-dir D:\MyLib --dept 赵六=规划一所    # 给某人标部门（部门留空 = 清掉）
 python -m landoc.cli people --lib-dir D:\MyLib                       # 查看（按部门分组、末尾给部门分布）
 ```
 
@@ -206,7 +206,7 @@ python -m landoc.cli people --lib-dir D:\MyLib                       # 查看（
 - **姓名可以留空**：授权只按来源 IP，姓名只用于审计/同名匹配，**不能当口令**。姓名存在 `%LOCALAPPDATA%\LanDocShare\viewer_name.txt`（没填过会自动借用 skill 的 `identity.txt`）——**授权仍在中心/库那一侧算**，客户端不做任何本地放行。
 - 中心连不上时退回 24 小时缓存，并对缓存里标"在线"的库逐个 `/api/health` 探活；缓存里记着查询用的姓名和中心地址——换了姓名或换了中心，缓存就作废，不会拿到别人的库单。
 - 窗口开着时每 60 秒静默刷新一次，也能点 **刷新** 立刻重查；查询在后台线程跑，中心慢不会卡界面。
-- 中心返回 403（比如本机用 `127.0.0.1` 访问、而中心只允许 `10.91.0.0/16`）会直接给出提示，换成局域网地址即可。
+- 中心返回 403（比如本机用 `127.0.0.1` 访问、而中心只允许 `172.16.0.0/16`）会直接给出提示，换成局域网地址即可。
 - 一个库都没有时窗口会说明可能的原因：不在对方授权名单里 / 对方暂停了共享 / 对方版本较旧、还没上报授权范围。
 - **离线清单（自动）**：每次成功从中心查到名单，都会顺手把同一份名单写成本地网页 `%LOCALAPPDATA%\LanDocShare\库地址清单.html`——不用记得点任何按钮，中心哪天关了，这份文件就是手上的地址簿。按钮 **导出清单…** 只是把这份清单**另存一份**（比如存到共享盘发给同事，默认目录和文件名就是上面那个）。网页里有导出时间、来源（实时/缓存）、查询身份、在线数，以及库主人 / 库名 / 篇数 / 状态 / 地址表和一段纯文本地址；已离线的库整行置灰。**这是给中心掉线时兜底用的离线备份**：中心恢复后会自动更新；对方换了端口或暂停共享后地址就打不开了。库名、姓名等来自中心的数据都做了 HTML 转义，`javascript:` 之类的地址不会变成可点链接。
 
@@ -217,8 +217,8 @@ python -m landoc.cli people --lib-dir D:\MyLib                       # 查看（
 ```bash
 python skill/lan-lib-search/scripts/query.py libs                 # 谁在线、各多少篇
 python skill/lan-lib-search/scripts/query.py search 马斯京根        # 并发 12 路，每库超时 2 s
-python skill/lan-lib-search/scripts/query.py search 玉田水库 --lib 陈鋆
-python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试目录/xxx.docx.md"
+python skill/lan-lib-search/scripts/query.py search 玉田水库 --lib 赵六
+python skill/lan-lib-search/scripts/query.py tables --lib 赵六 --path "测试目录/xxx.docx.md"
 ```
 
 - **只用标准库**，Python 3.8+ 直接跑；没有 Python 时按 `SKILL.md` 里的 curl 命令逐库查、AI 合并。
@@ -326,3 +326,8 @@ skill/lan-lib-search/
   SKILL.md             给 AI 助手的用法说明（触发词、流程、无 Python 时的 curl 降级）
   scripts/query.py     客户端查询：拉名单 → 并发 fan-out → 归一化合并 → 按库分组输出
 ```
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。随包分发的 Tesseract 与 tessdata 模型另按 Apache-2.0 授权，
+来源与许可见 [landoc/tools/README.md](landoc/tools/README.md)。

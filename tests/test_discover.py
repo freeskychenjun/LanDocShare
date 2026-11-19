@@ -38,8 +38,8 @@ def center(tmp_path):
 
 def add_library(store: RegistryStore, **overrides):
     payload = {
-        "name": "陈鋆",
-        "lib_name": "陈鋆的资料库",
+        "name": "赵六",
+        "lib_name": "赵六的资料库",
         "port": 8768,
         "doc_count": 13,
         "version": "0.2.6",
@@ -59,8 +59,8 @@ def test_fetch_from_registry_keeps_center_fields(center, tmp_path):
     assert len(result) == 1 and result.online_count == 1
     lib = result.libraries[0]
     assert (lib.name, lib.lib_name, lib.doc_count, lib.online) == (
-        "陈鋆",
-        "陈鋆的资料库",
+        "赵六",
+        "赵六的资料库",
         13,
         True,
     )
@@ -68,7 +68,7 @@ def test_fetch_from_registry_keeps_center_fields(center, tmp_path):
     assert result.latest_version
     written = json.loads(cache.read_text(encoding="utf-8"))
     assert written["registry"] == center.base
-    assert written["libraries"][0]["lib_name"] == "陈鋆的资料库"
+    assert written["libraries"][0]["lib_name"] == "赵六的资料库"
 
 
 def test_fetch_leaves_an_offline_list_next_to_the_cache(center, tmp_path):
@@ -79,7 +79,7 @@ def test_fetch_leaves_an_offline_list_next_to_the_cache(center, tmp_path):
 
     backup = tmp_path / discover.OFFLINE_NAME
     page = backup.read_text(encoding="utf-8")
-    assert "陈鋆的资料库" in page and "http://127.0.0.1:8768/" in page
+    assert "赵六的资料库" in page and "http://127.0.0.1:8768/" in page
     assert "本机缓存" not in page  # 这是刚查到的实时名单，不是旧缓存
 
 
@@ -94,16 +94,16 @@ def test_failed_offline_backup_never_breaks_the_query(center, tmp_path, monkeypa
     result = discover.fetch_libraries(center.base, cache_file=tmp_path / "cache.json")
 
     assert result.source == "registry"
-    assert [lib.lib_name for lib in result] == ["陈鋆的资料库"]
+    assert [lib.lib_name for lib in result] == ["赵六的资料库"]
 
 
 def test_cache_is_per_viewer(center, tmp_path, monkeypatch):
     # 姓名不再能单独授权；这里只用一条登记了 IP 的条目验证缓存按查看者隔离
-    add_library(center.store, allow_people={"老王": "10.91.1.50"})
+    add_library(center.store, allow_people={"老王": "172.16.1.50"})
     cache = tmp_path / "cache.json"
 
     seen = discover.fetch_libraries(center.base, "老王", cache_file=cache)
-    assert [lib.lib_name for lib in seen] == ["陈鋆的资料库"]
+    assert [lib.lib_name for lib in seen] == ["赵六的资料库"]
 
     center.stop()
 
@@ -180,7 +180,7 @@ def test_empty_registry_url_tells_user_what_to_fill():
 
 def test_403_hint_suggests_lan_address(tmp_path):
     store = RegistryStore(tmp_path / "registry.json")
-    httpd = make_registry_server(store, port=0, allow_cidrs=["10.91.0.0/16"])
+    httpd = make_registry_server(store, port=0, allow_cidrs=["172.16.0.0/16"])
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -202,7 +202,7 @@ def test_rows_sort_online_first_and_mark_self():
     offline = discover.VisibleLibrary(
         key="b",
         name="老王",
-        ip="10.91.1.50",
+        ip="172.16.1.50",
         port=8769,
         lib_name="老王的资料库",
         doc_count=3,
@@ -210,27 +210,27 @@ def test_rows_sort_online_first_and_mark_self():
         last_seen="",
         age_seconds=7200,
         online=False,
-        url="http://10.91.1.50:8769/",
+        url="http://172.16.1.50:8769/",
     )
     online = discover.VisibleLibrary(
         key="a",
-        name="陈鋆",
-        ip="10.91.1.197",
+        name="赵六",
+        ip="172.16.1.197",
         port=8768,
-        lib_name="陈鋆的资料库",
+        lib_name="赵六的资料库",
         doc_count=13,
         version="0.2.6",
         last_seen="",
         age_seconds=42,
         online=True,
-        url="http://10.91.1.197:8768/",
+        url="http://172.16.1.197:8768/",
     )
     result = discover.LibraryList(
-        (offline, online), "registry", "陈鋆", "0.2.6", "", 1000.0, 1000.0
+        (offline, online), "registry", "赵六", "0.2.6", "", 1000.0, 1000.0
     )
 
-    rows = discover.rows(result, self_name="陈鋆的资料库")
-    assert [row.lib_name for row in rows] == ["陈鋆的资料库", "老王的资料库"]
+    rows = discover.rows(result, self_name="赵六的资料库")
+    assert [row.lib_name for row in rows] == ["赵六的资料库", "老王的资料库"]
     assert rows[0].note == "（本机）" and rows[0].heartbeat == "心跳 42 秒前"
     assert rows[1].status == "已离线" and rows[1].note == ""
     assert "2 个库，1 个在线" in discover.summary_text(result)
@@ -240,7 +240,7 @@ def test_upgrade_note_names_stale_libraries():
     old = discover.VisibleLibrary(
         key="a",
         name="老王",
-        ip="10.91.1.50",
+        ip="172.16.1.50",
         port=8769,
         lib_name="老王的资料库",
         doc_count=3,
@@ -248,7 +248,7 @@ def test_upgrade_note_names_stale_libraries():
         last_seen="",
         age_seconds=10,
         online=True,
-        url="http://10.91.1.50:8769/",
+        url="http://172.16.1.50:8769/",
     )
     result = discover.LibraryList((old,), "registry", "", "0.2.6", "", 0.0, 0.0)
     note = discover.upgrade_note(result)
@@ -270,8 +270,8 @@ def test_viewer_name_roundtrip_and_skill_fallback(tmp_path, monkeypatch):
     monkeypatch.delenv("LANLIB_HOME", raising=False)
 
     assert discover.load_viewer_name() == ""
-    discover.save_viewer_name("陈鋆")
-    assert discover.load_viewer_name() == "陈鋆"
+    discover.save_viewer_name("赵六")
+    assert discover.load_viewer_name() == "赵六"
 
     discover.viewer_name_path().unlink()
     skill = tmp_path / "lan-lib-search"
@@ -306,17 +306,17 @@ def test_window_starts_one_daemon_thread(tmp_path, monkeypatch):
 
 def _lib(**overrides) -> discover.VisibleLibrary:
     payload = dict(
-        key="10.91.1.197:8768",
-        name="陈鋆",
-        ip="10.91.1.197",
+        key="172.16.1.197:8768",
+        name="赵六",
+        ip="172.16.1.197",
         port=8768,
-        lib_name="陈鋆的资料库",
+        lib_name="赵六的资料库",
         doc_count=13,
         version="0.2.6",
         last_seen="",
         age_seconds=42.0,
         online=True,
-        url="http://10.91.1.197:8768/",
+        url="http://172.16.1.197:8768/",
     )
     payload.update(overrides)
     return discover.VisibleLibrary(**payload)
@@ -324,10 +324,10 @@ def _lib(**overrides) -> discover.VisibleLibrary:
 
 def test_render_offline_html_lists_addresses_and_marks_offline():
     result = discover.LibraryList(
-        (_lib(), _lib(key="g", name="老王", ip="10.91.1.50", port=8769,
-                      lib_name="老王的资料库", doc_count=3, online=False, url="http://10.91.1.50:8769/")),
+        (_lib(), _lib(key="g", name="老王", ip="172.16.1.50", port=8769,
+                      lib_name="老王的资料库", doc_count=3, online=False, url="http://172.16.1.50:8769/")),
         "cache",
-        "陈鋆",
+        "赵六",
         "",
         "连不上登记中心（timed out）",
         2000.0,
@@ -336,9 +336,9 @@ def test_render_offline_html_lists_addresses_and_marks_offline():
     page = discover.render_offline_html(result, generated_at=2000.0)
 
     assert page.startswith("<!doctype html>")
-    assert "http://10.91.1.197:8768/" in page and "http://10.91.1.50:8769/" in page
+    assert "http://172.16.1.197:8768/" in page and "http://172.16.1.50:8769/" in page
     assert 'class="offline"' in page  # 已离线那行整行灰掉
-    assert "陈鋆" in page and "老王的资料库" in page
+    assert "赵六" in page and "老王的资料库" in page
     assert "连不上登记中心" in page
     assert "本机缓存" in page  # 来源写清，别让人以为是实时名单
 
