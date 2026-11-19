@@ -291,6 +291,29 @@ def _clean_department(text: str) -> str:
     return clean[:MAX_DEPARTMENT_CHARS]
 
 
+def folder_list(parent) -> tuple[object, object]:
+    """带纵横滚动条的文件夹列表（目录多时纵向滚，路径长时横向滚）。
+
+    以前直接往 frame 里塞一个 height=5 的 Listbox：超过 5 个目录就只能靠滚轮，
+    看上去像"少了几行"；路径长还会被右边裁掉。这里包一层容器，把两个滚动条
+    挂在 Listbox 上。
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    box = ttk.Frame(parent)
+    box.columnconfigure(0, weight=1)
+    box.rowconfigure(0, weight=1)
+    listbox = tk.Listbox(box, height=5, width=42, selectmode="extended")
+    listbox.grid(row=0, column=0, sticky="nsew")
+    yscroll = ttk.Scrollbar(box, orient="vertical", command=listbox.yview)
+    yscroll.grid(row=0, column=1, sticky="ns")
+    xscroll = ttk.Scrollbar(box, orient="horizontal", command=listbox.xview)
+    xscroll.grid(row=1, column=0, sticky="we")
+    listbox.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+    return box, listbox
+
+
 def run_wizard(
     lib_dir: Path,
     parent=None,
@@ -353,8 +376,8 @@ def run_wizard(
         lib_button.configure(state="disabled")
 
     ttk.Label(frame, text="共享哪些文件夹").grid(row=2, column=0, sticky="nw", pady=(8, 0))
-    listbox = tk.Listbox(frame, height=5, width=42, selectmode="extended")
-    listbox.grid(row=2, column=1, sticky="we", pady=4)
+    folders_box, listbox = folder_list(frame)
+    folders_box.grid(row=2, column=1, sticky="we", pady=4)
     if current is not None:
         for folder in current.folders:
             listbox.insert("end", str(folder))
