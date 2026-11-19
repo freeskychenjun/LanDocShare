@@ -95,3 +95,24 @@ def test_timeout_without_dialog_stays_office_timeout(monkeypatch, plain_docx_pat
     monkeypatch.setattr(office_bridge, "_has_password_dialog", lambda pids: False)
     with pytest.raises(office_bridge.OfficeTimeout):
         office_bridge.extract_wordopenxml(plain_docx_path, timeout=0.4)
+
+
+def test_tasklist_and_taskkill_never_flash_a_console_window(monkeypatch):
+    """建库时每篇都要 tasklist/taskkill：不隐藏就会满屏闪黑框（用户可见的体验问题）。"""
+    calls = []
+
+    class FakeProc:
+        stdout = b""
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(office_bridge.subprocess, "run", fake_run)
+    assert office_bridge._pids_of(("wps.exe",)) == set()
+    office_bridge._kill_office_processes({4321})
+
+    assert [cmd[0] for cmd, _ in calls] == ["tasklist", "taskkill"]
+    for _, kwargs in calls:
+        assert kwargs["creationflags"] == office_bridge._CREATE_NO_WINDOW
+        assert kwargs["capture_output"] is True

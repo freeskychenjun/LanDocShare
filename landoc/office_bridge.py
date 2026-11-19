@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import queue
 import subprocess
 import threading
@@ -19,6 +20,10 @@ PKG = "{http://schemas.microsoft.com/office/2006/xmlPackage}"
 OFFICE_PROGIDS = ("KWPS.Application", "Word.Application")
 OFFICE_PROCESS_NAMES = ("wps.exe", "WINWORD.EXE", "wpp.exe", "POWERPNT.EXE")
 ACROBAT_PROCESS_NAMES = ("Acrobat.exe", "AcroRd32.exe")
+
+# tasklist / taskkill 都是控制台程序：不隐藏就会在屏幕上闪一下黑框。
+# 每篇文档要调好几次（转前记基线、转后收尾），建库时就是一片闪窗，所以一律不建窗口。
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0
 
 
 class OfficeUnavailable(RuntimeError):
@@ -91,6 +96,7 @@ def _pids_of(names) -> set[int]:
                 ["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {name}"],
                 capture_output=True,
                 timeout=20,
+                creationflags=_CREATE_NO_WINDOW,
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -116,7 +122,10 @@ def _kill_office_processes(pids: set[int] | None = None) -> None:
     for pid in pids or set():
         try:
             subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=20
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=20,
+                creationflags=_CREATE_NO_WINDOW,
             )
         except (OSError, subprocess.SubprocessError):
             pass
