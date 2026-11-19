@@ -220,21 +220,41 @@ class TrayApp:
         if self.icon is not None:
             self.icon.update_menu()
 
-    def _open_config(self) -> None:
-        try:
-            import os
+    def _open_path(self, path: Path, what: str) -> None:
+        """用资源管理器打开一个文件夹；打不开就直说。
 
-            os.startfile(str(self.cfg.config_path))  # noqa: S606 - 用户显式点击
-        except Exception:  # noqa: BLE001
+        旧版这里叫「权限设置（打开配置文件）」，靠 `os.startfile` 把 json 交给系统
+        关联的程序——本机 .json 关联到 Trae CN，而它拿到文件后自己退出，界面上就是
+        "点了没反应"。打开文件夹没有这个问题，也顺带把 config.json、logs、md 都摆在
+        用户面前（想手改高级参数的人自己就找得到）。
+        """
+        import os
+        import subprocess
+
+        if not path.is_dir():
+            self._notify(f"找不到{what}：{path}")
+            return
+        try:
+            os.startfile(str(path))  # noqa: S606 - 用户显式点击
+            return
+        except OSError:
             pass
+        try:
+            # 关联被改坏时的退路：explorer 打开目录不依赖任何文件关联
+            subprocess.Popen(["explorer", str(path)])  # noqa: S603,S607
+        except OSError as exc:
+            self._notify(f"打不开{what}：{exc}")
+
+    def _open_lib_dir(self) -> None:
+        self._open_path(Path(self.cfg.lib_dir), "库目录")
 
     def _open_logs(self) -> None:
+        logs = Path(self.cfg.lib_dir) / "logs"
         try:
-            import os
-
-            os.startfile(str(Path(self.cfg.lib_dir) / "logs"))  # noqa: S606
-        except Exception:  # noqa: BLE001
+            logs.mkdir(parents=True, exist_ok=True)  # 刚建库还没写过日志时目录可能不在
+        except OSError:
             pass
+        self._open_path(logs, "日志目录")
 
     def _quit(self) -> None:
         self.panel.close()
@@ -260,7 +280,7 @@ class TrayApp:
             pystray.MenuItem(
                 "暂停共享", self._toggle_share, checked=lambda item: self.app.paused
             ),
-            pystray.MenuItem("权限设置（打开配置文件）", self._open_config),
+            pystray.MenuItem("打开库目录", self._open_lib_dir),
             pystray.MenuItem(
                 "开机自启",
                 self._toggle_autostart,

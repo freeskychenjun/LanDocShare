@@ -97,8 +97,9 @@ def test_failed_offline_backup_never_breaks_the_query(center, tmp_path, monkeypa
     assert [lib.lib_name for lib in result] == ["陈鋆的资料库"]
 
 
-def test_name_filters_at_center_and_cache_is_per_viewer(center, tmp_path, monkeypatch):
-    add_library(center.store, allow_people={"老王": ""})
+def test_cache_is_per_viewer(center, tmp_path, monkeypatch):
+    # 姓名不再能单独授权；这里只用一条登记了 IP 的条目验证缓存按查看者隔离
+    add_library(center.store, allow_people={"老王": "10.91.1.50"})
     cache = tmp_path / "cache.json"
 
     seen = discover.fetch_libraries(center.base, "老王", cache_file=cache)
@@ -254,10 +255,10 @@ def test_upgrade_note_names_stale_libraries():
     assert "老王的资料库" in note and "0.2.6" not in note
 
 
-def test_empty_hint_mentions_name_when_blank():
+def test_empty_hint_explains_ip_only_auth():
     result = discover.LibraryList((), "registry", "", "", "", 0.0, 0.0)
     hint = discover.empty_hint(result)
-    assert "授权名单" in hint and "填上姓名" in hint
+    assert "按来源 IP" in hint and "不影响授权" in hint
     assert (
         discover.empty_hint(discover.LibraryList((), "none", "", "", "连不上", 0.0, 0.0))
         == "连不上"

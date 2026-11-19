@@ -193,10 +193,10 @@ def test_people_merge_keeps_existing_and_can_remove(tmp_path: Path):
     csv_path = tmp_path / "名单.csv"
     csv_path.write_text("姓名,IP\n陈鋆,10.91.1.197\n", encoding="utf-8")
     cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)])
-    cli.main(["people", "--lib-dir", str(lib), "--set", "张三="])
-    assert Config.load(lib).allow_people == {"陈鋆": "10.91.1.197", "张三": ""}
+    cli.main(["people", "--lib-dir", str(lib), "--set", "张三=10.91.1.201"])
+    assert Config.load(lib).allow_people == {"陈鋆": "10.91.1.197", "张三": "10.91.1.201"}
     cli.main(["people", "--lib-dir", str(lib), "--remove", "陈鋆"])
-    assert Config.load(lib).allow_people == {"张三": ""}
+    assert Config.load(lib).allow_people == {"张三": "10.91.1.201"}
 
 
 def test_people_rejects_bad_csv(tmp_path: Path, capsys):
@@ -204,6 +204,15 @@ def test_people_rejects_bad_csv(tmp_path: Path, capsys):
     cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
     csv_path = tmp_path / "坏.csv"
     csv_path.write_text("姓名,IP\n陈鋆,10.91.1.999\n", encoding="utf-8")
+    assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)]) == 2
+    assert Config.load(lib).allow_people == {}
+
+
+def test_people_rejects_blank_ip_csv(tmp_path: Path):
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库"])
+    csv_path = tmp_path / "空IP.csv"
+    csv_path.write_text("姓名,IP\n陈鋆,10.91.1.197\n张三,\n", encoding="utf-8")
     assert cli.main(["people", "--lib-dir", str(lib), "--csv", str(csv_path)]) == 2
     assert Config.load(lib).allow_people == {}
 

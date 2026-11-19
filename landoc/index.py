@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS documents (
     src_size   INTEGER NOT NULL,
     src_mtime  REAL NOT NULL,
     content    TEXT NOT NULL,
-    indexed_at TEXT
+    indexed_at TEXT,
+    withdrawn  INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     title, content,
@@ -144,6 +145,7 @@ class Index:
         with self.conn:
             rebuilt = self._migrate_fts()
             self.conn.executescript(SCHEMA)
+            self._migrate_withdrawn()
             if rebuilt:
                 self._rebuild_fts()
         if rebuilt:
@@ -177,6 +179,16 @@ class Index:
             self.conn.execute(f"DROP TRIGGER IF EXISTS {name}")
         return True
 
+    def _migrate_withdrawn(self) -> None:
+        """给旧库补 `withdrawn` 列：撤回共享时只标位，不再物理删 md/索引。"""
+        columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "withdrawn" not in columns:
+            self.conn.execute(
+                "ALTER TABLE documents ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0"
+            )
+
     def _rebuild_fts(self) -> None:
         self.conn.execute("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')")
         self.conn.commit()
@@ -208,17 +220,25 @@ class Index:
         """
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         self.conn.execute(
-            """INSERT INTO documents (rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO documents (rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at, withdrawn)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
                ON CONFLICT(rel_path) DO UPDATE SET
                  title=excluded.title, ext=excluded.ext, source_path=excluded.source_path,
                  src_size=excluded.src_size, src_mtime=excluded.src_mtime,
-                 content=excluded.content, indexed_at=excluded.indexed_at""",
+                 content=excluded.content, indexed_at=excluded.indexed_at,
+                 withdrawn=0""",
             (rel_path, title, ext, source_path, int(src_size), float(src_mtime), content, now),
         )
 
+    def mark_withdrawn(self, rel_path: str, withdrawn: bool = True) -> None:
+        """撤回/恢复共享：只改可见性标记，md 与索引正文都保留。"""
+        self.conn.execute(
+            "UPDATE documents SET withdrawn = ? WHERE rel_path = ?",
+            (1 if withdrawn else 0, rel_path),
+        )
+
     def delete(self, rel_path: str) -> None:
-        """删除一条文档（撤回共享时用）：触发器一并发删 FTS 条目，不碰磁盘文件。"""
+        """删除一条文档（瘦身/显式清理时用）：触发器一并发删 FTS 条目，不碰磁盘文件。"""
         self.conn.execute("DELETE FROM documents WHERE rel_path = ?", (rel_path,))
 
     def commit(self) -> None:
@@ -237,8 +257,9 @@ class Index:
         return row[0] if row else default
 
     # ---- 读取 ----
-    def stats(self) -> dict:
-        total = self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    def stats(self, *, include_withdrawn: bool = True) -> dict:
+        where = "" if include_withdrawn else " WHERE withdrawn = 0"
+        total = self.conn.execute(f"SELECT COUNT(*) FROM documents{where}").fetchone()[0]
         return {"total": total, "service": "landoc", "version": __version__}
 
     def get_content(self, rel_path: str) -> str | None:
@@ -257,38 +278,43 @@ class Index:
         ).fetchone()
         return row[0] if row else None
 
-    def search(self, q: str, dir_filter: str = "", limit: int = 20):
+    def search(self, q: str, dir_filter: str = "", limit: int = 20, *, include_withdrawn: bool = True):
         """AND 检索，无结果自动降级 OR；返回 (rows, fell_back)。
 
         2 个字符的查询（"乐平""洪水"这类水文常用词）低于 trigram 的最小长度，
         走 LIKE 子串扫描兜底：个人库只有几千篇，扫一遍代价可接受。
+
+        `include_withdrawn=False` 时只返回仍在共享范围内的文档；服务端对非本机
+        请求传 False，主人本机保留完整库。
         """
         limit = max(1, min(int(limit), MAX_LIMIT))
         terms = [t for t in (q or "").split() if t]
         if not terms:
             return [], False
         if min(len(t) for t in terms) < MIN_TRIGRAM_CHARS:
-            rows = self._like_search(q.strip(), dir_filter, limit, op="AND")
+            rows = self._like_search(q.strip(), dir_filter, limit, op="AND", include_withdrawn=include_withdrawn)
             if rows:
                 return rows, False
-            return self._like_search(q.strip(), dir_filter, limit, op="OR"), True
+            return self._like_search(q.strip(), dir_filter, limit, op="OR", include_withdrawn=include_withdrawn), True
         match = build_match_query(q, "AND")
         if not match:
             return [], False
-        rows = self._run_query(match, dir_filter, limit)
+        rows = self._run_query(match, dir_filter, limit, include_withdrawn=include_withdrawn)
         if rows:
             return rows, False
         match_or = build_match_query(q, "OR")
         if match_or == match:
             return [], False
-        return self._run_query(match_or, dir_filter, limit), True
+        return self._run_query(match_or, dir_filter, limit, include_withdrawn=include_withdrawn), True
 
-    def _run_query(self, match: str, dir_filter: str, limit: int):
+    def _run_query(self, match: str, dir_filter: str, limit: int, *, include_withdrawn: bool = True):
         where = "documents_fts MATCH ?"
         params: list = [match]
         if dir_filter:
             where += " AND instr(documents.rel_path, ?) = 1"
             params.append(dir_filter.strip("/\\") + "/")
+        if not include_withdrawn:
+            where += " AND documents.withdrawn = 0"
         sql = f"""
             SELECT documents.rel_path, documents.title, documents.ext,
                    bm25(documents_fts, 10.0, 1.0) AS score,
@@ -312,7 +338,7 @@ class Index:
             for r in rows
         ]
 
-    def _like_search(self, q: str, dir_filter: str, limit: int, op: str = "AND"):
+    def _like_search(self, q: str, dir_filter: str, limit: int, op: str = "AND", *, include_withdrawn: bool = True):
         """短查询的兜底：逐词子串扫（用 instr，避开 LIKE 的通配符转义）。"""
         terms = [t for t in q.split() if t]
         clauses, params = [], []
@@ -324,6 +350,8 @@ class Index:
         if dir_filter:
             where += " AND instr(documents.rel_path, ?) = 1"
             params.append(dir_filter.strip("/\\") + "/")
+        if not include_withdrawn:
+            where += " AND documents.withdrawn = 0"
         sql = f"""
             SELECT documents.rel_path, documents.title, documents.ext, 0.0 AS score,
                    documents.content AS raw
@@ -346,11 +374,14 @@ class Index:
             for r in rows
         ]
 
-    def tree(self, rel: str = "") -> list[dict]:
+    def tree(self, rel: str = "", *, include_withdrawn: bool = True) -> list[dict]:
         prefix = (rel or "").replace("\\", "/").strip("/")
         needle = prefix + "/" if prefix else ""
+        condition = "instr(rel_path, ?) = 1"
+        if not include_withdrawn:
+            condition += " AND withdrawn = 0"
         rows = self.conn.execute(
-            "SELECT rel_path FROM documents WHERE instr(rel_path, ?) = 1", (needle,)
+            f"SELECT rel_path FROM documents WHERE {condition}", (needle,)
         ).fetchall()
         counts: dict[str, int] = {}
         offset = len(prefix) + 1 if prefix else 0
@@ -363,40 +394,47 @@ class Index:
             for name in sorted(counts)
         ]
 
-    def list_dir(self, rel: str = "", limit: int = MAX_LIST) -> list[dict]:
+    def list_dir(self, rel: str = "", limit: int = MAX_LIST, *, include_withdrawn: bool = True) -> list[dict]:
         limit = max(1, min(int(limit), MAX_LIST))
         prefix = (rel or "").replace("\\", "/").strip("/")
         needle = prefix + "/" if prefix else ""
+        condition = "instr(rel_path, ?) = 1 AND instr(substr(rel_path, ?), '/') = 0"
+        if not include_withdrawn:
+            condition += " AND withdrawn = 0"
         rows = self.conn.execute(
-            """SELECT rel_path, title, src_size FROM documents
+            f"""SELECT rel_path, title, src_size FROM documents
                WHERE rowid IN (SELECT rowid FROM documents
-                               WHERE instr(rel_path, ?) = 1
-                                 AND instr(substr(rel_path, ?), '/') = 0)
+                               WHERE {condition})
                ORDER BY title LIMIT ?""",
             (needle, len(prefix) + 2 if prefix else 1, limit),
         ).fetchall()
         return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
 
-    def recent(self, limit: int = 50) -> list[dict]:
+    def recent(self, limit: int = 50, *, include_withdrawn: bool = True) -> list[dict]:
         """最近收录的文档（按入库时间倒序）：检索页一打开就能看见库里有东西。
 
         indexed_at 是文本时间戳（"YYYY-MM-DD HH:MM:SS"），同一秒入库的多篇用 rowid
         兜底排序，保证顺序稳定、不会每次刷新都跳。
         """
         limit = max(1, min(int(limit), MAX_LIST))
+        condition = "1=1" if include_withdrawn else "withdrawn = 0"
         rows = self.conn.execute(
-            """SELECT rel_path, title, src_size FROM documents
+            f"""SELECT rel_path, title, src_size FROM documents
+               WHERE {condition}
                ORDER BY COALESCE(indexed_at, '') DESC, rowid DESC LIMIT ?""",
             (limit,),
         ).fetchall()
         return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
 
-    def tables(self, rel_path: str, max_bytes: int = 300_000) -> list[dict] | None:
+    def tables(self, rel_path: str, max_bytes: int = 300_000, *, include_withdrawn: bool = True) -> list[dict] | None:
         """返回该文档内的全部表格（GFM + HTML）。路径必须存在于索引且不越界，否则 None。"""
         rel = (rel_path or "").replace("\\", "/").strip().lstrip("/")
         if not rel:
             return None
-        if not self.conn.execute("SELECT 1 FROM documents WHERE rel_path = ?", (rel,)).fetchone():
+        condition = "rel_path = ?" if include_withdrawn else "rel_path = ? AND withdrawn = 0"
+        if not self.conn.execute(
+            f"SELECT 1 FROM documents WHERE {condition}", (rel,)
+        ).fetchone():
             return None
         path = _safe_md_path(Path(self.md_root), rel)
         if path is None:  # 索引被污染（含 .. / 盘符）时宁可当作"不在库里"

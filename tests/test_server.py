@@ -72,7 +72,26 @@ def test_meta_exposes_scope_not_paths(running):
     client, _, _ = running
     payload = client.json("/api/meta")
     assert payload["allow_cidrs"] == ["127.0.0.1"]
+    assert payload["deny_cidrs"] == []
     assert "source_path" not in json.dumps(payload)
+
+
+def test_deny_cidrs_wins_over_allow(lib):
+    """黑名单优先：即使来源在 allow 里，命中 deny 也一律 403。"""
+    cfg, index = lib
+    cfg.deny_cidrs = ["127.0.0.1"]
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(base + "/api/meta", timeout=3)
+        assert excinfo.value.code == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
 
 
 def test_root_serves_search_page(running):
@@ -116,6 +135,53 @@ def test_root_page_renders_recent_and_loading_state(running):
     assert "api/recent" in body
     assert "最近收录" in body
     assert "搜索中…" in body
+
+
+def test_withdrawn_docs_are_owner_only_over_http(lib):
+    cfg, index = lib
+    index.mark_withdrawn("成果/乐平.md")
+    index.commit()
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    client = Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+    try:
+        # 本机（回环）是主人：计数、检索、目录里都还在
+        assert client.json("/api/health")["doc_count"] == 2
+        assert client.json("/api/search?q=" + urllib.parse.quote("乐平"))["count"] == 1
+        assert {f["title"] for f in client.json("/api/list?path=" + urllib.parse.quote("成果"))["files"]} == {
+            "乐平下闸蓄水",
+            "溪霞水库",
+        }
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
+def test_withdrawn_docs_are_hidden_from_remote_clients(lib, monkeypatch):
+    cfg, index = lib
+    index.mark_withdrawn("成果/乐平.md")
+    index.commit()
+    # 把本机地址伪装成别的机器：127.0.0.1 仍是允许来源，但不再是 owner
+    monkeypatch.setattr("landoc.server.local_ips", lambda: frozenset({"192.0.2.9"}))
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    client = Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+    try:
+        assert client.json("/api/health")["doc_count"] == 1
+        assert client.json("/api/meta")["doc_count"] == 1
+        assert client.json("/api/search?q=" + urllib.parse.quote("乐平"))["count"] == 0
+        assert [f["title"] for f in client.json("/api/recent")["files"]] == ["溪霞水库"]
+        assert client.json("/api/tree")["children"][0]["count"] == 1
+        assert [f["title"] for f in client.json("/api/list?path=" + urllib.parse.quote("成果"))["files"]] == ["溪霞水库"]
+        status, _ = client.get("/api/tables?path=" + urllib.parse.quote("成果/乐平.md"))
+        assert status == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
 
 
 def test_search_returns_snippets(running):
@@ -177,7 +243,7 @@ def test_cidr_not_allowed_is_403(lib):
         httpd.server_close()
 
 
-def test_authorize_person_prefers_ip_and_treats_name_as_label():
+def test_authorize_person_prefers_ip_and_name_is_not_a_credential():
     from landoc.server import authorize_person
 
     roster = {"陈鋆": "10.91.1.197", "张三": "", "李四": "10.91.1.50"}
@@ -190,9 +256,9 @@ def test_authorize_person_prefers_ip_and_treats_name_as_label():
     assert authorize_person(roster, "10.91.1.197", "王五") == ("王五", "name not registered")
     # IP 不在名单、也没报姓名
     assert authorize_person(roster, "10.91.1.99", None) == (None, "ip not registered")
-    # 没登记 IP 的人：只能靠报姓名
-    assert authorize_person(roster, "10.91.1.99", "张三") == ("张三", None)
-    assert authorize_person(roster, "10.91.1.99", "陈鋆") == ("陈鋆", "ip mismatch for name")
+    # 空 IP 条目：知道姓名也不能进（姓名不是口令）
+    assert authorize_person(roster, "10.91.1.99", "张三") == ("张三", "name has no IP registered")
+    assert authorize_person(roster, "10.91.1.197", "张三") == ("张三", "name has no IP registered")
 
 
 def test_authorize_person_lets_loopback_through_and_empty_roster_is_open():
@@ -224,7 +290,7 @@ def test_roster_is_live_and_loopback_owner_always_passes(lib):
         httpd.server_close()
 
 
-def test_meta_says_whether_name_is_needed_without_leaking_roster(lib):
+def test_meta_never_requires_name_even_with_blank_ip_entries(lib):
     cfg, index = lib
     cfg.allow_people = {"陈鋆": "127.0.0.1"}
     httpd = make_server(cfg, index=index, port=0)
@@ -251,7 +317,7 @@ def test_meta_says_whether_name_is_needed_without_leaking_roster(lib):
         client = Client(f"http://127.0.0.1:{port}")
         status, raw = client.get("/api/meta")
         assert status == 200
-        assert json.loads(raw)["name_required"] is True  # 有人没登记 IP，需要报姓名
+        assert json.loads(raw)["name_required"] is False  # 空 IP 条目也不授权，不再要求报姓名
         assert "张三" not in raw
     finally:
         httpd.shutdown()

@@ -18,3 +18,9 @@ __pycache__/
 测试目录/
 
 distribution/
+
+# 会话临时产物（截图/临时构建目录，不进仓）
+.dsh/
+build_new_*/
+dist_new_*/
+

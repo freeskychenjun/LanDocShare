@@ -105,7 +105,7 @@ class RosterWindow:
         )
         ttk.Label(
             frame,
-            text="按 IP 放行；姓名只用于日志好看，部门只用于分组查看。IP 留空 = 这个人要报姓名才放行。",
+            text="按 IP 放行；姓名只用于日志/分组，不能当作访问凭证。IP 必填，空 IP 条目不授权。",
             foreground="#666",
         ).grid(row=1, column=0, sticky="w", pady=(0, 8))
 
@@ -220,7 +220,7 @@ class RosterWindow:
             return
         tree.delete(*tree.get_children())
         for row, (name, ip, dept) in enumerate(roster.sorted_entries(self._roster)):
-            tree.insert("", "end", iid=str(row), values=(name, ip or "（留空）", dept or "—"))
+            tree.insert("", "end", iid=str(row), values=(name, ip or "（未填 IP，不授权）", dept or "—"))
 
     def _selected(self) -> tuple[str, str, str] | None:
         tree = self._tree
@@ -230,7 +230,7 @@ class RosterWindow:
         if not selection:
             return None
         values = tree.item(selection[0], "values")
-        ip = "" if values[1] == "（留空）" else str(values[1])
+        ip = "" if values[1] == "（未填 IP，不授权）" else str(values[1])
         dept = "" if values[2] == "—" else str(values[2])
         return str(values[0]), ip, dept
 
@@ -262,21 +262,21 @@ class RosterWindow:
         frame.pack(fill="both", expand=True)
 
         ttk.Label(frame, text="姓名").grid(row=0, column=0, sticky="w", pady=3)
-        name_var = tk.StringVar(value=name)
+        name_var = tk.StringVar(master=dialog, value=name)
         name_entry = ttk.Entry(frame, textvariable=name_var, width=28)
         name_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
-        ttk.Label(frame, text="IP（可留空）").grid(row=1, column=0, sticky="w", pady=3)
-        ip_var = tk.StringVar(value=ip)
+        ttk.Label(frame, text="IP（必填）").grid(row=1, column=0, sticky="w", pady=3)
+        ip_var = tk.StringVar(master=dialog, value=ip)
         ttk.Entry(frame, textvariable=ip_var, width=28).grid(
             row=1, column=1, sticky="w", padx=(8, 0), pady=3
         )
-        ttk.Label(frame, text="留空表示这个人靠报姓名识别（IP 会变时用）", foreground="#888").grid(
+        ttk.Label(frame, text="姓名只用于日志/分组，不能代替 IP；空 IP 不授权", foreground="#888").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
 
         ttk.Label(frame, text="部门 / 备注（可留空）").grid(row=3, column=0, sticky="w", pady=(8, 3))
-        dept_var = tk.StringVar(value=dept)
+        dept_var = tk.StringVar(master=dialog, value=dept)
         ttk.Entry(frame, textvariable=dept_var, width=28).grid(
             row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 3)
         )

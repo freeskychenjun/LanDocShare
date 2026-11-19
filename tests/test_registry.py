@@ -6,14 +6,13 @@ import json
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
 import pytest
 
 from landoc import __version__
-from landoc.registry import RegistryStore, load_manifest, make_registry_server
+from landoc.registry import RegistryHandler, RegistryStore, load_manifest, make_registry_server
 
 
 @pytest.fixture()
@@ -239,6 +238,13 @@ def test_libraries_filtered_by_cidr_and_legacy_hidden(center):
     register(base, name="开给别处", port=8769, allow_cidrs=["10.91.0.0/16"])
     register(base, name="旧版没上报", port=8770)
     register(base, name="暂停共享", port=8771, allow_cidrs=[])
+    register(
+        base,
+        name="本机被黑名单挡住",
+        port=8772,
+        allow_cidrs=["127.0.0.1"],
+        deny_cidrs=["127.0.0.1"],
+    )
 
     code, libs = get_json(f"{base}/libraries")
     assert code == 200
@@ -246,7 +252,26 @@ def test_libraries_filtered_by_cidr_and_legacy_hidden(center):
     assert [lib["name"] for lib in libs["libraries"]] == ["开给本机"]
     # 授权名单只给中心判断用，不回传给客户端
     assert "allow_cidrs" not in libs["libraries"][0]
+    assert "deny_cidrs" not in libs["libraries"][0]
     assert "allow_people" not in libs["libraries"][0]
+
+
+def test_center_deny_cidrs_blocks_even_allowed_source(tmp_path):
+    store = RegistryStore(tmp_path / "registry.json")
+    httpd = make_registry_server(
+        store, port=0, allow_cidrs=["127.0.0.1"], deny_cidrs=["127.0.0.1"]
+    )
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            get_json(f"{base}/health")
+        assert excinfo.value.code == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
 
 
 def test_health_info_and_landing_only_count_visible(center):
@@ -262,12 +287,11 @@ def test_health_info_and_landing_only_count_visible(center):
     assert "可见库" in page and "隐藏库" not in page
 
 
-def test_landing_page_has_name_form(center):
+def test_landing_page_has_no_name_form(center):
     base, _store = center
-    name = urllib.parse.quote("陈鋆")
-    _code, page = get_text(f"{base}/?name={name}")
-    assert "name='name'" in page
-    assert "value='陈鋆'" in page
+    _code, page = get_text(f"{base}/")
+    assert "按姓名查看" not in page
+    assert "name='name'" not in page
 
 
 def test_store_audience_by_person_and_ip(tmp_path):
@@ -289,11 +313,28 @@ def test_store_audience_by_person_and_ip(tmp_path):
     assert store.libraries(viewer_ip="10.91.1.51") == []
 
 
+def test_store_deny_cidrs_wins_over_allow(tmp_path):
+    store = RegistryStore(tmp_path / "registry.json")
+    store.register(
+        "10.91.1.50",
+        {
+            "name": "整段开放但挡一台",
+            "port": 8768,
+            "allow_cidrs": ["10.91.0.0/16"],
+            "deny_cidrs": ["10.91.1.50/32"],
+        },
+    )
+    assert store.libraries(viewer_ip="10.91.1.50") == []
+    assert [lib["name"] for lib in store.libraries(viewer_ip="10.91.1.51")] == ["整段开放但挡一台"]
+
+
 @pytest.mark.parametrize(
     "extra",
     [
         {"allow_cidrs": "10.91.0.0/16"},
         {"allow_cidrs": ["not-a-cidr"]},
+        {"deny_cidrs": ["not-a-cidr"]},
+        {"deny_cidrs": "10.91.1.50"},
         {"allow_people": ["陈鋆"]},
     ],
 )
@@ -580,6 +621,15 @@ def test_prune_persists_when_entries_really_expire(tmp_path):
     assert payload["libraries"] == []
 
 
+def test_roster_download_defaults_to_local_only(monkeypatch):
+    handler = object.__new__(RegistryHandler)
+    handler.roster_public = False
+    monkeypatch.setattr(handler, "_is_local_request", lambda: False)
+    assert handler._roster_download_allowed() is False
+    handler.roster_public = True
+    assert handler._roster_download_allowed() is True
+
+
 def test_roster_state_is_cached_until_file_changes(tmp_path, monkeypatch):
     """1.4: 一次请求会问好几遍名单，按 mtime+size 缓存，发布后自然失效。"""
     from landoc import registry
@@ -720,3 +770,47 @@ def test_skill_zip_is_cached_until_template_changes(tmp_path, monkeypatch):
     # 换了中心地址也是另一份（config.json 里的地址不同）
     other = registry.build_skill_zip("http://10.91.1.198:8767")
     assert other != third
+
+
+def test_roster_csv_is_local_only_unless_public(tmp_path, monkeypatch):
+    """名单是全院姓名+IP：默认不给网段内其他人下载，显式 --roster-public 才放开。"""
+    store = RegistryStore(tmp_path / "registry.json")
+    roster = tmp_path / "roster.csv"
+    roster.write_text("姓名,IP\n陈鋆,10.91.1.50\n", encoding="utf-8-sig")
+
+    def start(*, public: bool):
+        httpd = make_registry_server(
+            store,
+            port=0,
+            allow_cidrs=["127.0.0.1"],
+            roster_path=roster,
+            roster_public=public,
+        )
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        return httpd, thread, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    # 模拟“别的机器”：来源是 127.0.0.1，但不是中心本机
+    monkeypatch.setattr(RegistryHandler, "_is_local_request", lambda self: False)
+
+    httpd, thread, base = start(public=False)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as info:
+            urllib.request.urlopen(f"{base}/roster.csv", timeout=3)
+        assert info.value.code == 403
+        body = json.loads(info.value.read().decode("utf-8"))
+        assert body["error"] == "roster not public"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+    httpd, thread, base = start(public=True)
+    try:
+        with urllib.request.urlopen(f"{base}/roster.csv", timeout=3) as resp:
+            assert resp.status == 200
+            assert "陈鋆" in resp.read().decode("utf-8-sig")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)

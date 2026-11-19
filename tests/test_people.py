@@ -14,15 +14,15 @@ from landoc.people import (
 
 
 def test_parse_handles_header_bom_comments_and_fullwidth_commas():
-    text = "\ufeff姓名,IP\n# 部门名单\n陈鋆,10.91.1.197\n杨欢，10.91.5.238\n张三,\n\n"
+    text = "\ufeff姓名,IP\n# 部门名单\n陈鋆,10.91.1.197\n杨欢，10.91.5.238\n\n"
     people, warnings = parse_people_csv(text)
-    assert people == {"陈鋆": "10.91.1.197", "杨欢": "10.91.5.238", "张三": ""}
+    assert people == {"陈鋆": "10.91.1.197", "杨欢": "10.91.5.238"}
     assert warnings == []
 
 
 def test_parse_without_header_and_with_tabs():
-    people, warnings = parse_people_csv("李四\t10.91.1.5\n王五\n")
-    assert people == {"李四": "10.91.1.5", "王五": ""}
+    people, warnings = parse_people_csv("李四\t10.91.1.5\n")
+    assert people == {"李四": "10.91.1.5"}
     assert warnings == []
 
 
@@ -47,7 +47,7 @@ def test_load_reads_gbk_csv(tmp_path):
 
 
 def test_dump_roundtrips_through_parse():
-    people = {"陈鋆": "10.91.1.197", "张三": ""}
+    people = {"陈鋆": "10.91.1.197", "张三": "10.91.1.201"}
     again, _ = parse_people_csv(dump_people_csv(people))
     assert again == people
 
@@ -70,11 +70,17 @@ def test_merge_replace_follows_incoming_only():
 
 
 def test_parse_people_table_reads_department_column():
-    text = "姓名,IP,部门\n陈鋆,10.91.1.197,规划一所\n郑泽锋,10.91.1.206,水文所\n老王,,\n"
+    text = "姓名,IP,部门\n陈鋆,10.91.1.197,规划一所\n郑泽锋,10.91.1.206,水文所\n"
     people, departments, warnings = parse_people_table(text)
-    assert people == {"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206", "老王": ""}
+    assert people == {"陈鋆": "10.91.1.197", "郑泽锋": "10.91.1.206"}
     assert departments == {"陈鋆": "规划一所", "郑泽锋": "水文所"}
     assert warnings == []
+
+
+def test_parse_people_table_rejects_blank_ip():
+    text = "姓名,IP,部门\n陈鋆,10.91.1.197,规划一所\n老王,,\n"
+    with pytest.raises(ValueError, match="老王.*IP 为空"):
+        parse_people_table(text)
 
 
 def test_dump_people_csv_adds_department_only_when_present():
@@ -87,7 +93,7 @@ def test_dump_people_csv_adds_department_only_when_present():
 
 
 def test_people_csv_roundtrip_keeps_departments():
-    people = {"陈鋆": "10.91.1.197", "老王": ""}
+    people = {"陈鋆": "10.91.1.197", "老王": "10.91.1.50"}
     departments = {"陈鋆": "规划一所"}
     again_people, again_departments, _ = parse_people_table(
         dump_people_csv(people, departments)

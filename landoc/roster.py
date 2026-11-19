@@ -1,6 +1,6 @@
 """授权名单的读取、校验、拉取与发布（设计 §6.2 / §9 名单分发）。
 
-名单存在 `Config.allow_people`（姓名 → IP，IP 空 = 只认姓名）与
+名单存在 `Config.allow_people`（姓名 → IP，只按 IP 授权；IP 空 = 不授权）与
 `Config.people_departments`（姓名 → 部门/备注，只用于分组查看），授权判定在
 `server.authorize_person`。这里负责"怎么维护这份数据"：
 
@@ -153,18 +153,19 @@ def decode_roster(raw: bytes) -> str:
 
 
 def validate_entry(name: str, ip: str, department: str = "") -> tuple[str, str, str]:
-    """校验"姓名 + IP + 部门"。IP/部门都可以留空；返回规范化后的三元组。"""
+    """校验"姓名 + IP + 部门"。IP 必填（授权只看 IP），部门可留空。"""
     clean_name = (name or "").strip()
     if not clean_name:
         raise ValueError("姓名不能为空")
     if any(ch in clean_name for ch in "=,:;|/\\"):
         raise ValueError("姓名里不能有 = , : ; | / \\ 这些符号")
     clean_ip = (ip or "").strip()
-    if clean_ip:
-        try:
-            clean_ip = str(ipaddress.ip_address(clean_ip))
-        except ValueError:
-            raise ValueError(f"IP 格式不对：{clean_ip}") from None
+    if not clean_ip:
+        raise ValueError("IP 不能为空（姓名不能当作访问凭证）")
+    try:
+        clean_ip = str(ipaddress.ip_address(clean_ip))
+    except ValueError:
+        raise ValueError(f"IP 格式不对：{clean_ip}") from None
     clean_dept = " ".join((department or "").split())
     if any(ch in clean_dept for ch in ",;\t"):
         raise ValueError("部门里不能有 , ; 或制表符")
@@ -231,6 +232,15 @@ def fetch_roster(registry_url: str, timeout: float = 3.0) -> tuple[str, Roster]:
         if exc.code == 404:
             raise RosterError("中心上还没有名单（库主人还没发布）") from None
         if exc.code == 403:
+            detail = ""
+            try:
+                detail = str(json.loads(exc.read().decode("utf-8")).get("error") or "")
+            except (ValueError, OSError):
+                detail = ""
+            if "roster not public" in detail:
+                raise RosterError(
+                    "中心默认只允许本机下载名单；要让库端一键拉取，请中心管理员启动时加 --roster-public"
+                ) from None
             raise RosterError("这台机器不在中心的允许网段里") from None
         raise RosterError(f"拉取名单失败：HTTP {exc.code}") from None
     except (urllib.error.URLError, OSError, TimeoutError) as exc:

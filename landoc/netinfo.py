@@ -45,6 +45,16 @@ def cidr_allowed(ip: str, cidrs) -> bool:
     return False
 
 
+def cidr_blocked(ip: str, cidrs) -> bool:
+    """来源 IP 是否命中黑名单；空清单 = 没人被挡。
+
+    与 `cidr_allowed` 的"空清单 = 拒绝"相反：黑名单为空表示不额外拒绝任何来源。
+    """
+    if not cidrs:
+        return False
+    return cidr_allowed(ip, cidrs)
+
+
 def lan_ip() -> str:
     """让系统帮我们选一张有内网路由的网卡，取出它的地址（不真的发包）。"""
     try:

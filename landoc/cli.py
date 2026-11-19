@@ -101,6 +101,17 @@ def _snippet_chars(raw: str) -> int:
     return value
 
 
+def _parse_optional_cidrs(text: str | None) -> tuple[list[str] | None, str | None]:
+    """解析可选网段参数：None=不改，空串/“无”=清空，其余交给向导的 parse_cidrs。"""
+    if text is None:
+        return None, None
+    if not str(text).strip() or str(text).strip().lower() in {"none", "无", "清空"}:
+        return [], None
+    from landoc.wizard import parse_cidrs
+
+    return parse_cidrs(str(text))
+
+
 def _cmd_init(args) -> int:
     lib_dir = Path(args.lib_dir)
     lib_dir.mkdir(parents=True, exist_ok=True)
@@ -136,6 +147,12 @@ def _cmd_init(args) -> int:
             print(f"[错误] {error}", file=sys.stderr)
             return 2
         cfg.allow_cidrs = cidrs
+    deny, deny_error = _parse_optional_cidrs(getattr(args, "deny_cidrs", None))
+    if deny_error:
+        print(f"[错误] {deny_error}", file=sys.stderr)
+        return 2
+    if deny is not None:
+        cfg.deny_cidrs = deny
     if args.registry_url is not None:
         cfg.registry_url = args.registry_url.strip()
     cfg.save()
@@ -143,6 +160,8 @@ def _cmd_init(args) -> int:
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
     print(f"     共享目录 {len(cfg.folders)} 个：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"     允许网段：{', '.join(cfg.allow_cidrs)}")
+    if cfg.deny_cidrs:
+        print(f"     拒绝网段：{', '.join(cfg.deny_cidrs)}")
     print(f"     存储策略：{_storage_policy(cfg)}")
     if cfg.registry_url:
         print(f"     登记中心：{cfg.registry_url}")
@@ -208,6 +227,7 @@ def _cmd_status(args) -> int:
     print(f"文档数：{stats['total']}")
     print(f"共享目录：{', '.join(str(f) for f in cfg.folders) or '（未指定）'}")
     print(f"允许网段：{', '.join(cfg.allow_cidrs)}")
+    print(f"拒绝网段：{', '.join(cfg.deny_cidrs) if cfg.deny_cidrs else '（不额外拒绝）'}")
     print(f"允许名单：{_people_summary(cfg)}")
     print(f"存储策略：{_storage_policy(cfg)}")
     print(f"登记中心：{cfg.registry_url or '（未登记，同事只能靠手动地址发现）'}")
@@ -244,7 +264,7 @@ def _people_summary(cfg) -> str:
     extra = f"，{depts} 个部门" if depts else ""
     if with_ip == len(people):
         return f"{len(people)} 人，按 IP 放行（姓名仅备注{extra}）"
-    return f"{len(people)} 人，按 IP 放行{extra}；其中 {len(people) - with_ip} 人没登记 IP、需报姓名"
+    return f"{len(people)} 人，按 IP 放行{extra}；其中 {len(people) - with_ip} 人没登记 IP、不授权"
 
 
 def _cmd_people(args) -> int:
@@ -294,7 +314,7 @@ def _cmd_people(args) -> int:
         book.people[_name] = clean_ip
         if dept:
             book.departments[_name] = dept
-        print(f"[名单] {_name} → {clean_ip or '（不登记 IP，需报姓名）'}")
+        print(f"[名单] {_name} → {clean_ip}")
         changed = True
 
     if args.dept:
@@ -449,6 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="允许访问的网段，逗号分隔（默认 10.91.0.0/16；想只给本院就填 10.91.1.0/24）；不给则沿用现有配置",
     )
     init.add_argument(
+        "--deny-cidrs",
+        default=None,
+        metavar="CIDR[,CIDR…]",
+        help="显式拒绝的网段，逗号分隔（优先于允许网段；留空或填“无”表示清空）；不给则沿用现有配置",
+    )
+    init.add_argument(
         "--store-content",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -511,7 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
     people_cmd.add_argument("--lib-dir", required=True)
     people_cmd.add_argument("--csv", help="从 CSV 导入名单（列：姓名,IP,部门，部门可省，可有表头）")
     people_cmd.add_argument("--replace", action="store_true", help="以 CSV/中心为准整体替换，而不是合并")
-    people_cmd.add_argument("--set", metavar="姓名=IP", help="新增/修改一条；IP 留空表示必须报姓名")
+    people_cmd.add_argument("--set", metavar="姓名=IP", help="新增/修改一条；IP 必填（姓名不能当访问凭证）")
     people_cmd.add_argument(
         "--dept", metavar="姓名=部门", help="给某人标部门/备注（部门留空表示清掉）"
     )

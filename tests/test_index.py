@@ -19,6 +19,43 @@ def test_build_match_query_quotes_and_escapes():
     assert build_match_query('say "hi"') == '"say" AND "hi"'
 
 
+def test_old_database_gets_withdrawn_column(tmp_path: Path):
+    """0.2.x 旧索引没有 withdrawn 列，打开时要自动补上，不能要求用户重建库。"""
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE documents (
+               rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+               rel_path TEXT UNIQUE NOT NULL,
+               title TEXT NOT NULL,
+               ext TEXT,
+               source_path TEXT,
+               src_size INTEGER NOT NULL,
+               src_mtime REAL NOT NULL,
+               content TEXT NOT NULL,
+               indexed_at TEXT
+           )"""
+    )
+    conn.execute(
+        "INSERT INTO documents (rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at) "
+        "VALUES ('a.md', '旧文档', 'docx', '/s/a.docx', 1, 1.0, '旧内容', '2026-01-01 00:00:00')"
+    )
+    conn.execute(
+        "CREATE VIRTUAL TABLE documents_fts USING fts5("
+        "title, content, content='documents', content_rowid='rowid', tokenize='trigram')"
+    )
+    conn.execute("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')")
+    conn.commit()
+    conn.close()
+
+    idx = Index(db)
+    assert idx.stats()["total"] == 1
+    idx.mark_withdrawn("a.md")
+    idx.commit()
+    assert idx.stats(include_withdrawn=False)["total"] == 0
+    assert idx.stats()["total"] == 1
+
+
 def test_short_query_uses_like_fallback(tmp_path):
     idx = Index(tmp_path / "l.db")
     idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
@@ -72,6 +109,30 @@ def test_dir_filter_limits_search(idx: Index):
     idx.upsert("成果/2020年/b.md", "乐平", "docx", "/s/b.docx", 10, 1.0, "乐平水利枢纽")
     rows, _ = idx.search("乐平", dir_filter="成果/2019年")
     assert len(rows) == 1 and rows[0]["path"].startswith("成果/2019年")
+
+
+def test_withdrawn_docs_are_owner_only(idx: Index, tmp_path: Path):
+    """撤回共享只隐藏元数据，不删索引；主人本机仍能检索。"""
+    idx.upsert("成果/乐平.md", "乐平", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽")
+    idx.upsert("成果/溪霞.md", "溪霞", "docx", "/s/b.docx", 10, 1.0, "溪霞水库")
+    md = tmp_path / "md" / "成果" / "乐平.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("| a | b |\n|---|---|\n| 1 | 2 |\n", encoding="utf-8")
+    idx.mark_withdrawn("成果/乐平.md")
+    idx.commit()
+
+    assert idx.stats(include_withdrawn=False)["total"] == 1
+    assert idx.stats()["total"] == 2
+    assert idx.search("乐平", include_withdrawn=False)[0] == []
+    assert [r["title"] for r in idx.search("乐平")[0]] == ["乐平"]
+    assert idx.tree("", include_withdrawn=False)[0]["count"] == 1
+    assert [r["title"] for r in idx.list_dir("成果", include_withdrawn=False)] == ["溪霞"]
+    assert [r["title"] for r in idx.recent(include_withdrawn=False)] == ["溪霞"]
+    assert idx.tables("成果/乐平.md", include_withdrawn=False) is None
+    assert idx.tables("成果/乐平.md") is not None
+
+    idx.mark_withdrawn("成果/乐平.md", False)
+    assert idx.stats(include_withdrawn=False)["total"] == 2
 
 
 def test_tables_from_disk_markdown(idx: Index, tmp_path: Path):

@@ -31,8 +31,14 @@ class StubIndex:
                 src_size=src_size,
                 src_mtime=src_mtime,
                 content=content,
+                withdrawn=0,
             )
         )
+
+    def mark_withdrawn(self, rel_path, withdrawn=True):
+        for row in self.rows:
+            if row["rel_path"] == rel_path:
+                row["withdrawn"] = 1 if withdrawn else 0
 
     def commit(self):
         pass
@@ -308,17 +314,28 @@ def test_removed_source_keeps_a_copy_in_the_library(cfg, docs_dir, flat_opc, mon
 
 
 def test_removing_a_folder_from_shares_withdraws_its_docs(cfg, docs_dir, flat_opc, monkeypatch):
-    """文件夹从 config.folders 里移掉 = 明确撤回：md 与索引都得清掉（授权也一并收回）。"""
+    """文件夹从 config.folders 里移掉 = 撤回共享，但库不删：md/索引都留给主人。"""
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
     index = StubIndex()
     pipeline.run(cfg, index=index)
     assert index.rows
+    md = Path(cfg.md_dir) / "成果" / "plain.docx.md"
+    assert md.is_file()
+
     cfg.folders = []
     report = pipeline.run(cfg, index=index)
-    assert not (Path(cfg.md_dir) / "成果" / "plain.docx.md").exists()
-    assert index.rows == []
+    assert md.is_file()  # 主人自己还能检索
+    assert len(index.rows) == 2
+    assert all(row["withdrawn"] == 1 for row in index.rows)
     assert list(report.skipped) == ["withdrawn"]  # 只有撤回这一种跳过，两篇都算撤回
     assert report.skipped["withdrawn"] == 2
+
+    # 文件夹重新加回共享：撤回标记撤掉，文档恢复对同事可见
+    cfg.folders = [docs_dir]
+    again = pipeline.run(cfg, index=index)
+    assert md.is_file()
+    assert all(row["withdrawn"] == 0 for row in index.rows)
+    assert again.skipped.get("unchanged") == 2
 
 
 def test_unreachable_folder_does_not_wipe_the_library(cfg, docs_dir, flat_opc, monkeypatch):

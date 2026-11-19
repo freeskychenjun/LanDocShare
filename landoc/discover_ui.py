@@ -115,16 +115,16 @@ class DiscoverWindow:
             table, columns=columns, show="headings", selectmode="browse", height=12
         )
         headings = {
-            "owner": ("库主人", 90, "w"),
-            "lib": ("库名", 210, "w"),
-            "docs": ("篇数", 56, "e"),
-            "status": ("状态", 64, "center"),
-            "heartbeat": ("上次心跳", 110, "center"),
-            "url": ("地址", 300, "w"),
+            "owner": ("库主人", 90),
+            "lib": ("库名", 210),
+            "docs": ("篇数", 56),
+            "status": ("状态", 64),
+            "heartbeat": ("上次心跳", 110),
+            "url": ("地址", 300),
         }
-        for name, (label, width, anchor) in headings.items():
-            tree.heading(name, text=label)
-            tree.column(name, width=width, anchor=anchor, stretch=name in {"lib", "url"})
+        for name, (label, width) in headings.items():
+            tree.heading(name, text=label, anchor="center")
+            tree.column(name, width=width, anchor="center", stretch=name in {"lib", "url"})
         tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")

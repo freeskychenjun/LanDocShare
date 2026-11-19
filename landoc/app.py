@@ -557,6 +557,7 @@ class LibraryApp:
             "version": __version__,
             # 中心按这两项决定"谁能看到这个库"；没上报的中心会把库藏起来。
             "allow_cidrs": list(self.cfg.allow_cidrs or []),
+            "deny_cidrs": list(getattr(self.cfg, "deny_cidrs", []) or []),
             "allow_people": dict(self.cfg.allow_people or {}),
         }
 

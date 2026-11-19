@@ -35,6 +35,8 @@ _PHASE_TEXT = {
     "stopped": "已停止",
 }
 
+_HINT_TEXT = "关掉这个窗口只是隐藏（双击托盘图标可再打开）；退出程序请用托盘菜单的“退出”。"
+
 
 def phase_text(status: AppStatus) -> str:
     """第一行只讲"在干什么"，篇数/时间另有专行，别重复。"""
@@ -58,6 +60,95 @@ def phase_text(status: AppStatus) -> str:
 def update_button_text(status: AppStatus) -> str:
     """「立即更新」在建库时变成「停止建库」：手动触发的建库可能跑很久，得能停。"""
     return "停止建库" if status.phase == "converting" else "立即更新"
+
+
+def center_position(width: int, height: int, area: tuple[int, int, int, int]) -> tuple[int, int]:
+    """把 `width×height` 的窗口摆到 `area=(left, top, right, bottom)` 的正中间。
+
+    纯函数：坐标算错在界面上很难发现，所以它单独可测。窗口比屏幕还大时贴左上角，
+    别算出负坐标把标题栏顶到屏幕外（那种窗口拖不回来）。
+    """
+    left, top, right, bottom = area
+    x = left + max(0, (right - left - width) // 2)
+    y = top + max(0, (bottom - top - height) // 2)
+    return x, y
+
+
+def _monitor_work_area() -> tuple[int, int, int, int] | None:
+    """光标所在显示器的工作区（已去掉任务栏）；问不到就返回 None。
+
+    用 `rcWork` 而不是整屏：1080 高的屏幕上任务栏占 40 px，按整屏居中会让窗口
+    底边压在任务栏底下。多显示器时跟着鼠标走，否则第二块屏上的用户永远看不到窗口。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Rect(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class _MonitorInfo(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", ctypes.c_ulong),
+                ("rcMonitor", _Rect),
+                ("rcWork", _Rect),
+                ("dwFlags", ctypes.c_ulong),
+            ]
+
+        user32 = ctypes.windll.user32
+        point = wintypes.POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            raise OSError("GetCursorPos 失败")
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        # 2 = MONITOR_DEFAULTTONEAREST：鼠标不在任何显示器上时给最近的那块
+        monitor = user32.MonitorFromPoint(wintypes.POINT(point.x, point.y), 2)
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(_MonitorInfo)
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            raise OSError("GetMonitorInfoW 失败")
+        rect = info.rcWork
+        if rect.right <= rect.left or rect.bottom <= rect.top:
+            raise OSError("工作区为空")
+        return (rect.left, rect.top, rect.right, rect.bottom)
+    except Exception:  # noqa: BLE001 - 拿不到就退回 Tk 的整屏
+        return None
+
+
+def work_area(root) -> tuple[int, int, int, int]:
+    """可用的摆放区域：优先光标所在显示器的工作区，退路是 Tk 报的整屏。"""
+    area = _monitor_work_area()
+    if area is not None:
+        return area
+    return (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+
+
+def _window_size(root) -> tuple[int, int]:
+    """窗口宽高：已显示用实际值，还没显示就用 `geometry()` 里写下的那个数。"""
+    root.update_idletasks()
+    width, height = root.winfo_width(), root.winfo_height()
+    if width > 1 and height > 1:
+        return width, height
+    try:
+        # 形如 "580x220+670+410"；只要前半截
+        size = root.geometry().split("+", 1)[0]
+        width_text, height_text = size.split("x")
+        return max(int(width_text), 1), max(int(height_text), 1)
+    except Exception:  # noqa: BLE001 - 解析不出就按布局要求的大小
+        return max(root.winfo_reqwidth(), 1), max(root.winfo_reqheight(), 1)
+
+
+def center_window(root) -> None:
+    """把窗口挪到屏幕正中：托盘「显示状态窗口」每次打开都回到中间，不用满屏找。"""
+    width, height = _window_size(root)
+    x, y = center_position(width, height, work_area(root))
+    root.geometry(f"+{x}+{y}")
 
 
 def version_text(status: AppStatus) -> str:
@@ -215,9 +306,7 @@ class StatusPanel:
         self._root = root
         root.title(f"LanDocShare · {self.cfg.name}")
         rows = status_rows(self.cfg, self.app.status, lan_ip=self.lan_ip or "127.0.0.1")
-        height = min(520, 340 + 24 * len(rows))
-        root.geometry(f"580x{height}")
-        root.minsize(520, 300)
+        root.minsize(520, 280)
         root.protocol("WM_DELETE_WINDOW", root.withdraw)
         icon = _icon_path()
         if icon is not None:
@@ -227,25 +316,25 @@ class StatusPanel:
                 pass
         root.withdraw()
 
-        frame = ttk.Frame(root, padding=16)
+        frame = ttk.Frame(root, padding=14)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
 
         title = ttk.Label(frame, text=f"LanDocShare · {self.cfg.name}", font=("Microsoft YaHei UI", 13, "bold"))
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
 
         row = 1
         for item in rows:
             ttk.Label(frame, text=item.label, foreground="#666").grid(
-                row=row, column=0, sticky="w", pady=2
+                row=row, column=0, sticky="w", pady=1
             )
             value = ttk.Label(frame, text=item.value)
-            value.grid(row=row, column=1, columnspan=2, sticky="w", padx=(10, 0), pady=2)
+            value.grid(row=row, column=1, columnspan=2, sticky="w", padx=(10, 0), pady=1)
             self._labels[item.label] = value
             row += 1
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=row, column=0, columnspan=3, sticky="w", pady=(16, 0))
+        buttons.grid(row=row, column=0, columnspan=3, sticky="w", pady=(12, 0))
         ttk.Button(buttons, text="打开检索页", command=self._open_page).pack(side="left")
         self._update_button = ttk.Button(buttons, text="立即更新", command=self._update_now)
         self._update_button.pack(side="left", padx=6)
@@ -257,22 +346,25 @@ class StatusPanel:
 
         # 升级按钮单独一行：有新版时它是这里最该点的按钮，挤在第一行会被截断
         actions = ttk.Frame(frame)
-        actions.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        actions.grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._upgrade_button = ttk.Button(actions, text="检查更新", command=self._upgrade)
         self._upgrade_button.pack(side="left")
         ttk.Button(actions, text="可访问的库", command=self._open_access).pack(
             side="left", padx=6
         )
 
-        self._copy_hint = ttk.Label(frame, text="", foreground="#2f7d32")
-        self._copy_hint.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-
         hint = ttk.Label(
             frame,
-            text="关掉这个窗口只是隐藏（双击托盘图标可再打开）；退出程序请用托盘菜单的“退出”。",
+            text=_HINT_TEXT,
             foreground="#888",
         )
-        hint.grid(row=row + 3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        hint.grid(row=row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self._hint = hint
+
+        # 先让 Tk 按内容算出自然高度，再固定宽度；否则会留下窗外空白。
+        root.update_idletasks()
+        width = max(580, root.winfo_reqwidth())
+        root.geometry(f"{width}x{root.winfo_reqheight()}")
 
         self._pump()
         root.mainloop()
@@ -287,6 +379,8 @@ class StatusPanel:
             while True:
                 command, _payload = self._queue.get_nowait()
                 if command == "show":
+                    # 先摆正中再显示：浮动窗口每次出现在屏幕中心，不用去边角找
+                    center_window(root)
                     root.deiconify()
                     root.lift()
                     root.focus_force()
@@ -398,11 +492,14 @@ class StatusPanel:
         address = f"http://{self.lan_ip or '127.0.0.1'}:{status.port}/"
         root.clipboard_clear()
         root.clipboard_append(address)
-        self._copy_hint.configure(text=f"已复制：{address}")
+        self._hint.configure(text=f"已复制：{address}", foreground="#2f7d32")
 
         def clear() -> None:
             try:
-                self._copy_hint.configure(text="")
+                self._hint.configure(
+                    text=_HINT_TEXT,
+                    foreground="#888",
+                )
             except Exception:  # noqa: BLE001 - 窗口已关
                 pass
 

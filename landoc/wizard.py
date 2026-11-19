@@ -12,7 +12,6 @@ import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog
 
 from landoc import probe
 from landoc.config import Config
@@ -104,7 +103,7 @@ def validate_folder(path: Path) -> str | None:
 def validate_person(name: str, ip: str, cidrs: list[str] | None = None) -> str | None:
     """名单一项的校验；返回不能加的原因，能加返回 None。
 
-    IP 可以留空——那等于"这个人用任意来源 IP 都行，但必须报姓名"；
+    IP 必填——授权只看来源 IP，姓名只用于日志/分组，知道姓名不能代替 IP；
     填了就必须是合法 IPv4 且落在允许的网段里，否则他永远连不上。
     """
     clean = (name or "").strip()
@@ -114,7 +113,7 @@ def validate_person(name: str, ip: str, cidrs: list[str] | None = None) -> str |
         return "姓名里不要带 = , : ; | / \\ 之类的分隔符"
     address = (ip or "").strip()
     if not address:
-        return None
+        return "IP 不能为空（姓名不能当作访问凭证）"
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError:
@@ -231,7 +230,10 @@ def run_wizard(
 
     ttk.Label(frame, text="库名称").grid(row=0, column=0, sticky="w")
     default_name = current.name if current is not None else f"{Path.home().name}的资料库"
-    name_var = tk.StringVar(value=default_name)
+    # 必须显式绑定 master=root：向导可能从正在运行的托盘/状态窗口里打开，
+    # 此时进程里已经有一个 Tk 根窗口；不写 master 的 StringVar 会绑到那个
+    # 旧根上，新向导里的输入框/单选钮就会显示空白、没有选中项。
+    name_var = tk.StringVar(master=root, value=default_name)
     ttk.Entry(frame, textvariable=name_var, width=42).grid(row=0, column=1, columnspan=2, sticky="we", pady=4)
 
     ttk.Label(frame, text="共享哪些文件夹").grid(row=1, column=0, sticky="nw", pady=(8, 0))
@@ -305,7 +307,7 @@ def run_wizard(
             default_scope = SCOPE_PEOPLE
         elif list(current.allow_cidrs) == SCOPE_CIDRS[SCOPE_LOCAL]:
             default_scope = SCOPE_LOCAL
-    scope_var = tk.StringVar(value=default_scope)
+    scope_var = tk.StringVar(master=root, value=default_scope)
     ttk.Radiobutton(frame, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN).grid(
         row=3, column=1, columnspan=2, sticky="w"
     )
@@ -322,150 +324,51 @@ def run_wizard(
         if current is not None and list(current.allow_cidrs) != SCOPE_CIDRS[SCOPE_LOCAL]
         else SCOPE_CIDRS[SCOPE_LAN]
     )
-    cidr_var = tk.StringVar(value=default_cidrs.replace("、", ", "))
+    cidr_var = tk.StringVar(master=root, value=default_cidrs.replace("、", ", "))
     cidr_entry = ttk.Entry(frame, textvariable=cidr_var, width=28)
     cidr_entry.grid(row=6, column=1, sticky="w", pady=(6, 0))
     ttk.Label(frame, text="多个用逗号分隔", foreground="#666").grid(
         row=6, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
     )
 
-    people_frame = ttk.Frame(frame)
-    people_frame.grid(row=7, column=1, columnspan=2, sticky="we", pady=(4, 0))
+    scope_hint = ttk.Label(frame, text="", foreground="#666", wraplength=390, justify="left")
+    scope_hint.grid(row=7, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
-    people_tree = ttk.Treeview(
-        people_frame, columns=("name", "ip", "dept"), show="headings", height=3
-    )
-    people_tree.heading("name", text="姓名")
-    people_tree.heading("ip", text="IP（可留空）")
-    people_tree.heading("dept", text="部门/备注")
-    people_tree.column("name", width=90)
-    people_tree.column("ip", width=120)
-    people_tree.column("dept", width=120)
-    people_tree.grid(row=0, column=0, columnspan=4, sticky="we")
-    if current is not None:
-        for person, address in current.allow_people.items():
-            department = (getattr(current, "people_departments", None) or {}).get(person, "")
-            people_tree.insert("", "end", values=(person, address, department))
-
-    person_name = tk.StringVar()
-    person_ip = tk.StringVar()
-    person_dept = tk.StringVar()
-    ttk.Label(people_frame, text="姓名").grid(row=1, column=0, sticky="w", pady=(6, 0))
-    person_name_entry = ttk.Entry(people_frame, textvariable=person_name, width=8)
-    person_name_entry.grid(row=1, column=1, sticky="w", pady=(6, 0))
-    ttk.Label(people_frame, text="IP").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=(6, 0))
-    person_ip_entry = ttk.Entry(people_frame, textvariable=person_ip, width=12)
-    person_ip_entry.grid(row=1, column=3, sticky="w", pady=(6, 0))
-    ttk.Label(people_frame, text="部门").grid(row=2, column=0, sticky="w", pady=(4, 0))
-    person_dept_entry = ttk.Entry(people_frame, textvariable=person_dept, width=8)
-    person_dept_entry.grid(row=2, column=1, sticky="w", pady=(4, 0))
-    ttk.Label(people_frame, text="（都可留空）", foreground="#888").grid(
-        row=2, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=(4, 0)
-    )
-
-    def current_cidrs() -> list[str]:
-        cidrs, error = parse_cidrs(cidr_var.get())
-        return [] if error else cidrs
-
-    def add_person() -> None:
-        label = person_name.get().strip()
-        address = person_ip.get().strip()
-        department = _clean_department(person_dept.get())
-        problem = validate_person(label, address, current_cidrs() or SCOPE_CIDRS[SCOPE_PEOPLE])
-        if problem:
-            messagebox.showwarning("名单没加进去", problem)
-            return
-        existing = {people_tree.item(item, "values")[0] for item in people_tree.get_children()}
-        if label in existing:
-            messagebox.showwarning("名单没加进去", f"“{label}”已经在名单里了")
-            return
-        people_tree.insert("", "end", values=(label, address, department))
-        person_name.set("")
-        person_ip.set("")
-        person_dept.set("")
-
-    def remove_person() -> None:
-        for item in people_tree.selection():
-            people_tree.delete(item)
-
-    person_name_entry.bind("<Return>", lambda event: add_person())
-    person_ip_entry.bind("<Return>", lambda event: add_person())
-    person_dept_entry.bind("<Return>", lambda event: add_person())
-    add_person_button = ttk.Button(people_frame, text="加入名单", command=add_person)
-    add_person_button.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
-    remove_person_button = ttk.Button(people_frame, text="移除选中", command=remove_person)
-    remove_person_button.grid(row=3, column=2, columnspan=2, sticky="w", pady=(6, 0))
-
-    def import_csv() -> None:
-        from landoc.people import load_people_table
-
-        path = filedialog.askopenfilename(
-            title="导入名单（CSV：姓名,IP,部门）",
-            filetypes=[("CSV 名单", "*.csv"), ("所有文件", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            incoming, departments, warnings = load_people_table(Path(path))
-        except (OSError, ValueError) as exc:
-            messagebox.showwarning("名单没导入", str(exc))
-            return
-        existing = {
-            str(people_tree.item(item, "values")[0]).strip(): item
-            for item in people_tree.get_children()
-        }
-        for name, address in incoming.items():
-            values = (name, address, departments.get(name, ""))
-            if name in existing:
-                people_tree.item(existing[name], values=values)
+    def sync_scope_state() -> None:
+        scope = scope_var.get()
+        cidr_entry.configure(state="disabled" if scope == SCOPE_LOCAL else "normal")
+        if scope == SCOPE_PEOPLE:
+            if current is None:
+                text = (
+                    "首次建库先选「公司内网」或「仅本机」。\n"
+                    "建好后在「授权名单…」窗口添加，再回来改「仅指定名单」。"
+                )
+            elif current.allow_people:
+                text = (
+                    f"名单：已登记 {len(current.allow_people)} 人。\n"
+                    "在「授权名单…」窗口维护，这里不重复编辑。"
+                )
             else:
-                people_tree.insert("", "end", values=values)
-        extra = f"（{len(warnings)} 条提示）" if warnings else ""
-        dept_count = len({*departments.values()}) if departments else 0
-        dept_note = f"，{dept_count} 个部门" if dept_count else ""
-        messagebox.showinfo(
-            "名单已导入",
-            f"共 {len(incoming)} 人{dept_note}{extra}\n\n选「仅指定名单」后保存才生效。",
-        )
-
-    import_button = ttk.Button(people_frame, text="从 CSV 导入…", command=import_csv)
-    import_button.grid(row=4, column=0, columnspan=4, sticky="w", pady=(6, 0))
-
-    def sync_people_state() -> None:
-        enabled = scope_var.get() == SCOPE_PEOPLE
-        state = "normal" if enabled else "disabled"
-        for widget in (
-            person_name_entry,
-            person_ip_entry,
-            person_dept_entry,
-            add_person_button,
-            remove_person_button,
-            import_button,
-        ):
-            widget.configure(state=state)
-        people_tree.configure(selectmode="extended" if enabled else "none")
-        people_hint.configure(
-            text=(
-                "填了 IP 的机器打开网页就能查；没填 IP 的人（IP 会变）要报姓名才放行。"
-                if enabled
-                else "选了“仅指定名单”才会生效；现在这份名单不会挡住任何人。"
-            )
-        )
-        cidr_entry.configure(state="disabled" if scope_var.get() == SCOPE_LOCAL else "normal")
+                text = (
+                    "名单：还没有登记任何人。\n"
+                    "先在「授权名单…」窗口添加，再回来选「仅指定名单」。"
+                )
+        elif scope == SCOPE_LOCAL:
+            text = "仅本机：只有这台电脑能查；同事打不开。"
+        else:
+            text = "公司内网：网段内、且不在拒绝网段里的机器都能查；不启用姓名名单。"
+        scope_hint.configure(text=text)
 
     for radio in frame.winfo_children():
         if isinstance(radio, ttk.Radiobutton):
-            radio.configure(command=sync_people_state)
-
-    people_hint = ttk.Label(frame, text="", foreground="#a15c00")
-    people_hint.grid(row=8, column=1, columnspan=2, sticky="w")
+            radio.configure(command=sync_scope_state)
 
     note = (
         "索引与 md 副本都是文档全文明文，只落在本机；\n"
         "对外只提供命中片段与表格，不提供全文或下载。"
     )
     ttk.Label(frame, text=note, foreground="#666").grid(
-        row=9, column=0, columnspan=3, sticky="w", pady=(10, 4)
+        row=8, column=0, columnspan=3, sticky="w", pady=(10, 4)
     )
 
     def confirm() -> None:
@@ -476,18 +379,15 @@ def run_wizard(
         people: dict[str, str] = {}
         departments: dict[str, str] = {}
         if scope_var.get() == SCOPE_PEOPLE:
-            for item in people_tree.get_children():
-                person, address, department = people_tree.item(item, "values")
-                clean_person = str(person).strip()
-                people[clean_person] = str(address).strip()
-                clean_dept = _clean_department(str(department))
-                if clean_dept:
-                    departments[clean_person] = clean_dept
-            if not people:
+            if current is None or not current.allow_people:
                 messagebox.showwarning(
-                    "名单是空的", "选了“仅指定名单”，但一个人都没加——这样谁都查不了。"
+                    "名单还是空的",
+                    "「仅指定名单」需要先在库软件窗口或托盘菜单「授权名单…」里添加人员。\n\n"
+                    "首次建库请先选「公司内网」或「仅本机」，建好后再去添加。",
                 )
                 return
+            people = dict(current.allow_people)
+            departments = dict(current.people_departments)
         tool = _find_acrobat_tool_dir()
         cidrs = None
         if scope_var.get() != SCOPE_LOCAL:
@@ -508,13 +408,13 @@ def run_wizard(
         root.destroy()
 
     actions = ttk.Frame(frame)
-    actions.grid(row=10, column=0, columnspan=3, sticky="e", pady=(12, 0))
+    actions.grid(row=9, column=0, columnspan=3, sticky="e", pady=(12, 0))
     ttk.Button(actions, text="取消", command=root.destroy).grid(row=0, column=0, padx=4)
     ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
         row=0, column=1
     )
 
-    sync_people_state()
+    sync_scope_state()
     poll_estimate()
     kick_estimate()
     root.mainloop()

@@ -2,8 +2,8 @@
 
 安全边界（设计文档 §6.4/§6.5）：
 - 只输出片段与表格，**永不输出全文、下载、source_path**；
-- 来源网段用 CIDR 白名单判定（默认 10.91.0.0/16），越权 403；
-- 可选"姓名 → IP"名单，姓名缺失/未登记 401；
+- 来源网段用 CIDR 白名单判定（默认 10.91.0.0/16），越权 403；黑名单 deny_cidrs 优先；
+- 可选"姓名 → IP"名单：只按 IP 放行，姓名不授权（仅审计/一致性校验）；
 - 每 IP 滑动窗口限流（默认 60 次/分钟），在认证之前；
 - 每次请求写一行 JSONL 审计。
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from landoc import __version__
 from landoc.index import MAX_LIMIT, Index
-from landoc.netinfo import cidr_allowed
+from landoc.netinfo import cidr_allowed, cidr_blocked, local_ips
 from landoc.ratelimit import DEFAULT_RATE, RateLimiter
 
 MAX_QUERY_LEN = 200
@@ -108,18 +108,22 @@ class Audit:
             pass
 
 
-def _ip_allowed(ip: str, allow_cidrs) -> bool:
-    # 空列表 = 暂停共享 = 拒绝所有来源（绝不能反过来变成"全网放行"）；判定在 netinfo 里只有一份
+def _ip_allowed(ip: str, allow_cidrs, deny_cidrs=None) -> bool:
+    # 黑名单优先：即使来源在 allow_cidrs 里，命中 deny_cidrs 也一律拒绝。
+    # 空 allow 仍是"暂停共享 = 拒绝所有来源"，绝不能反过来变成"全网放行"。
+    if cidr_blocked(ip, deny_cidrs):
+        return False
     return cidr_allowed(ip, allow_cidrs)
 
 
 def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | None, str | None]:
-    """名单授权：认 IP 为主，姓名只用来认人（可省）。
+    """名单授权：只按 IP 放行，姓名不授予权限（仅审计/一致性校验）。
 
-    名单非空时三种情况：
-    - 来源 IP 命中名单里某条的 IP：直接放行，审计记那条的姓名（姓名是备注，不参与校验）；
+    名单非空时：
+    - 来源 IP 命中名单里某条的 IP：直接放行，审计记那条的姓名；
     - 报了姓名且该姓名登记了 IP：IP 必须一致（防冒名），否则 401；
-    - 报了姓名但该姓名没登记 IP：视为"IP 会变、必须报姓名"，放行。
+    - 报了姓名但该姓名没登记 IP：拒绝（空 IP 条目不授权，知道姓名也进不来）。
+    - 不报姓名：只按 IP 匹配；不在名单里则 401。
 
     返回 (审计用姓名, 拒绝原因)；拒绝原因非空表示不通过。
     """
@@ -136,7 +140,9 @@ def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | Non
         if asked not in roster:
             return asked, "name not registered"
         expected = roster[asked]
-        if expected and expected != ip:
+        if not expected:
+            return asked, "name has no IP registered"
+        if expected != ip:
             return asked, "ip mismatch for name"
         return asked, None
 
@@ -150,8 +156,8 @@ _LOOPBACK_IPS = frozenset({"127.0.0.1", "::1"})
 
 
 def _people_need_name(people) -> bool:
-    """名单里有人没登记 IP（只能靠报姓名识别）时才需要前端提示输入姓名。"""
-    return any(not str(ip or "").strip() for ip in (people or {}).values())
+    """姓名不再是访问凭证；保留字段只为兼容旧客户端，恒为 False。"""
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -196,7 +202,11 @@ class Handler(BaseHTTPRequestHandler):
             self._record(ip, params.get("name"), route, 429)
             return self._error(429, "rate limit exceeded")
 
-        if not _ip_allowed(ip, getattr(self.config, "allow_cidrs", None)):
+        if not _ip_allowed(
+            ip,
+            getattr(self.config, "allow_cidrs", None),
+            getattr(self.config, "deny_cidrs", None),
+        ):
             self._record(ip, params.get("name"), route, 403)
             return self._error(403, "cidr not allowed")
 
@@ -212,7 +222,12 @@ class Handler(BaseHTTPRequestHandler):
             self._record(ip, name, route, 500, error=str(exc)[:200])
             self._error(500, f"internal error: {exc.__class__.__name__}")
 
+    def _is_owner(self, ip: str) -> bool:
+        """来源是不是这台机器自己：只有主人能看到已撤回共享的文档。"""
+        return ip in local_ips()
+
     def _dispatch(self, route: str, params: dict, ip: str, name: str | None) -> None:
+        owner = self._is_owner(ip)
         if route == "/":
             self._record(ip, name, route, 200)
             try:
@@ -224,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             self._record(ip, name, route, 200)
             return self._json(self._info_page())
         if route == "/api/health":
-            stats = self.index.stats()
+            stats = self.index.stats(include_withdrawn=owner)
             self._record(ip, name, route, 200, count=stats["total"])
             return self._json(
                 {
@@ -243,15 +258,16 @@ class Handler(BaseHTTPRequestHandler):
                     "name": getattr(self.config, "name", ""),
                     "service": "landoc",
                     "version": __version__,
-                    "doc_count": self.index.stats()["total"],
+                    "doc_count": self.index.stats(include_withdrawn=owner)["total"],
                     "allow_cidrs": list(getattr(self.config, "allow_cidrs", []) or []),
-                    # 只暴露"要不要报姓名"（名单里有没登记 IP 的人时才需要），不暴露名单本身
+                    "deny_cidrs": list(getattr(self.config, "deny_cidrs", []) or []),
+                    # 姓名不再能授权；保留字段只为旧客户端兼容，恒 false
                     "name_required": _people_need_name(getattr(self.config, "allow_people", None)),
                     "port": self.server.server_address[1],
                 }
             )
         if route == "/api/stats":
-            stats = self.index.stats()
+            stats = self.index.stats(include_withdrawn=owner)
             self._record(ip, name, route, 200, count=stats["total"])
             return self._json(stats)
         if route == "/api/search":
@@ -264,19 +280,21 @@ class Handler(BaseHTTPRequestHandler):
                 limit_int = max(1, min(int(limit), MAX_LIMIT))
             except ValueError:
                 limit_int = 20
-            rows, fell_back = self.index.search(q, params.get("dir") or "", limit_int)
+            rows, fell_back = self.index.search(
+                q, params.get("dir") or "", limit_int, include_withdrawn=owner
+            )
             self._record(ip, name, route, 200, count=len(rows), q=q)
             return self._json(
                 {"query": q, "count": len(rows), "fallback": fell_back, "results": rows}
             )
         if route == "/api/tree":
             path = params.get("path") or ""
-            nodes = self.index.tree(path)
+            nodes = self.index.tree(path, include_withdrawn=owner)
             self._record(ip, name, route, 200, count=len(nodes))
             return self._json({"path": path, "children": nodes})
         if route == "/api/list":
             path = params.get("path") or ""
-            rows = self.index.list_dir(path)
+            rows = self.index.list_dir(path, include_withdrawn=owner)
             self._record(ip, name, route, 200, count=len(rows))
             return self._json({"path": path, "count": len(rows), "files": rows})
         if route == "/api/recent":
@@ -285,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 limit_int = max(1, min(int(limit), 100))
             except ValueError:
                 limit_int = 50
-            rows = self.index.recent(limit_int)
+            rows = self.index.recent(limit_int, include_withdrawn=owner)
             self._record(ip, name, route, 200, count=len(rows))
             return self._json({"count": len(rows), "files": rows})
         if route == "/api/tables":
@@ -293,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path:
                 self._record(ip, name, route, 400)
                 return self._error(400, "path required")
-            tables = self.index.tables(path)
+            tables = self.index.tables(path, include_withdrawn=owner)
             if tables is None:
                 self._record(ip, name, route, 404)
                 return self._error(404, "document not in this library")

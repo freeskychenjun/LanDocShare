@@ -96,7 +96,7 @@
 
 ### 3.6 现有可复用的资产
 - `F:\md_share\share_server.py`（22 KB）：只读检索服务、姓名+IP 鉴权、限流、审计、FTS5 查询、目录聚合、表格抽取。**这是"每台库服务"的直接原型。**
-- 索引 schema：`documents(rowid, rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at)` + `documents_fts`（FTS5，`bm25(fts, 10.0, 1.0)`，title 权重 10）+ `meta`。**`documents.content` 已存全文**。
+- 索引 schema：`documents(rowid, rel_path, title, ext, source_path, src_size, src_mtime, content, indexed_at, withdrawn INTEGER NOT NULL DEFAULT 0)` + `documents_fts`（FTS5，`bm25(fts, 10.0, 1.0)`，title 权重 10）+ `meta`。**`documents.content` 已存全文**。
 - 运行侧经验：隐藏启动 VBS、看门狗 PowerShell + 计划任务、`netsh advfirewall` 首次放行 8766、`make_share_dist.py` 生成 skill 分发包。
 - 本机环境：Python 3.14.0、PyInstaller 6.17、jieba 0.42、pymupdf 1.27、python-docx 1.2、pywin32 可用、sqlite 3.50（FTS5 可用）。
 
@@ -150,7 +150,7 @@
 2. 选文件夹（**多选**，支持拖入）。显示每个文件夹的"预计文档数 / 体积 / 预计耗时"（抽样估算，不等全量扫描）。
 3. 选共享范围（默认：`公司内网 10.91.0.0/16`，**网段可在向导里改**；可改：仅指定名单 / 仅本机）。→ 开始建库，托盘显示进度。
 
-> **实施补充（2026-11-17）**：三步合成一屏（少点一次"下一步"）。没有 `config.json` 时托盘启动即弹向导；已建库的从托盘菜单「修改建库设置…」重开（字段预填、按钮变"保存"），改完就地写回运行中的配置、当场生效。估算用 `wizard.estimate_folders`（只 walk + stat，15000 篇封顶，显示"≥ N 篇"）。共享范围三档：内网 / **仅指定名单** / 仅本机；网段一栏可编辑（默认 10.91.0.0/16，实测本机是 10.91.1.0/24 且 10.91.10.x 可路由到——/16 未必只属于本院，要收窄就填本院网段，如 10.91.1.0/24）；名单是网段之上叠一层（`allow_people: 姓名 → 期望 IP`，**按 IP 放行、姓名只作备注**：来源 IP 命中任一登记 IP 即放行，审计记那条的姓名；姓名登记了 IP 时校验一致（防冒名）；IP 留空 = 只能靠报姓名识别，适合 IP 会变的人；回环 `127.0.0.1` 永远放行，主人本机自检不被名单挡住），向导里是一张可增删的姓名/IP 表并支持「从 CSV 导入」（`姓名,IP` 两列），命令行 `people --csv/--set/--remove/--export` 维护、改动即时生效；服务端 `/api/meta` 只回 `name_required`（仅当名单里存在没登记 IP 的人时为 true）、不回名单。
+> **实施补充（2026-11-17）**：三步合成一屏（少点一次"下一步"）。没有 `config.json` 时托盘启动即弹向导；已建库的从托盘菜单「修改建库设置…」重开（字段预填、按钮变"保存"），改完就地写回运行中的配置、当场生效。估算用 `wizard.estimate_folders`（只 walk + stat，15000 篇封顶，显示"≥ N 篇"）。共享范围三档：内网 / **仅指定名单** / 仅本机；网段一栏可编辑（默认 10.91.0.0/16，实测本机是 10.91.1.0/24 且 10.91.10.x 可路由到——/16 未必只属于本院，要收窄就填本院网段，如 10.91.1.0/24）；名单是网段之上叠一层（`allow_people: 姓名 → 期望 IP`，**按 IP 放行、姓名只作备注**：来源 IP 命中任一登记 IP 即放行，审计记那条的姓名；姓名登记了 IP 时校验一致（防冒名）；**IP 留空 = 不授权**（姓名不能当口令，知道姓名也进不来）；回环 `127.0.0.1` 永远放行，主人本机自检不被名单挡住），建库向导不再内嵌名单表，只显示「已登记 N 人」；增删改与「从 CSV 导入」都在「授权名单…」窗口完成，命令行 `people --csv/--set/--remove/--export` 维护、改动即时生效；服务端 `/api/meta` 只回 `name_required`（恒 false，仅为旧客户端兼容）、不回名单。
 
 ### 6.3 建库引擎
 
@@ -204,12 +204,15 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 
 保留现有实现里的这些执行细节：`rel_path` 覆盖索引两步查询（避免 2 GB 表扫超时）、`LIKE ... ESCAPE`、`decode_param` 的 UTF-8/GBK 双编码兼容（Git Bash 下 curl 传中文会变 GBK）、按 IP 滑动窗口限流（默认 60 次/分钟）、JSONL 审计、`Cache-Control: no-store`、响应不含 `source_path`。
 
+**撤回文档的可见性**：`documents.withdrawn=1` 的行只对库主人可见；检索、目录树、列表、最近更新、表格与计数接口对非主人一律过滤（实现见 6.5 与下方实施补充）。
+
 ### 6.5 权限模型
 
-- 库端配置 `allow_cidrs`（默认 `["10.91.0.0/16"]`），可选叠加 `allow_people`（姓名→IP，沿用现有 `share_people.json` 语义）。
+- 库端配置 `allow_cidrs`（默认 `["10.91.0.0/16"]`）与 `deny_cidrs`（默认空，黑名单**优先**于允许网段/名单），可选叠加 `allow_people`（姓名→IP，沿用现有 `share_people.json` 语义）。
 - 三个预设：`全院（默认）/ 名单内 / 仅本机`。
 - 拒绝返回 `403`（越权）与 `401`（姓名未登记）区分开；UI 上"暂停共享"只是把 `allow_cidrs` 清空，不删索引。
-- 中心**不存权限、不代理请求**，因此权限只有一个执行点（库端），不会出现"中心说可以、库说不可以"的分裂。
+- 中心**不代理内容请求**，但会保存各库上报的授权范围并按它过滤元数据；内容权限只有一个执行点（库端），不会出现"中心说可以、库说不可以"的分裂。
+- **撤回（文件夹移出共享）不删内容**：`pipeline.run` 只把该文件夹下的 `documents.withdrawn` 置 1，md 与索引行都保留；库主人（来源 IP ∈ `netinfo.local_ips()`）照常检索，其他来源的所有接口都过滤掉；文件夹重新加回时 `upsert` 把 `withdrawn` 清回 0。
 
 ### 6.6 数据足迹与合规边界（必须向库主人明说）
 
@@ -228,19 +231,25 @@ GET /api/tables?path=  该文档全部表格（GFM/HTML）
 ## 7. 登记中心（registry）
 
 - 单文件服务（同一个 exe 的 `LanDocShare.exe --registry` 模式，或独立 `registry.py`），默认端口 8767，与现有 8766 互不影响。
-- 数据：内存字典 + 落盘 `registry.json`（原子写）；条目 `{name, ip, port, lib_name, doc_count, version, allow_cidrs, allow_people, last_seen, status}`。
+- 数据：内存字典 + 落盘 `registry.json`（原子写）；条目 `{name, ip, port, lib_name, doc_count, version, allow_cidrs, deny_cidrs, allow_people, last_seen, status}`。
 - 接口：
-  - `POST /register`（库软件每 60 s 心跳，含篇数与授权范围 `allow_cidrs` / `allow_people`）→ 返回中心时间与"是否需要升级"。
-  - `GET /libraries?name=<姓名>` → 只返回对该来源 IP（以及姓名，若填了）开放的在线库（TTL：5 分钟内有心跳 = 在线；30 分钟无心跳 = 移除）。
+  - `POST /register`（库软件每 60 s 心跳，含篇数与授权范围 `allow_cidrs` / `deny_cidrs` / `allow_people`）→ 返回中心时间与"是否需要升级"。
+  - `GET /libraries?name=<姓名>` → 只返回对该来源 IP（以及姓名，若填了）开放的在线库（TTL：5 分钟内有心跳 = 在线；30 分钟无心跳 = 移除）；`deny_cidrs` 命中的来源直接看不到。
   - `GET /health` / `GET /api/info` → 中心自身状态；其中的 `libraries` 计数同样只算"对你可见"的库。
-- 安全：只接受 `10.91.0.0/16` 来源；不接受来自客户端自报的 IP（用连接对端 IP）；**不做内容鉴权，但元数据按库主人上报的授权范围过滤**。没上报授权范围的旧版库、以及暂停共享（空 `allow_cidrs`）的库，一律不显示。中心因此会持有各库的授权名单（只有姓名/IP，不含文档内容）——这是"同事只能看到对自己开放的库"的必要代价。
+- 安全：只接受 `10.91.0.0/16` 来源（`--deny-cidrs` 可挡黑名单，优先于允许网段）；不接受来自客户端自报的 IP（用连接对端 IP）；**不做内容鉴权，但元数据按库主人上报的授权范围过滤**。没上报授权范围的旧版库、以及暂停共享（空 `allow_cidrs`）的库，一律不显示。中心因此会持有各库的授权名单（只有姓名/IP，不含文档内容）——这是"同事只能看到对自己开放的库"的必要代价。
 - 客户端缓存：skill 把上次拿到的库清单写 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（24 h）；**带身份查询时按姓名分缓存**，避免换人后蹭到别人的可见清单；中心不可用时用它 + 逐库 `/api/health` 探活。
 
 > **实施补充（2026-11-17）**：落地为 `landoc/registry.py`，两种起法 `python -m landoc.registry` 或 `python -m landoc.cli registry`（打包版 `LanDocShare.exe registry`），默认 8767、状态文件 `~/.landoc-registry/registry.json`，`--state-dir` / `--allow-cidrs` 可改；`/libraries` 条目另带 `age_seconds`、`online`、`url`，并按"在线优先 + 名字"排序。库端在 `Config.registry_url`（`init --registry-url`）非空时，由 `LibraryApp` 起一条 `landoc-heartbeat` 线程：启动即报一次、之后每 60 s 一次，中心不可达就跳过该轮（不影响本库检索）；状态窗口多一行「登记中心」（已登记 · 中心时间 / 连不上）。中心自身用 `--install-autostart` 写 `HKCU\...\Run` 的独立值名 `LanDocShare-registry`，与库软件的 `LanDocShare` 互不影响。客户端缓存改到 `%LOCALAPPDATA%\lan-lib-search\cache_libraries.json`（skill 目录可能只读），中心不可用时**逐库探活**再降级使用。
 
-> **实施补充（2026-11-18，按权限可见）**：中心从"只报状态"改成"按库主人上报的授权范围过滤元数据"。库端心跳新增 `allow_cidrs` / `allow_people`（`LibraryApp._register_payload` 读 `Config`），暂停共享时 `allow_cidrs=[]` 照实上报。中心 `RegistryStore.register` 用 `_clean_audience` 校验：缺字段 = 旧版（存 `None`，不显示）、空列表 = 暂停（不显示）、格式错 = 整次心跳 400（fail closed）；`libraries(viewer_ip=..., viewer_name=...)` 用 `_audience_allows` 过滤，后者复用 `landoc.server.authorize_person`，保证"中心看得到"与"库端进得去"同一口径。`GET /libraries`、说明页表格、`/api/info` 与 `/health` 的 `libraries` 计数全部只用过滤后的清单；响应不回传 `allow_cidrs` / `allow_people`。说明页新增 `?name=` 姓名输入框（填了才按姓名匹配；不填只按 IP）。客户端 `query.py libs` / `search` / `tables` 都从 `identity.txt` 取姓名带给中心与库端；`libs` 缓存按姓名的 SHA-256 前 12 位分文件，匿名仍用默认缓存。旧版库升级前不会出现在清单里（中心无法知道它的授权范围）。
+> **实施补充（2026-11-18，按权限可见）**：中心从"只报状态"改成"按库主人上报的授权范围过滤元数据"。库端心跳新增 `allow_cidrs` / `allow_people`（`LibraryApp._register_payload` 读 `Config`），暂停共享时 `allow_cidrs=[]` 照实上报。中心 `RegistryStore.register` 用 `_clean_audience` 校验：缺字段 = 旧版（存 `None`，不显示）、空列表 = 暂停（不显示）、格式错 = 整次心跳 400（fail closed）；`libraries(viewer_ip=..., viewer_name=...)` 用 `_audience_allows` 过滤，后者复用 `landoc.server.authorize_person`，保证"中心看得到"与"库端进得去"同一口径。`GET /libraries`、说明页表格、`/api/info` 与 `/health` 的 `libraries` 计数全部只用过滤后的清单；响应不回传 `allow_cidrs` / `allow_people`。说明页不再提供姓名输入框，只按来源 IP 展示；`GET /libraries?name=` 仍保留给客户端/接口兼容，姓名只用于核对，不能替代 IP。客户端 `query.py libs` / `search` / `tables` 都从 `identity.txt` 取姓名带给中心与库端；`libs` 缓存按姓名的 SHA-256 前 12 位分文件，匿名仍用默认缓存。旧版库升级前不会出现在清单里（中心无法知道它的授权范围）。
 
-> **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP,部门` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（网段内任何人可取）。说明页展示"已发布 N 人 + 部门分布 · 更新于 …"。库软件侧由 `landoc/roster.py`（`Roster` 把"人 + 部门"绑在一起；拉取/发布/CSV 校验/按部门排序）与 `landoc/roster_ui.py`（授权名单窗口：姓名/IP/部门三列、增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 与 `people_departments` 并即时生效；命令行等价物 `people --pull` / `--publish` / `--dept`。
+> **实施补充（2026-11-17，名单分发）**：设计里"库主人维护一份全部门名单、同事客户端拉取"落成中心的两个端点：`POST /roster`（正文是 `姓名,IP,部门` CSV，**只接受中心所在机器的来源 IP**——`roster_admin_ips` 默认取本机所有 IP 加回环，避免任何同事都能改全院名单；落地 `<state-dir>/roster.csv`，`--roster` 可改）与 `GET /roster.csv`（**默认只允许中心本机**；要恢复"各库一键拉取"，中心启动时加 `--roster-public`，等于把全院姓名+IP 暴露给中心允许网段）。说明页展示"已发布 N 人 + 部门分布 · 更新于 …"。库软件侧由 `landoc/roster.py`（`Roster` 把"人 + 部门"绑在一起；拉取/发布/CSV 校验/按部门排序）与 `landoc/roster_ui.py`（授权名单窗口：姓名/IP/部门三列、增删改、导入导出、从中心拉取时可选合并或整体替换、发布到中心）实现，"保存"直接写 `allow_people` 与 `people_departments` 并即时生效；命令行等价物 `people --pull` / `--publish` / `--dept`。
+
+> **实施补充（2026-11-19，黑名单与名单收敛）**：库端与中心都新增 `deny_cidrs`（默认空），判定顺序固定为"先黑名单、后 allow/名单"，命中即 403，网页、`/api/*`、skill 一视同仁；库端 `Config.deny_cidrs` 经心跳上报，中心 `_clean_audience` 一并校验并存入条目，`_audience_allows` 与 `_cidr_allowed` 门都先判 deny（拒绝列表不随 `/libraries` 回传）。同时把 `GET /roster.csv` 默认收回到中心本机：`roster_public=False` 时非本机 403，库端 `fetch_roster` 会提示加 `--roster-public`；发布/编辑仍仅本机。这样即使姓名被猜到、或 allow 网段开得过大，也能整段挡住已知的坏人 IP；代价是"从中心拉取名单"需要管理员显式开开关。
+
+> **实施补充（2026-11-19，姓名不再是口令）**：空 IP 条目不再获得任何访问权限——`authorize_person` 对"名单里有这个人、但没登记 IP"的请求返回 `name has no IP registered`，`_people_need_name`/`/api/meta` 的 `name_required` 恒为 false（保留字段只为旧客户端兼容）。名单窗口要求 IP 必填；中心编辑页/命令行同样拒绝空 IP；CSV 导入（含中心粘贴导入）也直接拒绝空 IP——整批不导入，报出行号/姓名，不再保留空 IP 记录。授权口径仍与库端一致：IP 命中名单、姓名只作审计备注。
+
+> **实施补充（2026-11-19，撤回门禁）**：库软件把"文件夹从共享列表移除"从"物理删除 md/索引"改为"标记撤回"。`documents` 新增 `withdrawn INTEGER NOT NULL DEFAULT 0`（旧库打开时自动 `ALTER TABLE` 补列），`Index.mark_withdrawn` 只改标志；`pipeline.run` 撤回时保留 md 与索引行、写 `state.files` 的 `withdrawn/withdrawn_since`，重新加入共享文件夹后 `upsert` 清回 0。服务端 `_is_owner(ip)` 用 `netinfo.local_ips()`（回环 + 本机各网卡地址）区分主人：`/api/search`、`/api/tree`、`/api/list`、`/api/recent`、`/api/tables`、`/api/stats`、`/api/health`、`/api/meta` 对非主人只算 `withdrawn=0` 的行；主人仍能检索自己撤回的文档。`prune --gone` 仍只处理 `source_missing`，不会清撤回文档。
 
 > **实施补充（2026-11-17，部门列）**：`Config.people_departments: {姓名: 部门/备注}` 只用于分组查看、不参与授权（授权仍只看 `allow_people` 里的 IP）。窗口按"部门 → IP"排序：部门之间按名单里第一次出现的顺序（即导入 CSV 的行序），部门内按 IP，没填部门的沉底；写入配置时会剔除已不在名单里的孤儿项；CSV 第三列可省，没有部门信息时导出仍是两列（老文件不受影响）。
 

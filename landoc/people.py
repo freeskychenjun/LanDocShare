@@ -1,7 +1,7 @@
 """人员名单（姓名 → IP → 部门）的读写。
 
-名单是"按 IP 授权、姓名只作备注"的落地形式：`Config.allow_people` 存
-`{姓名: IP}`，IP 留空表示"这个人只能靠报姓名识别"（IP 会变的情况）；
+名单是"按 IP 授权、姓名只作备注/分组"的落地形式：`Config.allow_people` 存
+`{姓名: IP}`，IP 留空表示"不授权"（姓名不能当口令）；
 `Config.people_departments` 存 `{姓名: 部门}`，用来按所/部门分组查看（不参与授权）。
 
 CSV 是最容易维护的格式（Excel 另存即可），也是以后"库主人统一维护、客户端
@@ -30,7 +30,7 @@ def _split(line: str) -> list[str]:
 
 
 def _clean_ip(raw: str) -> str:
-    """校验并规范化 IP；空串表示"不登记 IP"。"""
+    """校验并规范化 IP；空串表示"不授权"（姓名不能当口令）。"""
     text = (raw or "").strip()
     if not text:
         return ""
@@ -42,7 +42,8 @@ def parse_people_table(text: str) -> tuple[dict[str, str], dict[str, str], list[
 
     容忍：BOM、空行、`#` 注释、逗号/制表符/全角逗号分隔、表头（姓名,IP,部门）
     或没有表头。第三列是部门/备注（可选）。重复姓名以第一次出现为准并记一条
-    警告；IP 不合法直接抛 `ValueError`（整批不导入，免得半份名单悄悄生效）。
+    警告；IP 必填，空 IP 或不合法直接抛 `ValueError`（整批不导入，免得半份名单
+    悄悄生效）。
     """
     people: dict[str, str] = {}
     departments: dict[str, str] = {}
@@ -63,10 +64,16 @@ def parse_people_table(text: str) -> tuple[dict[str, str], dict[str, str], list[
         if name in people:
             warnings.append(f"第 {lineno} 行：{name} 重复，沿用第一次的 IP")
             continue
+        raw_ip = cells[1] if len(cells) > 1 else ""
         try:
-            people[name] = _clean_ip(cells[1] if len(cells) > 1 else "")
+            clean_ip = _clean_ip(raw_ip)
         except ValueError as exc:
-            raise ValueError(f"第 {lineno} 行 IP 不合法：{cells[1] if len(cells) > 1 else ''}（{exc}）") from None
+            raise ValueError(f"第 {lineno} 行 IP 不合法：{raw_ip}（{exc}）") from None
+        if not clean_ip:
+            raise ValueError(
+                f"第 {lineno} 行：{name} 的 IP 为空（姓名不能当作访问凭证，请补 IP）"
+            )
+        people[name] = clean_ip
         department = cells[2].strip() if len(cells) > 2 else ""
         if department:
             departments[name] = department

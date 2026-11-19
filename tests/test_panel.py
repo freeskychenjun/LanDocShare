@@ -6,9 +6,12 @@ import threading
 
 from landoc.app import AppStatus
 from landoc import __version__
+from landoc import panel as panel_module
 from landoc.config import Config
 from landoc.panel import (
     StatusPanel,
+    center_position,
+    center_window,
     phase_text,
     status_rows,
     update_button_text,
@@ -179,3 +182,85 @@ def test_source_missing_docs_are_reported_but_not_hidden():
     assert phase_text(AppStatus(phase="serving", gone=0)) == "正在共享"
     assert "3 篇源已不在" in AppStatus(phase="serving", doc_count=12, gone=3).summary()
     assert "源已不在" not in AppStatus(phase="serving", doc_count=12).summary()
+
+
+# --------------------------------------------------------------------------- #
+# 弹窗位置：托盘「显示状态窗口」每次出现在屏幕正中
+# --------------------------------------------------------------------------- #
+class _FakeRoot:
+    """够 center_window 用的假窗口（不启 Tk，GUI 留给人工验收）。"""
+
+    def __init__(self, width=1, height=1, geometry="", screen=(1920, 1080)):
+        self._width = width
+        self._height = height
+        self._geometry = geometry
+        self._screen = screen
+        self.moved: list[str] = []
+
+    def update_idletasks(self):
+        pass
+
+    def winfo_width(self):
+        return self._width
+
+    def winfo_height(self):
+        return self._height
+
+    def winfo_reqwidth(self):
+        return 580
+
+    def winfo_reqheight(self):
+        return 220
+
+    def winfo_screenwidth(self):
+        return self._screen[0]
+
+    def winfo_screenheight(self):
+        return self._screen[1]
+
+    def geometry(self, value=None):
+        if value is None:
+            return self._geometry
+        self.moved.append(value)
+
+
+def _fixed_area(area):
+    return lambda root: area
+
+
+def test_center_position_puts_the_window_in_the_middle():
+    # 1920×1040 的工作区（1080 减去任务栏 40），580×220 的窗口
+    assert center_position(580, 220, (0, 0, 1920, 1040)) == (670, 410)
+
+
+def test_center_position_follows_the_monitor_under_the_cursor():
+    """第二块屏从 x=1920 起：居中要加这块屏的原点，否则窗口跑到左屏上去了。"""
+    assert center_position(580, 220, (1920, 0, 3840, 1040)) == (2590, 410)
+
+
+def test_center_position_never_leaves_a_negative_offset():
+    """窗口比屏幕还大时贴左上角就行：负坐标会把标题栏顶出屏幕，窗口再也拖不回来。"""
+    assert center_position(4000, 3000, (0, 0, 1920, 1040)) == (0, 0)
+
+
+def test_center_window_centers_even_before_the_window_is_mapped(monkeypatch):
+    root = _FakeRoot(geometry="580x220")  # 还没显示：winfo_width() 只有 1
+    monkeypatch.setattr(panel_module, "work_area", _fixed_area((0, 0, 1920, 1040)))
+    center_window(root)
+    assert root.moved == ["+670+410"]
+
+
+def test_center_window_uses_the_real_size_once_shown(monkeypatch):
+    root = _FakeRoot(width=900, height=600, geometry="580x220")
+    monkeypatch.setattr(panel_module, "work_area", _fixed_area((0, 0, 1920, 1040)))
+    center_window(root)
+    assert root.moved == ["+510+220"]
+
+
+def test_center_window_falls_back_to_the_tk_screen(monkeypatch):
+    """拿不到显示器工作区（非 Windows / 被策略挡）也要能算出位置，不能把窗口开不出来。"""
+    root = _FakeRoot(geometry="580x220", screen=(1920, 1080))
+    monkeypatch.setattr(panel_module, "_monitor_work_area", lambda: None)
+    assert panel_module.work_area(root) == (0, 0, 1920, 1080)
+    center_window(root)
+    assert root.moved == ["+670+430"]

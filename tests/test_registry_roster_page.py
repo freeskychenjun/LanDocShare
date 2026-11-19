@@ -190,17 +190,26 @@ def test_save_from_table_writes_roster_and_redirects(center):
     assert code == 200 and "已保存：2 人" in page
 
 
-def test_save_accepts_rows_without_ip_or_department(center):
+def test_save_rejects_rows_without_ip_but_allows_empty_department(center):
     base, path = center
     _published(path)
-    code, _headers, _body = post_form(
+    before = path.read_bytes()
+    code, page = post_expect_error(
         f"{base}/roster/edit",
         [("action", "save"), ("name", "老王"), ("ip", ""), ("dept", "")],
+    )
+    assert code == 400
+    assert "IP 不能为空" in page
+    assert path.read_bytes() == before
+
+    code, _headers, _body = post_form(
+        f"{base}/roster/edit",
+        [("action", "save"), ("name", "老王"), ("ip", "10.91.1.50"), ("dept", "")],
         follow=False,
     )
     assert code == 303
     saved = path.read_text(encoding="utf-8-sig")
-    assert "老王," in saved and "陈鋆" not in saved
+    assert "老王,10.91.1.50" in saved and "陈鋆" not in saved
 
 
 def test_save_rejects_bad_ip_and_keeps_published_file(center):
@@ -277,7 +286,7 @@ def test_rejected_post_with_large_body_still_gets_the_403_page(other_machine):
 def test_import_csv_replaces_published_roster(center):
     base, path = center
     _published(path)
-    csv_text = "姓名,IP,部门\n老王,10.91.1.50,水文所\n小李,,规划二所\n"
+    csv_text = "姓名,IP,部门\n老王,10.91.1.50,水文所\n小李,10.91.1.51,规划二所\n"
     code, _headers, _body = post_form(
         f"{base}/roster/edit",
         [("action", "import"), ("csv", csv_text), ("replace", "1")],
@@ -302,6 +311,18 @@ def test_import_csv_merges_when_replace_unchecked(center):
     saved = path.read_text(encoding="utf-8-sig")
     assert "陈鋆,10.91.1.197,规划一所" in saved  # 原有保留
     assert "老王,10.91.1.50,水文所" in saved
+
+
+def test_import_csv_rejects_blank_ip(center):
+    base, path = center
+    _published(path)
+    before = path.read_bytes()
+    code, page = post_expect_error(
+        f"{base}/roster/edit",
+        [("action", "import"), ("csv", "姓名,IP,部门\n老王,10.91.1.50,水文所\n小李,,规划二所\n")],
+    )
+    assert code == 400 and "IP 为空" in page
+    assert path.read_bytes() == before
 
 
 def test_import_csv_without_names_is_rejected(center):

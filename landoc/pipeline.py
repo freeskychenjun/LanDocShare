@@ -435,6 +435,12 @@ def run(
             if isinstance(known, dict):
                 known.pop("source_missing", None)
                 known.pop("missing_since", None)
+                # 文件夹重新加回共享：撤回标记一并撤掉，同事又能看到
+                if known.pop("withdrawn", None):
+                    known.pop("withdrawn_since", None)
+                    mark = getattr(index, "mark_withdrawn", None)
+                    if mark is not None:
+                        mark(_md_rel(rel), False)
             report.skip("unchanged")
             continue
 
@@ -631,7 +637,9 @@ def run(
 
         # 库里那份 md 副本才是这个库的全部家当，源文档只是"当初从哪来的"一条线索。
         # 所以扫描器只做两件事：
-        #   1. 文件夹被移出共享列表（config.folders 里没了）= 明确撤回 → 删 md 与索引；
+        #   1. 文件夹被移出共享列表（config.folders 里没了）= 撤回共享，但库不删：
+        #      md 与索引都留着，只把 withdrawn 标成 1；服务端只让本机（主人）看见。
+        #      重新加回共享文件夹时，下面的 unchanged 分支会把标记清掉。
         #   2. 单篇源文件消失（删了/改名/移走/文件夹暂时没插）= 保留，记一笔 source_missing。
         # 早先只要"这一轮没扫到"就删，导致拔了移动硬盘启动托盘就把整个库清空。
         current = {rel for _, rel in docs}
@@ -646,17 +654,15 @@ def run(
                     files[rel]["missing_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
                     report.skip("source_missing")
                 continue
-            md_path = Path(cfg.md_dir) / _md_rel(rel)
-            try:
-                md_path.unlink()
-            except OSError:
-                pass
-            try:
-                index.delete(_md_rel(rel))
-            except Exception:  # noqa: BLE001 - 替身 index 可能没有 delete
-                pass
-            files.pop(rel, None)
-            failures.pop(rel, None)
+            item = files.get(rel)
+            if not isinstance(item, dict):
+                item = {}
+                files[rel] = item
+            item["withdrawn"] = True
+            item.setdefault("withdrawn_since", time.strftime("%Y-%m-%d %H:%M:%S"))
+            mark = getattr(index, "mark_withdrawn", None)
+            if mark is not None:
+                mark(_md_rel(rel), True)
             report.skip("withdrawn")
         if not report.stop_reason:
             report.stop_reason = "done"

@@ -536,7 +536,7 @@ def empty_hint(result: LibraryList, *, viewer: str = "") -> str:
         "或对方的版本较旧、还没上报授权范围。"
     )
     if not viewer:
-        text += " 姓名留空时中心只按本机 IP 匹配，可以填上姓名再查一次。"
+        text += " 中心只按来源 IP 匹配；姓名只用于审计，填不填都不影响授权。"
     return text
 
 

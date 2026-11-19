@@ -168,6 +168,7 @@ def test_heartbeat_registers_with_registry(tmp_path):
         assert payload["port"] == 18080
         assert payload["version"]
         assert payload["allow_cidrs"] == ["10.91.0.0/16"]
+        assert payload["deny_cidrs"] == []
         assert payload["allow_people"] == {}
         assert app.last_register["ok"] is True
         assert wait_for(lambda: app.status.registry.startswith("已登记"))

@@ -124,7 +124,7 @@ def test_validate_person_rules():
     assert wizard.validate_person("", "10.91.1.197", cidrs) == "姓名不能为空"
     assert "不要带" in wizard.validate_person("陈=鋆", "", cidrs)
     assert "不是合法的 IP" in wizard.validate_person("陈鋆", "10.91.1", cidrs)
-    assert wizard.validate_person("陈鋆", "", cidrs) is None
+    assert "IP 不能为空" in wizard.validate_person("陈鋆", "", cidrs)
     assert wizard.validate_person("陈鋆", "10.91.1.197", cidrs) is None
     assert "不在允许的网段" in wizard.validate_person("陈鋆", "192.168.1.9", cidrs)
 

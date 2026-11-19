@@ -57,7 +57,8 @@ def test_is_center_machine_only_on_the_registry_host():
 
 
 def test_validate_entry_normalises_and_rejects():
-    assert roster.validate_entry("  陈鋆 ", "", "") == ("陈鋆", "", "")
+    with pytest.raises(ValueError):
+        roster.validate_entry("  陈鋆 ", "", "")
     assert roster.validate_entry("郑泽锋", " 10.91.1.206 ", " 规划一所 ") == (
         "郑泽锋",
         "10.91.1.206",
@@ -71,7 +72,7 @@ def test_validate_entry_normalises_and_rejects():
     with pytest.raises(ValueError):
         roster.validate_entry("张三", "10.91.1.999")
     with pytest.raises(ValueError):
-        roster.validate_entry("张三", "", "规划一所,水文所")
+        roster.validate_entry("张三", "10.91.1.1", "规划一所,水文所")
 
 
 def test_sorted_entries_groups_by_department_then_ip():

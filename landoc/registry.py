@@ -20,7 +20,8 @@
   其他同事的库 `GET /roster.csv` 拉取后合并/替换——这样"全部门名单只有一份，
   库主人改完，大家拉一次就同步了"；
 - **发布只允许中心所在机器**（客户端 IP 是本机地址才放行），否则任何人都能改名单；
-  拉取对所有允许网段开放（名单就是姓名 + 内网 IP，本身就是给同事用的）；
+  拉取默认也只允许中心本机；库端要「一键拉取」需中心显式加 `--roster-public`
+  （名单就是姓名 + 内网 IP，默认不整段公开）；
 - 名单编辑页 `GET /roster/edit`：中心本机浏览器里逐行改姓名/IP/部门，或粘贴 CSV 导入，
   `POST /roster/edit` 保存后 303 回页面（避免刷新重复提交）。同样**只对本机开放**——
   判断依据与 `POST /roster` 一致：来源 IP 必须在 `roster_admin_ips`（默认本机全部地址）里。
@@ -317,7 +318,9 @@ def roster_from_form(rows: list[tuple[str, str, str]]) -> tuple[Roster, list[str
 _MISSING = object()
 
 
-def _clean_audience(payload: dict) -> tuple[list[str] | None, dict[str, str] | None]:
+def _clean_audience(
+    payload: dict,
+) -> tuple[list[str] | None, list[str] | None, dict[str, str] | None]:
     """把心跳里的授权范围收紧成可存的形式。
 
     缺字段 = 旧版库没上报（None，一律不显示）；空列表 = 暂停共享（[]，也不显示）；
@@ -326,21 +329,12 @@ def _clean_audience(payload: dict) -> tuple[list[str] | None, dict[str, str] | N
     raw_cidrs = payload.get("allow_cidrs", _MISSING)
     cidrs: list[str] | None = None
     if raw_cidrs is not _MISSING:
-        if not isinstance(raw_cidrs, (list, tuple)):
-            raise ValueError("allow_cidrs 必须是列表")
-        if len(raw_cidrs) > MAX_AUDIENCE_CIDRS:
-            raise ValueError(f"allow_cidrs 最多 {MAX_AUDIENCE_CIDRS} 项")
-        cleaned: list[str] = []
-        for item in raw_cidrs:
-            text = str(item).strip()
-            if not text or len(text) > 64:
-                raise ValueError("allow_cidrs 含空项或过长项")
-            try:
-                ipaddress.ip_network(text, strict=False)
-            except ValueError as exc:
-                raise ValueError(f"allow_cidrs 不合法：{text[:40]}") from exc
-            cleaned.append(text)
-        cidrs = cleaned
+        cidrs = _clean_cidr_list(raw_cidrs, "allow_cidrs")
+
+    raw_deny = payload.get("deny_cidrs", _MISSING)
+    deny: list[str] | None = None
+    if raw_deny is not _MISSING:
+        deny = _clean_cidr_list(raw_deny, "deny_cidrs")
 
     raw_people = payload.get("allow_people", _MISSING)
     people: dict[str, str] | None = None
@@ -362,7 +356,25 @@ def _clean_audience(payload: dict) -> tuple[list[str] | None, dict[str, str] | N
                     raise ValueError(f"allow_people 里 {person} 的 IP 不合法") from exc
             cleaned_people[person] = expected
         people = cleaned_people
-    return cidrs, people
+    return cidrs, deny, people
+
+
+def _clean_cidr_list(raw, field: str) -> list[str]:
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"{field} 必须是列表")
+    if len(raw) > MAX_AUDIENCE_CIDRS:
+        raise ValueError(f"{field} 最多 {MAX_AUDIENCE_CIDRS} 项")
+    cleaned: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if not text or len(text) > 64:
+            raise ValueError(f"{field} 含空项或过长项")
+        try:
+            ipaddress.ip_network(text, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"{field} 不合法：{text[:40]}") from exc
+        cleaned.append(text)
+    return cleaned
 
 
 class RegistryStore:
@@ -411,7 +423,7 @@ class RegistryStore:
             raise ValueError("port 不合法")
         name = str(payload.get("name") or "").strip()[:40]
         lib_name = str(payload.get("lib_name") or "").strip()[:60]
-        allow_cidrs, allow_people = _clean_audience(payload)
+        allow_cidrs, deny_cidrs, allow_people = _clean_audience(payload)
         key = f"{ip}:{port}"
         entry = {
             "key": key,
@@ -422,6 +434,7 @@ class RegistryStore:
             "doc_count": int(payload.get("doc_count") or 0),
             "version": str(payload.get("version") or ""),
             "allow_cidrs": allow_cidrs,
+            "deny_cidrs": deny_cidrs,
             "allow_people": allow_people,
             "last_seen": time.time(),
         }
@@ -487,13 +500,15 @@ def _cidr_allowed(ip: str, cidrs) -> bool:
 
 
 def _audience_allows(entry: dict, viewer_ip: str, viewer_name: str) -> bool:
-    """复刻库端的两道门：先看网段，再看姓名/IP 名单。
+    """复刻库端的两道门：先看黑名单，再看允许网段，最后看姓名/IP 名单。
 
     旧版库没上报 allow_cidrs（None）→ 不显示；暂停共享（[]）→ 不显示。
     `authorize_person` 与库端共用，保证"中心看得到"和"库端进得去"口径一致。
     """
     cidrs = entry.get("allow_cidrs")
     if cidrs is None:
+        return False
+    if _cidr_allowed(viewer_ip, entry.get("deny_cidrs") or []):
         return False
     if not _cidr_allowed(viewer_ip, cidrs):
         return False
@@ -583,7 +598,7 @@ _ROSTER_PAGE_SCRIPT = """
   function blank() {
     var tr = document.createElement('tr');
     tr.innerHTML = "<td><input name='name' maxlength='40' placeholder='姓名' autocomplete='off'></td>" +
-      "<td><input name='ip' placeholder='内网 IP，可留空' autocomplete='off'></td>" +
+      "<td><input name='ip' placeholder='内网 IP（必填）' autocomplete='off'></td>" +
       "<td><input name='dept' maxlength='40' placeholder='部门，可留空' autocomplete='off'></td>" +
       "<td class='act'><button type='button' class='del' title='删掉这一行'>✕</button></td>";
     return tr;
@@ -851,17 +866,23 @@ class RegistryHandler(BaseHTTPRequestHandler):
         """
         return self._client_ip() in self._admin_ips()
 
+    def _roster_download_allowed(self) -> bool:
+        """名单能否给这个请求下载：本机始终可以；其他机器要中心显式 --roster-public。"""
+        return bool(getattr(self, "roster_public", False)) or self._is_local_request()
+
     def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler 的命名约定
         parsed = urllib.parse.urlparse(self.path)
         route, query = parsed.path, parse_query(parsed.query)
         ip = self._client_ip()
         viewer_name = str(query.get("name") or "").strip()[:MAX_AUDIENCE_NAME]
-        if not _cidr_allowed(ip, self.allow_cidrs):
+        if not _cidr_allowed(ip, self.allow_cidrs) or _cidr_allowed(
+            ip, getattr(self, "deny_cidrs", [])
+        ):
             return self._error(403, "cidr not allowed")
         if self.rate is not None and not self.rate.allow(ip):
             return self._error(429, "rate limit exceeded")
         if route == "/":
-            return self._html(self._landing_html(ip, viewer_name))
+            return self._html(self._landing_html(ip))
         if route == "/api/update":
             current = str(query.get("version") or "").strip()
             payload = self._release_payload(current)
@@ -981,6 +1002,16 @@ class RegistryHandler(BaseHTTPRequestHandler):
         if route == "/roster/edit":
             return self._roster_edit(query)
         if route in ("/roster.csv", "/roster"):
+            # 名单含全院姓名/IP：默认只让中心本机下载，避免在整个允许网段裸奔。
+            # 库端「一键拉取」需要中心显式加 --roster-public 才放开。
+            if not self._roster_download_allowed():
+                return self._json(
+                    {
+                        "error": "roster not public",
+                        "hint": "名单默认只允许中心本机下载；要让库端拉取，中心启动时加 --roster-public。",
+                    },
+                    403,
+                )
             state = self._roster_state()
             if state is None:
                 return self._json(
@@ -1001,9 +1032,9 @@ class RegistryHandler(BaseHTTPRequestHandler):
         return self._error(404, "not found")
 
     # ---- 说明页 ----
-    def _landing_html(self, viewer_ip: str, viewer_name: str) -> str:
+    def _landing_html(self, viewer_ip: str) -> str:
         base = self._base_url()
-        libs = self.store.libraries(viewer_ip=viewer_ip, viewer_name=viewer_name)
+        libs = self.store.libraries(viewer_ip=viewer_ip)
         rows = []
         for lib in libs:
             state = "在线" if lib["online"] else "离线"
@@ -1023,16 +1054,6 @@ class RegistryHandler(BaseHTTPRequestHandler):
                 or "<tr><td colspan='4' class='off'>没有对你开放的库（也可能库主人还没升级到会报告授权范围的版本）</td></tr>"
             )
             + "</tbody></table>"
-        )
-        identity = html.escape(viewer_name, quote=True)
-        name_form = (
-            "<form method='get' action='/' class='identity'>"
-            "<label>你的姓名（可选） "
-            f"<input name='name' value='{identity}' maxlength='{MAX_AUDIENCE_NAME}' "
-            "placeholder='填了才按姓名匹配授权名单'></label> "
-            "<button class='btn' type='submit'>按姓名查看</button>"
-            + (" <a href='/'>清除</a>" if viewer_name else "")
-            + "</form>"
         )
         package_ok = bool(self.package_zip and self.package_zip.is_file())
         package_block = (
@@ -1068,13 +1089,19 @@ class RegistryHandler(BaseHTTPRequestHandler):
                 f"{html.escape(name)} {count}" for name, count in roster_state["departments"][:6]
             )
             extra = f"：{dept_text}" if dept_text else ""
+            can_download = self._roster_download_allowed()
+            link = (
+                " · <a href='/roster.csv'>下载名单</a>"
+                if can_download
+                else " · 名单默认仅中心本机可下载"
+            )
             roster_block = (
                 f"部门授权名单已发布：{roster_state['count']} 人{extra}"
                 f"（更新于 {html.escape(roster_state['updated'])}）"
-                f" · <a href='/roster.csv'>下载名单</a>"
+                f"{link}"
             )
         else:
-            roster_block = "部门授权名单还没发布（库主人发布后，各库可一键拉取）"
+            roster_block = "部门授权名单还没发布（中心本机发布后本机可下载；各库一键拉取需 --roster-public）"
         if self._is_local_request():
             roster_block += " · <a href='/roster/edit'>编辑名单</a>"
         return f"""<!doctype html>
@@ -1093,8 +1120,6 @@ p.lead{{color:var(--muted);margin:0 0 24px}}
 h2{{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.02em}}
 .btn{{display:inline-block;padding:8px 14px;border-radius:7px;background:var(--accent);color:#fff;text-decoration:none;font-size:14px}}
 .btn.off{{background:var(--line);color:var(--muted)}}
-input{{padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;width:180px}}
-form.identity{{margin:0 0 18px;color:var(--muted);font-size:14px}}
 table{{width:100%;border-collapse:collapse;font-size:14px}}
 th,td{{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}}
 th{{color:var(--muted);font-weight:600}}
@@ -1104,8 +1129,7 @@ ol{{margin:6px 0 0;padding-left:20px}} li{{margin:4px 0}}
 footer{{color:var(--muted);font-size:13px;margin-top:22px}}
 </style></head><body><main>
 <h1>LanDocShare · 院内资料库</h1>
-<p class="lead">每人一个资料库，只共享检索片段和表格，不提供原文下载。当前对你开放 {len(libs)} 个库，{sum(1 for l in libs if l['online'])} 个在线。只显示你的来源 IP（和填写的姓名）有权限访问的库；没填姓名时只按 IP 匹配。</p>
-{name_form}
+<p class="lead">每人一个资料库，只共享检索片段和表格，不提供原文下载。当前对你开放 {len(libs)} 个库，{sum(1 for l in libs if l['online'])} 个在线。只显示你的来源 IP 有权限访问的库；姓名只用于审计，不影响授权。</p>
 
 <div class="card"><h2>一、让同事能查到你的资料（库主人）</h2>
 <ol>
@@ -1179,7 +1203,7 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
         return (
             "<tr>"
             f"<td><input name='name' value='{html.escape(name)}' maxlength='40' placeholder='姓名' autocomplete='off'></td>"
-            f"<td><input name='ip' value='{html.escape(ip)}' placeholder='内网 IP，可留空' autocomplete='off'></td>"
+            f"<td><input name='ip' value='{html.escape(ip)}' placeholder='内网 IP（必填）' autocomplete='off'></td>"
             f"<td><input name='dept' value='{html.escape(department)}' maxlength='40' placeholder='部门，可留空' autocomplete='off'></td>"
             "<td class='act'><button type='button' class='del' title='删掉这一行'>✕</button></td>"
             "</tr>"
@@ -1238,7 +1262,7 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
 <p class="tools">
 <button type="button" id="addrow" class="ghost">+ 添加一行</button>
 <button type="submit" class="btn">保存并发布</button>
-<span class="hint">姓名必填；IP/部门留空的，那台机器就按库里自己的设置走。</span>
+<span class="hint">姓名、IP 必填；空 IP 不授权（姓名不能当口令）。部门可留空。</span>
 </p>
 </form>
 </div>
@@ -1246,7 +1270,7 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
 <summary>从 CSV 粘贴导入</summary>
 <form method="post" action="/roster/edit">
 <input type="hidden" name="action" value="import">
-<textarea name="csv" rows="8" spellcheck="false" placeholder="姓名,IP,部门&#10;张三,10.91.1.23,水文所&#10;李四,,规划所"></textarea>
+<textarea name="csv" rows="8" spellcheck="false" placeholder="姓名,IP,部门&#10;张三,10.91.1.23,水文所&#10;李四,10.91.1.24,规划所"></textarea>
 <p class="tools">
 <label><input type="checkbox" name="replace" value="1" checked> 整体替换现有名单（不勾选 = 按姓名合并）</label>
 </p>
@@ -1310,7 +1334,9 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
     def do_POST(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         ip = self._client_ip()
-        if not _cidr_allowed(ip, self.allow_cidrs):
+        if not _cidr_allowed(ip, self.allow_cidrs) or _cidr_allowed(
+            ip, getattr(self, "deny_cidrs", [])
+        ):
             self._drain_request_body()
             return self._error(403, "cidr not allowed")
         if self.rate is not None and not self.rate.allow(ip):
@@ -1389,11 +1415,13 @@ def make_registry_server(
     *,
     port: int = 0,
     allow_cidrs=None,
+    deny_cidrs=None,
     package_zip: Path | None = None,
     manifest: Path | None = None,
     advertise: str = "",
     roster_path: Path | None = None,
     roster_admin_ips=None,
+    roster_public: bool = False,
     rate: "RateLimiter | None" = None,
 ) -> ThreadingHTTPServer:
     handler = type(
@@ -1402,12 +1430,14 @@ def make_registry_server(
         {
             "store": store,
             "allow_cidrs": list(allow_cidrs or DEFAULT_CIDRS),
+            "deny_cidrs": list(deny_cidrs or []),
             "package_zip": Path(package_zip) if package_zip else None,
             "manifest_path": Path(manifest) if manifest else None,
             "advertise": advertise,
             "roster_path": Path(roster_path) if roster_path else None,
             "roster_admin_ips": frozenset(roster_admin_ips) if roster_admin_ips else _local_ips(),
             "_roster_admin_dynamic": not roster_admin_ips,
+            "roster_public": bool(roster_public),
             "rate": rate,
         },
     )
@@ -1466,6 +1496,11 @@ def _autostart_args(args: argparse.Namespace) -> list[str]:
         extra += ["--state-dir", str(Path(args.state_dir).resolve())]
     if args.allow_cidrs != ",".join(DEFAULT_CIDRS):
         extra += ["--allow-cidrs", str(args.allow_cidrs)]
+    deny = str(getattr(args, "deny_cidrs", "") or "").strip()
+    if deny:
+        extra += ["--deny-cidrs", deny]
+    if getattr(args, "roster_public", False):
+        extra += ["--roster-public"]
     for flag, value in (
         ("--package-zip", args.package_zip),
         ("--manifest", args.manifest),
@@ -1496,6 +1531,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--state-dir", default=str(Path.home() / ".landoc-registry"))
     parser.add_argument("--allow-cidrs", default=",".join(DEFAULT_CIDRS), help="允许来源网段，逗号分隔")
+    parser.add_argument(
+        "--deny-cidrs",
+        default="",
+        help="显式拒绝来源网段，逗号分隔（优先于 --allow-cidrs；空=不额外拒绝）",
+    )
     parser.add_argument("--package-zip", default=None, help="库软件 zip 的路径（默认在 exe 同目录或 distribution/ 找）")
     parser.add_argument(
         "--manifest",
@@ -1507,6 +1547,11 @@ def main(argv: list[str] | None = None) -> int:
         "--roster",
         default=None,
         help="部门授权名单的存放位置（默认 <state-dir>/roster.csv；库软件发布名单时写这里）",
+    )
+    parser.add_argument(
+        "--roster-public",
+        action="store_true",
+        help="允许中心允许网段内的机器 GET /roster.csv（库端一键拉取需要；默认只允许中心本机）",
     )
     parser.add_argument("--install-autostart", action="store_true", help="写开机自启（HKCU Run，带看门狗），然后退出")
     parser.add_argument("--remove-autostart", action="store_true", help="删掉开机自启，然后退出")
@@ -1569,6 +1614,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     cidrs = [part.strip() for part in args.allow_cidrs.split(",") if part.strip()]
+    deny_cidrs = [part.strip() for part in str(args.deny_cidrs or "").split(",") if part.strip()]
+    # 黑名单不能“写错就静默失效”：坏项直接拒绝启动，避免管理员以为挡住了其实没挡。
+    try:
+        for item in deny_cidrs:
+            ipaddress.ip_network(item, strict=False)
+    except ValueError as exc:
+        print(f"[错误] --deny-cidrs 不合法：{exc}", file=sys.stderr)
+        return 2
     state_dir = Path(args.state_dir)
     store = RegistryStore(state_dir / "registry.json")
     package = Path(args.package_zip) if args.package_zip else default_package_zip()
@@ -1580,10 +1633,12 @@ def main(argv: list[str] | None = None) -> int:
             store,
             port=args.port,
             allow_cidrs=cidrs,
+            deny_cidrs=deny_cidrs,
             package_zip=package,
             manifest=manifest_path,
             advertise=args.advertise,
             roster_path=roster_path,
+            roster_public=args.roster_public,
             rate=RateLimiter(REGISTRY_RATE),
         )
     except OSError as exc:

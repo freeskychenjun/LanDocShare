@@ -137,3 +137,78 @@ def test_rebuild_menu_item_switches_between_rebuild_and_stop():
     assert tray.TrayApp._rebuild_label(owner) == "停止建库"
     tray.TrayApp._rebuild_or_stop(owner)
     assert owner.app.calls == ["update", "stop"]
+
+
+# --------------------------------------------------------------------------- #
+# 「打开库目录」：资源管理器打开库目录，不依赖 .json 的文件关联
+# --------------------------------------------------------------------------- #
+class _Opened(types.SimpleNamespace):
+    """够 _open_path 用的假托盘：只记通知，不建图标。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.notes: list[str] = []
+
+    def _notify(self, message: str) -> None:
+        self.notes.append(message)
+
+
+def _owner(cfg):
+    """带上真的 _open_path 绑定，这样 _open_lib_dir / _open_logs 都能直接调。"""
+    owner = _Opened()
+    owner.cfg = cfg
+    owner._open_path = lambda path, what: tray.TrayApp._open_path(owner, path, what)
+    return owner
+
+
+def test_open_lib_dir_starts_explorer_on_the_library(tmp_path, monkeypatch):
+    """库目录存在 → 交给系统打开；这条路径必须"点了有反应"。"""
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    opened: list[str] = []
+    monkeypatch.setattr("os.startfile", lambda path, *a: opened.append(path), raising=False)
+
+    tray.TrayApp._open_lib_dir(_owner(Config(name="库", lib_dir=lib_dir)))
+
+    assert opened == [str(lib_dir)]
+
+
+def test_open_path_falls_back_to_explorer_when_the_shell_refuses(tmp_path, monkeypatch):
+    """关联坏掉时 os.startfile 会抛 OSError —— 退回 explorer，别静默失败。"""
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    spawned: list[list[str]] = []
+
+    def boom(path, *a):
+        raise OSError("没有应用程序与此操作的指定文件有关联")
+
+    monkeypatch.setattr("os.startfile", boom, raising=False)
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, *a, **k: spawned.append(cmd), raising=False)
+
+    owner = _owner(Config(name="库", lib_dir=lib_dir))
+    tray.TrayApp._open_path(owner, lib_dir, "库目录")
+
+    assert spawned == [["explorer", str(lib_dir)]]
+    assert owner.notes == []
+
+
+def test_open_path_says_so_when_the_folder_is_gone(tmp_path):
+    """目录不在了就说"找不到"，不能像旧版那样啥也不发生。"""
+    owner = _owner(Config(name="库", lib_dir=tmp_path))
+    tray.TrayApp._open_path(owner, tmp_path / "没有这个目录", "库目录")
+
+    assert owner.notes and "找不到库目录" in owner.notes[0]
+    assert str(tmp_path / "没有这个目录") in owner.notes[0]
+
+
+def test_open_logs_creates_the_folder_first(tmp_path, monkeypatch):
+    """刚建库还没写过日志时 logs 目录不存在：先建出来再打开。"""
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    opened: list[str] = []
+    monkeypatch.setattr("os.startfile", lambda path, *a: opened.append(path), raising=False)
+
+    tray.TrayApp._open_logs(_owner(Config(name="库", lib_dir=lib_dir)))
+
+    assert (lib_dir / "logs").is_dir()
+    assert opened == [str(lib_dir / "logs")]
