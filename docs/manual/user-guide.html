@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LanDocShare 使用说明 · v0.2.20</title>
+<style>
+  :root {
+    --ink: #1b2430;
+    --ink-soft: #4a5867;
+    --ink-faint: #7b8896;
+    --line: #e2e8ef;
+    --line-strong: #cbd5e1;
+    --bg: #ffffff;
+    --bg-soft: #f6f8fb;
+    --accent: #1a6fc4;
+    --accent-soft: #eaf3fc;
+    --tip: #17795e;
+    --tip-bg: #e9f7f1;
+    --warn: #9a6400;
+    --warn-bg: #fdf3df;
+    --danger: #b02a2a;
+    --danger-bg: #fdecec;
+    --code-bg: #f3f5f8;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16, 32, 56, .06), 0 8px 24px rgba(16, 32, 56, .05);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--bg-soft);
+    font: 16px/1.75 "Segoe UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .layout {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 28px 80px;
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: 44px;
+    align-items: start;
+  }
+  /* ---------- 左侧目录 ---------- */
+  nav.toc {
+    position: sticky;
+    top: 32px;
+    font-size: 14px;
+    border-right: 1px solid var(--line);
+    padding-right: 18px;
+  }
+  nav.toc .brand {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: .2px;
+    margin-bottom: 4px;
+  }
+  nav.toc .brand span { color: var(--accent); }
+  nav.toc .ver {
+    color: var(--ink-faint);
+    font-size: 12.5px;
+    margin-bottom: 18px;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: sec;
+  }
+  nav.toc li { margin: 1px 0; counter-increment: sec; }
+  nav.toc a {
+    display: block;
+    padding: 4px 8px 4px 30px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-radius: 6px;
+    position: relative;
+    line-height: 1.45;
+  }
+  nav.toc a::before {
+    content: counter(sec);
+    position: absolute;
+    left: 6px;
+    top: 4px;
+    width: 18px;
+    text-align: right;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+    font-size: 12.5px;
+  }
+  nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  nav.toc .sub { padding-left: 44px; font-size: 13px; color: var(--ink-faint); }
+
+  /* ---------- 正文 ---------- */
+  article {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 48px 56px 64px;
+    max-width: 860px;
+  }
+  article > header { border-bottom: 1px solid var(--line); padding-bottom: 26px; margin-bottom: 34px; }
+  h1 {
+    font-size: 30px;
+    line-height: 1.3;
+    margin: 0 0 10px;
+    letter-spacing: .3px;
+  }
+  .lede { color: var(--ink-soft); font-size: 16.5px; margin: 0; }
+  .meta { margin-top: 14px; color: var(--ink-faint); font-size: 13px; }
+  .meta code { font-size: 12.5px; }
+  h2 {
+    font-size: 22px;
+    margin: 52px 0 14px;
+    padding-top: 8px;
+    letter-spacing: .2px;
+  }
+  h2 .num {
+    display: inline-block;
+    min-width: 30px;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  h3 { font-size: 17px; margin: 30px 0 8px; }
+  h4 { font-size: 15px; margin: 22px 0 6px; color: var(--ink-soft); }
+  p { margin: 10px 0; }
+  ul, ol { margin: 10px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  li > ul, li > ol { margin: 4px 0; }
+  a { color: var(--accent); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 36px 0; }
+  code {
+    font: 13.5px/1.6 "Cascadia Mono", Consolas, "SFMono-Regular", monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: #24313f;
+    word-break: break-word;
+  }
+  pre {
+    background: #1e2733;
+    color: #e6edf5;
+    padding: 16px 18px;
+    border-radius: var(--radius);
+    overflow: auto;
+    font: 13px/1.7 "Cascadia Mono", Consolas, monospace;
+    margin: 14px 0;
+  }
+  pre code { background: none; border: 0; padding: 0; color: inherit; font-size: 13px; }
+  kbd {
+    font: 12px/1 "Cascadia Mono", Consolas, monospace;
+    border: 1px solid var(--line-strong);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 2px 6px;
+    background: #fff;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  th { background: var(--bg-soft); font-weight: 600; color: var(--ink-soft); }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+
+  /* 提示块 */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin: 18px 0;
+    font-size: 15px;
+  }
+  .callout > b:first-child { display: block; margin-bottom: 4px; }
+  .callout.tip { border-color: var(--tip); background: var(--tip-bg); }
+  .callout.warn { border-color: #d79a2b; background: var(--warn-bg); }
+  .callout.danger { border-color: var(--danger); background: var(--danger-bg); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  figure { margin: 22px 0; }
+  figure img {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  figcaption { color: var(--ink-faint); font-size: 13px; margin-top: 8px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+  .card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    background: #fff;
+  }
+  .card h4 { margin: 0 0 6px; color: var(--ink); font-size: 15px; }
+  .card p { margin: 4px 0; font-size: 14.5px; color: var(--ink-soft); }
+
+  .steps { counter-reset: step; list-style: none; padding-left: 0; margin: 18px 0; }
+  .steps > li {
+    position: relative;
+    padding: 2px 0 2px 44px;
+    margin: 12px 0;
+  }
+  .steps > li::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .steps > li b { display: block; }
+  .steps > li span { color: var(--ink-soft); font-size: 14.5px; }
+
+  footer.doc {
+    margin-top: 56px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-faint);
+    font-size: 13px;
+  }
+
+  @media (max-width: 980px) {
+    .layout { grid-template-columns: 1fr; padding: 24px 16px 60px; gap: 20px; }
+    nav.toc { position: static; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 14px; }
+    nav.toc ol { columns: 2; column-gap: 18px; }
+    article { padding: 28px 22px 40px; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+  @media print {
+    body { background: #fff; }
+    .layout { display: block; padding: 0; max-width: none; }
+    nav.toc { display: none; }
+    article { border: 0; box-shadow: none; padding: 0; max-width: none; }
+    h2 { page-break-after: avoid; }
+    pre, figure, table, .callout { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <div class="brand">LanDoc<span>Share</span></div>
+  <div class="ver">使用说明 · v0.2.20</div>
+  <ol>
+    <li><a href="#intro">这是什么</a></li>
+    <li><a href="#quick">三步上手</a></li>
+    <li><a href="#install">装在哪、怎么启动</a></li>
+    <li><a href="#wizard">建库向导</a></li>
+    <li><a href="#status">状态窗口</a></li>
+    <li><a href="#tray">托盘菜单</a></li>
+    <li><a href="#settings">修改建库设置</a></li>
+    <li><a href="#roster">授权名单</a></li>
+    <li><a href="#cleanup">清理与瘦身</a></li>
+    <li><a href="#search">同事怎么查（网页）</a></li>
+    <li><a href="#skill">在 AI 助手里查</a></li>
+    <li><a href="#ocr">扫描件 OCR</a></li>
+    <li><a href="#update">版本与更新</a></li>
+    <li><a href="#faq">常见问题</a></li>
+    <li><a href="#cli">命令行速查</a></li>
+    <li><a href="#files">配置、日志与端口</a></li>
+    <li><a href="#security">安全边界</a></li>
+  </ol>
+</nav>
+
+<article>
+<header>
+  <h1>LanDocShare 使用说明</h1>
+  <p class="lede">把自己的资料库共享给同事：同事打开一个网址就能搜到你授权范围内的文档<b>片段与表格</b>，全文不出这台电脑。</p>
+  <p class="meta">适用版本 v0.2.20 · Windows 10/11 x64 · 更新于 2026-11-19</p>
+</header>
+
+<!-- 1 -->
+<h2 id="intro"><span class="num">1</span>这是什么</h2>
+
+<p>LanDocShare 是装在<b>资料主人</b>电脑上的一个小程序。它做三件事：</p>
+<ol>
+  <li><b>把文档转成可检索的文字</b>。Word / PowerPoint / PDF（含加密文档、扫描件）转成 Markdown，写进本机的全文索引。</li>
+  <li><b>起一个只读检索服务</b>。同网段的同事打开 <code>http://你的IP:端口/</code> 就能搜，返回命中片段和表格，不提供全文、不提供下载。</li>
+  <li><b>管权限</b>。按 IP 放行（网段 / 名单 / 仅本机），黑名单可精确挡人。</li>
+</ol>
+
+<figure>
+  <svg viewBox="0 0 820 250" width="100%" role="img" aria-label="LanDocShare 结构示意">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+        <path d="M0,0 L9,4.5 L0,9 z" fill="#8fa3b8"/>
+      </marker>
+    </defs>
+    <rect x="12" y="30" width="250" height="180" rx="12" fill="#eef5fd" stroke="#b9d3ee"/>
+    <text x="30" y="58" font-size="14" font-weight="700" fill="#1b2430">库主人的电脑</text>
+    <rect x="32" y="72" width="210" height="34" rx="6" fill="#fff" stroke="#cbd5e1"/>
+    <text x="44" y="94" font-size="12.5" fill="#33414f">LanDocShare.exe（托盘）</text>
+    <rect x="32" y="116" width="210" height="34" rx="6" fill="#fff" stroke="#cbd5e1"/>
+    <text x="44" y="138" font-size="12.5" fill="#33414f">资料库 D:\MyLib（明文）</text>
+    <rect x="32" y="160" width="210" height="34" rx="6" fill="#fff" stroke="#cbd5e1"/>
+    <text x="44" y="182" font-size="12.5" fill="#33414f">检索服务 :8768</text>
+
+    <rect x="330" y="86" width="160" height="70" rx="12" fill="#f4f0fb" stroke="#c9bce4"/>
+    <text x="348" y="112" font-size="13" font-weight="700" fill="#1b2430">登记中心 :8767</text>
+    <text x="348" y="134" font-size="11.5" fill="#4a5867">只认 IP，转交清单</text>
+
+    <rect x="560" y="30" width="248" height="180" rx="12" fill="#eefaf4" stroke="#b4e0cc"/>
+    <text x="578" y="58" font-size="14" font-weight="700" fill="#1b2430">同事</text>
+    <rect x="580" y="72" width="208" height="34" rx="6" fill="#fff" stroke="#cbd5e1"/>
+    <text x="592" y="94" font-size="12.5" fill="#33414f">浏览器：搜</text>
+    <rect x="580" y="116" width="208" height="34" rx="6" fill="#fff" stroke="#cbd5e1"/>
+    <text x="592" y="138" font-size="12.5" fill="#33414f">AI 助手：lan-lib-search</text>
+
+    <line x1="262" y1="100" x2="326" y2="112" stroke="#8fa3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+    <text x="266" y="92" font-size="11" fill="#7b8896">心跳 60s</text>
+    <line x1="494" y1="104" x2="556" y2="86" stroke="#8fa3b8" stroke-width="1.6" marker-end="url(#ar)"/>
+    <text x="500" y="100" font-size="11" fill="#7b8896">清单</text>
+    <line x1="556" y1="132" x2="262" y2="176" stroke="#8fa3b8" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+    <text x="380" y="196" font-size="11" fill="#7b8896">直接检索：片段 / 表格</text>
+  </svg>
+  <figcaption>没有登记中心也能用：同事知道你的地址就直接搜。中心只是让大家「发现」彼此。</figcaption>
+</figure>
+
+<div class="grid2">
+  <div class="card">
+    <h4>你是库主人</h4>
+    <p>装程序 → 建库向导选文件夹 → 保持托盘程序在运行。你的文档只在这台机器上。</p>
+  </div>
+  <div class="card">
+    <h4>你是同事</h4>
+    <p>打开 <code>http://10.91.1.197:8767/</code> 找库，或直接用库主人给你的地址搜。不需要装任何东西。</p>
+  </div>
+</div>
+
+<!-- 2 -->
+<h2 id="quick"><span class="num">2</span>三步上手</h2>
+<ol class="steps">
+  <li><b>拿到程序</b><span>从登记中心首页下载 <code>LanDocShare.zip</code>，解压到任意目录（别放 C 盘根目录、别放共享盘上）。</span></li>
+  <li><b>双击 <code>LanDocShare.exe</code></b><span>第一次会弹建库向导：填库名、选要共享的文件夹、选谁能查，点「建库」。之后它会缩到托盘，空闲时自动转换文档。</span></li>
+  <li><b>把地址发出去</b><span>状态窗口里有「服务地址」，点「复制地址」发给同事；或者在状态窗口点「打开检索页」自己先搜一下。</span></li>
+</ol>
+
+<div class="callout tip">
+  <b>什么时候能搜到</b>
+  <p>建库不是瞬间完成的：程序只在<b>你离开电脑时</b>（5 分钟无键鼠、或锁屏）才转换，免得跟 Office 抢窗口。想马上转，点托盘菜单「立即重建索引」或状态窗口的「立即更新」，它会一直转到没有新文档为止。</p>
+</div>
+
+<!-- 3 -->
+<h2 id="install"><span class="num">3</span>装在哪、怎么启动</h2>
+
+<h3>环境要求</h3>
+<table>
+  <tr><th style="width:34%">项目</th><th>说明</th></tr>
+  <tr><td>系统</td><td>Windows 10 / 11，64 位</td></tr>
+  <tr><td>Office</td><td>装了 Office 或 WPS 才能转 <code>.doc/.docx/.ppt/.pptx</code>；没有也能用，只是这几类记失败</td></tr>
+  <tr><td>Acrobat</td><td>可选。有 Acrobat 时加密 PDF 读得更快更稳；没有则走随包的兜底工具</td></tr>
+  <tr><td>磁盘</td><td>库目录 ≈ 原文档 1~2 倍（存 Markdown 副本 + 索引）</td></tr>
+  <tr><td>网络</td><td>和同事在同一网段（默认 <code>10.91.0.0/16</code>）</td></tr>
+</table>
+
+<h3>第一次启动</h3>
+<ul>
+  <li>双击 <code>LanDocShare.exe</code>：首次弹向导；以后每次启动直接起服务并缩到托盘（托盘图标是一个纸页）。</li>
+  <li>重复双击<b>不会</b>起第二个服务，只会把已经在跑的那个状态窗口叫出来。</li>
+  <li>不想每次手动开：托盘菜单勾「开机自启」（写注册表 <code>HKCU\...\Run</code>，不需要管理员）。</li>
+</ul>
+
+<div class="callout warn">
+  <b>端口</b>
+  <p>库服务默认从 <b>8766</b> 起，被占用就顺延（8767 留给登记中心，所以常落在 8768）。实际端口以状态窗口「服务地址」为准，别照着文档硬填。</p>
+</div>
+
+<h3>建议的摆放方式</h3>
+<ul>
+  <li>程序解压到固定目录（如 <code>D:\Apps\LanDocShare</code>），升级时整目录替换。</li>
+  <li>库目录放在本机硬盘上：<b>不要</b>放在网络盘、OneDrive 同步目录或移动硬盘里（盘一拔，文档会被标成「源文件已不在」）。</li>
+</ul>
+
+<!-- 4 -->
+<h2 id="wizard"><span class="num">4</span>建库向导</h2>
+
+<p>首次运行自动弹出；建好之后从托盘菜单「修改建库设置…」重开，字段会预填当前值。</p>
+
+<figure>
+  <img src="images/wizard.png" alt="建库向导：资料库 / 共享哪些文件夹 / 谁能查 三组">
+  <figcaption>建库向导分三组：资料库、共享哪些文件夹、谁能查。窗口打开时居中显示。</figcaption>
+</figure>
+
+<h3>资料库</h3>
+<ul>
+  <li><b>库名称</b>：同事看到的库名，比如「陈鋆的资料库」。写清楚是谁的，同事才知道该找谁。</li>
+  <li><b>库位置</b>：索引、Markdown 副本、日志放哪。默认在「我的文档」下，可以改。改建库设置时这一项是锁定的——搬库不做。</li>
+</ul>
+
+<h3>共享哪些文件夹</h3>
+<ul>
+  <li>点「添加…」选目录，可加多个；选中后点「移除」去掉。</li>
+  <li>下面会当场估算「约 N 篇 · 多大 · 要多久」（只统计文件、不打开内容），据此决定要不要一次全加。</li>
+  <li><b>加了就共享</b>：这个目录里的文档会对「谁能查」里允许的人可见，加之前想清楚。</li>
+  <li>子目录自动包含；<code>.xls/.xlsx/.et</code> 暂不支持，<code>~$</code> 临时文件、隐藏目录自动跳过。</li>
+</ul>
+
+<h3>谁能查</h3>
+<table>
+  <tr><th style="width:30%">选项</th><th>效果</th></tr>
+  <tr><td>公司内网</td><td>「允许的网段」里的机器都能查，不认人。默认 <code>10.91.0.0/16</code>，可改成更小的网段（如只给本科室 <code>10.91.1.0/24</code>）。</td></tr>
+  <tr><td>仅指定名单</td><td>只有名单里登记过 IP 的人能查。<b>按 IP 放行，姓名只用于日志</b>——知道姓名进不来。名单在「授权名单…」窗口维护。</td></tr>
+  <tr><td>仅本机</td><td>只有这台电脑能查，同事打不开。临时不想共享时用这个。</td></tr>
+</table>
+
+<p><b>允许的网段</b>：多个用逗号分隔，如 <code>10.91.1.0/24, 10.91.2.0/24</code>。<br>
+<b>拒绝的网段</b>：留空 = 不拒绝；填了就是黑名单，<b>优先于允许网段和名单</b>。别把自己（<code>127.0.0.1</code>）写进去，写了本机也打不开。</p>
+
+<div class="callout tip">
+  <b>选不准就先用「公司内网」</b>
+  <p>「仅指定名单」需要先有人，首次建库时名单是空的，所以先建库、再去「授权名单…」加人，回来改成名单模式，改动当场生效、不用重启。</p>
+</div>
+
+<!-- 5 -->
+<h2 id="status"><span class="num">5</span>状态窗口</h2>
+
+<p>启动即弹出；关掉只是隐藏，双击托盘图标再打开。每行都有用：</p>
+
+<table>
+  <tr><th style="width:26%">行</th><th>看什么</th></tr>
+  <tr><td>状态</td><td>「建库中：已转换 300 篇 · 还剩 700 篇（约 1 小时）」或「已暂停」「运行中」</td></tr>
+  <tr><td>文档</td><td>能搜到的篇数；有失败时显示「N 篇 · M 篇转换失败」</td></tr>
+  <tr><td>待收录</td><td>只在新文档还没转完时出现</td></tr>
+  <tr><td>共享范围</td><td>网段 / 名单几人 / 仅本机；用了黑名单会显示「· 拒绝 N 段」</td></tr>
+  <tr><td>扫描件 OCR</td><td>走的是「Windows 系统 OCR」还是「Tesseract 兜底」；两条都没有时这行不显示</td></tr>
+  <tr><td>服务地址</td><td>发给同事的网址，例如 <code>http://10.91.1.197:8768/</code></td></tr>
+  <tr><td>上次扫描</td><td>最近一次检查新文档的时间</td></tr>
+  <tr><td>版本</td><td>本机版本；有新版本时显示「v0.2.20 → v0.2.21（已下载）」</td></tr>
+</table>
+
+<h3>按钮</h3>
+<ul>
+  <li><b>打开检索页</b>：用浏览器打开自己的库，先自己搜一遍最直观。</li>
+  <li><b>立即更新</b>：跳过「空闲才转」的限制，马上开始收录，直到没有新文档。</li>
+  <li><b>暂停共享 / 恢复共享</b>：暂停后任何人都连不上（本机仍可用命令行检索）。</li>
+  <li><b>授权名单</b>：打开名单窗口（见第 8 节）。</li>
+  <li><b>复制地址</b>：把服务地址复制到剪贴板。</li>
+  <li><b>清理…</b>：源文件已不在的文档攒到 N 篇时才亮，点一下问一次才删（见第 9 节）。</li>
+  <li><b>检查更新 / 下载更新 / 升级到 v…</b>：见第 13 节。</li>
+</ul>
+
+<!-- 6 -->
+<h2 id="tray"><span class="num">6</span>托盘菜单</h2>
+
+<table>
+  <tr><th style="width:34%">菜单项</th><th>用途</th></tr>
+  <tr><td>显示状态窗口</td><td>把状态窗口叫出来（每次都回到屏幕正中）</td></tr>
+  <tr><td>打开库主页</td><td>浏览器打开检索页</td></tr>
+  <tr><td>可访问的资料库…</td><td>列出登记中心里对你开放的库，双击直接打开</td></tr>
+  <tr><td>检查更新</td><td>手动查新版本；平时每 6 小时自动查一次</td></tr>
+  <tr><td>立即重建索引</td><td>建库期间变成「停止建库」</td></tr>
+  <tr><td>修改建库设置…</td><td>改库名、共享目录、谁能查（当场生效）</td></tr>
+  <tr><td>授权名单…</td><td>增删人员、导入导出、与中心同步</td></tr>
+  <tr><td>暂停共享</td><td>勾选后外部一律 403</td></tr>
+  <tr><td>打开库目录</td><td>资源管理器打开库位置（看 md、日志）</td></tr>
+  <tr><td>开机自启</td><td>写/删注册表 Run 项</td></tr>
+  <tr><td>查看日志</td><td>打开 <code>logs\app.log</code></td></tr>
+  <tr><td>退出</td><td>真正退出（关状态窗口只是隐藏）</td></tr>
+</table>
+
+<div class="callout warn">
+  <b>Win11 托盘图标「不见了」</b>
+  <p>新图标会被收进任务栏 <code>^</code> 溢出区。点开 <code>^</code>，把纸页图标拖到任务栏上就常驻了。</p>
+</div>
+
+<!-- 7 -->
+<h2 id="settings"><span class="num">7</span>修改建库设置</h2>
+
+<p>托盘菜单 →「修改建库设置…」。与首次建库是同一个窗口，但：</p>
+<ul>
+  <li>库名、共享目录、网段都会预填当前值，改完点「保存」<b>当场生效</b>：服务端每个请求现读共享范围，调度线程每轮现读目录，不用重启。</li>
+  <li><b>库位置锁定</b>：搬库要重转，不在这个窗口做。</li>
+  <li><b>存储策略不动</b>：<code>store_content</code>、<code>snippet_only_chars</code> 这些只能改 <code>config.json</code>，重开向导不会把它们冲掉。</li>
+  <li><b>撤掉某个共享目录</b>：该目录下的文档标记为「已撤回」——你自己还能搜到，同事看不到；把目录加回来就自动恢复。<b>不会</b>删掉库里的副本。</li>
+</ul>
+
+<!-- 8 -->
+<h2 id="roster"><span class="num">8</span>授权名单</h2>
+
+<p>托盘菜单 →「授权名单…」。名单是「姓名 = 备注，IP = 真正凭证」：</p>
+<ul>
+  <li>一条记录必须有 IP；<b>空 IP 的条目不授权</b>，填了姓名也进不来。</li>
+  <li>IP 会校验是否落在允许网段内，不在会提示「这个人会连不上」。</li>
+  <li>支持从 CSV 导入（两列 <code>姓名,IP</code>，可带表头）、导出给同事、按部门分组。</li>
+  <li>名单只存本机 <code>config.json</code>；登记中心会同步一份用于「谁能看到这个库」，只含姓名/IP，不含文档内容。</li>
+  <li>改名单即时生效，不用重启。</li>
+</ul>
+
+<div class="callout">
+  <b>同事那边看到什么</b>
+  <p>名字只在审计日志里出现。同事的浏览器不填姓名也能查（只要 IP 在名单里）；填错姓名反而可能匹配不上。</p>
+</div>
+
+<!-- 9 -->
+<h2 id="cleanup"><span class="num">9</span>清理与瘦身</h2>
+
+<p>库的设计是<b>只增不减</b>：源文件被删、被改名、移动硬盘没插，库里的副本都留着——防止「盘一拔，整库清空」。代价是：</p>
+<ul>
+  <li>文件删了，内容<b>还能被搜到</b>。这是隐私问题，所以要有一个由人点头的删除出口。</li>
+  <li>出口就是状态窗口的「清理…」按钮（攒到 N 篇源文件缺失时亮起），或者命令行 <code>prune --gone</code>。它删掉这些文档的 Markdown 副本、索引行，以及失败记录。</li>
+  <li>「已撤回」（目录从共享列表里移掉）的文档<b>不在</b>清理范围，避免误删。</li>
+</ul>
+
+<pre><code>LanDocShare.exe prune --lib-dir D:\MyLib          # 只报告，不删
+LanDocShare.exe prune --lib-dir D:\MyLib --gone   # 真删</code></pre>
+
+<div class="callout danger">
+  <b>不可撤销</b>
+  <p>删了要恢复，只能把源文件放回来重新收录（会重转一遍）。所以：移动硬盘暂时没插、网盘暂时掉线时，<b>别点清理</b>。</p>
+</div>
+
+<!-- 10 -->
+<h2 id="search"><span class="num">10</span>同事怎么查（网页）</h2>
+
+<ol>
+  <li>打开库主人给你的地址，例如 <code>http://10.91.1.197:8768/</code>；或在登记中心 <code>http://10.91.1.197:8767/</code> 首页看「对你开放的库」，点进去。</li>
+  <li>搜索框输入关键词，回车。左边是目录树，可以点进某个文件夹只看它。</li>
+  <li>结果给的是<b>命中片段</b>（关键词前后几行）和表格；没有全文下载，这是设计如此。</li>
+  <li>两个字的词（「洪水」「乐平」）也能搜——走的是另一条索引路径，结果一样。</li>
+</ol>
+
+<h3>搜不到时</h3>
+<ul>
+  <li>确认文档已经收录（库主人那边状态窗口的篇数、或「上次扫描」时间）。</li>
+  <li>确认自己的 IP 在允许范围（网段或名单）。</li>
+  <li>文档可能是扫描件：文字是 OCR 出来的，个别字会错，换个说法再搜。</li>
+  <li>被撤回的目录，只有库主人自己搜得到。</li>
+</ul>
+
+<!-- 11 -->
+<h2 id="skill"><span class="num">11</span>在 AI 助手里查</h2>
+
+<p>仓库里带了客户端 skill <code>skill/lan-lib-search/</code>：把整个目录拷到你的 AI 助手 skills 目录，之后说「查一下院里马斯京根的资料」它就会自动调。</p>
+<ul>
+  <li>触发：查/搜/找院里的资料、报告、方案、规程、批复。</li>
+  <li>原理：先问登记中心「对我开放的库有哪些」，再并发去各库检索，合并结果按库分组。</li>
+  <li>没装 Python 也能用：skill 里带 <code>curl</code> 降级路径。</li>
+  <li>返回片段和表格，<b>不返回全文</b>。</li>
+</ul>
+
+<!-- 12 -->
+<h2 id="ocr"><span class="num">12</span>扫描件 OCR</h2>
+
+<p>没有文字层的 PDF（扫描件）不再直接跳过：</p>
+<ol>
+  <li>先用 <b>Windows 自带 OCR</b>（中文语言包，不增加体积）；</li>
+  <li>识别不出来或字数太少，退回<b>随包的 Tesseract</b>（约 14.7 MB，含中英模型）。</li>
+</ol>
+
+<table>
+  <tr><th style="width:30%">参数</th><th>默认</th></tr>
+  <tr><td>开关</td><td><code>ocr_scanned_pdfs: true</code>（关掉就完全不渲染）</td></tr>
+  <tr><td>分辨率</td><td>300 dpi</td></tr>
+  <tr><td>最多识别</td><td>前 60 页</td></tr>
+  <tr><td>速度参考</td><td>2 页意见函约 2 秒 / 1600 字；38 篇 175 页约 7 分钟</td></tr>
+</table>
+
+<div class="callout warn">
+  <b>OCR 结果不是原文</b>
+  <p>打印体公文基本可读，但会出现错字（「赣」认成「考」这类），手写、表格线密的效果一般。每篇开头有一行提示「（扫描件：以下文字由 OCR 识别，可能有错字）」，引用前请核对。</p>
+</div>
+
+<!-- 13 -->
+<h2 id="update"><span class="num">13</span>版本与更新</h2>
+
+<ul>
+  <li><b>自动查</b>：每 6 小时查一次；托盘「检查更新」可手动查。</li>
+  <li><b>下载</b>：发现新版后菜单变成「下载新版本 v0.2.21」；下完变「升级到 v0.2.21」。</li>
+  <li><b>升级</b>：点一下就替换并重启，<b>失败了会自动回滚</b>到旧版本。</li>
+  <li><b>同事侧不用管</b>：检索页随程序一起发；同事自己那台机器的库软件也是各自升级。</li>
+  <li>版本号在状态窗口和 <code>latest.json</code> 里，升级前可以对照。</li>
+</ul>
+
+<!-- 14 -->
+<h2 id="faq"><span class="num">14</span>常见问题</h2>
+
+<h3>双击没反应 / 图标不出来</h3>
+<ul>
+  <li>可能已经在跑了：再双击一次会把状态窗口叫出来（单实例）。</li>
+  <li>Win11 看任务栏 <code>^</code> 溢出区。</li>
+  <li>看 <code>%LOCALAPPDATA%\LanDocShare\logs\tray.log</code>。</li>
+</ul>
+
+<h3>同事打开是「IP 不在授权名单里」</h3>
+<ul>
+  <li>他的 IP 不在允许网段，也不在名单里 → 库主人加 IP 或加网段（「修改建库设置…」或「授权名单…」）。</li>
+  <li>被黑名单挡了 → 看「拒绝的网段」有没有写到他。</li>
+  <li>注意：库里<b>不认姓名</b>，填名字没用。</li>
+</ul>
+
+<h3>「M 篇转换失败」</h3>
+<p><code>&lt;库目录&gt;\failures.json</code> 里有每篇的原因：</p>
+<table>
+  <tr><th style="width:32%">原因</th><th>含义与处理</th></tr>
+  <tr><td><code>no_office</code></td><td>没装 Office/WPS，装好后自动重试</td></tr>
+  <tr><td><code>no_reader</code></td><td>PDF 既没有文字层也没有可用读取器</td></tr>
+  <tr><td><code>no_ocr</code></td><td>扫描件但没有 OCR 引擎，装好语言包/换新版后自动重试</td></tr>
+  <tr><td><code>no_text_layer</code></td><td>扫描件且 OCR 也没认出字（可能是纯图片、空白页）</td></tr>
+  <tr><td><code>timeout</code></td><td>单篇超时（大文件/Office 卡住），改好文件或删掉记录会重试</td></tr>
+  <tr><td><code>password_protected</code></td><td>有打开密码，本程序不解口令</td></tr>
+</table>
+<p>同一文件版本连续失败一次就不再自动重试；装好环境（Office/Acrobat/OCR）后会自动放回队列。要立刻重试某篇：删掉它在 <code>failures.json</code> 里的条目，或让文件 mtime 变一下。</p>
+
+<h3>建库很慢 / 一直停在「还剩」</h3>
+<ul>
+  <li>它是「空闲才转」：你在用电脑时不动。点「立即更新」强制。</li>
+  <li>加密文档要起 Office/Acrobat，每篇几秒是正常的。</li>
+  <li>扫描件走 OCR，一页约 2 秒。</li>
+</ul>
+
+<h3>删了文件，为什么还能搜到</h3>
+<p>库只增不减（见第 9 节）。确认不再需要，点「清理…」或跑 <code>prune --gone</code>。</p>
+
+<h3>换了电脑/网卡，同事连不上</h3>
+<ul>
+  <li>服务地址里的 IP 变了（状态窗口「复制地址」拿新的）。</li>
+  <li>本机地址有 60 秒缓存，换网络后最多等一分钟，或重启程序。</li>
+</ul>
+
+<h3>保存设置时为什么闪黑框</h3>
+<p>0.2.17 起已修：程序调用 <code>tasklist/taskkill</code> 时隐藏窗口。如果还看到，说明你在用旧版本。</p>
+
+<!-- 15 -->
+<h2 id="cli"><span class="num">15</span>命令行速查</h2>
+
+<p>给愿意动手的人。全部命令都可以在程序目录下执行（打包版用 <code>LanDocShare.exe</code>，源码运行用 <code>python -m landoc.cli</code>）。</p>
+
+<pre><code># 建库（可重复 --folder；--allow-cidrs 支持逗号分隔）
+LanDocShare.exe init --lib-dir D:\MyLib --name 陈鋆的资料库 ^
+    --folder D:\资料 --allow-cidrs 10.91.1.0/24
+
+# 体检：抽样看明/密比例、本机有没有 Office / Acrobat
+LanDocShare.exe probe --lib-dir D:\MyLib
+
+# 转换（增量：再跑只处理有变化的文件）
+LanDocShare.exe convert --lib-dir D:\MyLib
+
+# 起服务（默认 8766，被占用顺延）
+LanDocShare.exe serve --lib-dir D:\MyLib
+
+# 统计 / 状态
+LanDocShare.exe status --lib-dir D:\MyLib
+
+# 名单维护（CSV 两列：姓名,IP；每行必须有 IP）
+LanDocShare.exe people --lib-dir D:\MyLib --csv 名单.csv
+LanDocShare.exe people --lib-dir D:\MyLib --export 名单.csv
+
+# 清理源文件已不在的文档
+LanDocShare.exe prune --lib-dir D:\MyLib [--gone]</code></pre>
+
+<h3>登记中心（一台常开机器）</h3>
+<pre><code># 前台起中心
+LanDocShare.exe registry --port 8767
+
+# 开机自启（带看门狗：中心退出自动拉起，卡死自动重启）
+LanDocShare.exe registry --install-autostart --port 8767 --package-zip D:\分发\LanDocShare.zip
+
+# 优雅停（重打包前用，避免文件被占用）
+LanDocShare.exe registry --stop</code></pre>
+
+<h3>让库去登记</h3>
+<pre><code>LanDocShare.exe init --lib-dir D:\MyLib --registry-url http://10.91.1.197:8767</code></pre>
+<p>之后每次启动、每 60 秒自动心跳，不用再管。</p>
+
+<!-- 16 -->
+<h2 id="files"><span class="num">16</span>配置、日志与端口</h2>
+
+<h3>库目录里有什么</h3>
+<pre><code>D:\MyLib\
+  config.json        库的配置（名字、共享目录、网段、名单、OCR 开关…）
+  library.db         FTS5 全文索引（SQLite）
+  state.json         扫描进度、每篇的状态与失败记录
+  failures.json      转换失败清单（排障先看这个）
+  md\                文档的 Markdown 副本（明文，只在本机）
+  logs\
+    app.log          运行日志（1 MB 轮转，留一份 .1）
+    access_log.jsonl 谁查了什么（4 MB 轮转）
+    update.log       自动更新日志</code></pre>
+
+<h3>配置项速查（config.json）</h3>
+<table>
+  <tr><th style="width:34%">键</th><th>含义</th></tr>
+  <tr><td><code>allow_cidrs</code></td><td>允许的网段；空数组 = 暂停共享（不是全网放行）</td></tr>
+  <tr><td><code>deny_cidrs</code></td><td>拒绝的网段，优先于允许</td></tr>
+  <tr><td><code>allow_people</code></td><td>姓名 → IP 的名单</td></tr>
+  <tr><td><code>snippet_tokens</code></td><td>每条命中片段的大致长度（默认 48）</td></tr>
+  <tr><td><code>snippet_only_chars</code></td><td>只索引前 N 字（默认 20000；调小更防外泄，但搜不到后半篇）</td></tr>
+  <tr><td><code>store_content</code></td><td>是否把正文写进索引（关掉后表格改从 md 抽）</td></tr>
+  <tr><td><code>render_md</code></td><td>是否落 Markdown 副本</td></tr>
+  <tr><td><code>ocr_scanned_pdfs</code></td><td>扫描件是否 OCR（默认 true）</td></tr>
+  <tr><td><code>ocr_dpi</code> / <code>ocr_max_pages</code></td><td>OCR 分辨率与前多少页（默认 300 / 60）</td></tr>
+  <tr><td><code>registry_url</code></td><td>登记中心地址；空 = 不登记</td></tr>
+  <tr><td><code>port</code></td><td>固定端口（0 或不填 = 自动挑）</td></tr>
+</table>
+
+<h3>端口</h3>
+<table>
+  <tr><th style="width:26%">端口</th><th>用途</th></tr>
+  <tr><td>8766 起</td><td>库的检索服务（被占用顺延；8767 留给中心）</td></tr>
+  <tr><td>8767</td><td>登记中心：清单、分发、更新</td></tr>
+</table>
+
+<!-- 17 -->
+<h2 id="security"><span class="num">17</span>安全边界</h2>
+
+<ul>
+  <li><b>全文不出本机</b>：对外只有命中片段和表格；<code>/download</code> 之类的全文接口不存在（只有库主人本机可读 md）。</li>
+  <li><b>索引与 md 是明文</b>：都落在本机库目录，磁盘被拷走就等于内容泄露——所以库目录别放共享盘/网盘。</li>
+  <li><b>按 IP 认人</b>：姓名只是备注，不是凭证；IP 可能被冒用，敏感库用「仅指定名单」并配合中心。</li>
+  <li><b>审计</b>：每次检索记 <code>access_log.jsonl</code>（来源 IP、查询词、条数）。</li>
+  <li><b>暂停共享</b>：清空允许网段，所有来源 403，本机仍可用。</li>
+  <li><b>撤回 ≠ 删除</b>：撤掉目录后同事看不到，但内容还在库里；要彻底删只能清理（删副本）或直接删库。</li>
+</ul>
+
+<footer class="doc">
+  LanDocShare v0.2.20 · 本说明随程序更新，仓库内路径 <code>docs/manual/user-guide.html</code>。<br>
+  排障先看 <code>&lt;库目录&gt;\logs\app.log</code> 与 <code>failures.json</code>；仍解决不了，把这两样发给维护人。
+</footer>
+
+</article>
+</div>
+</body>
+</html>
