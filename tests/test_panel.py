@@ -278,6 +278,14 @@ def test_center_window_uses_the_real_size_once_shown(monkeypatch):
     assert root.moved == ["+510+220"]
 
 
+def test_center_window_accepts_an_explicit_size_for_unmapped_windows(monkeypatch):
+    """建库向导还没 mainloop：Tk 报 1x1，必须用调用方算好的尺寸居中并定大小。"""
+    root = _FakeRoot(geometry="1x1")
+    monkeypatch.setattr(panel_module, "work_area", _fixed_area((0, 0, 1920, 1040)))
+    center_window(root, (800, 600))
+    assert root.moved == ["800x600+560+220"]
+
+
 def test_center_window_falls_back_to_the_tk_screen(monkeypatch):
     """拿不到显示器工作区（非 Windows / 被策略挡）也要能算出位置，不能把窗口开不出来。"""
     root = _FakeRoot(geometry="580x220", screen=(1920, 1080))

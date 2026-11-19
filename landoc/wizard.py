@@ -610,6 +610,18 @@ def run_wizard(
     sync_scope_state()
     poll_estimate()
     kick_estimate()
+
+    # 摆到屏幕正中：Tk 默认把没设过 geometry 的窗口丢在左上角，用户每次都要
+    # 自己拖。这里按布局算出来的尺寸居中（还没显示时 winfo_width() 只有 1，
+    # 所以用 reqwidth/reqheight）。
+    try:
+        from landoc.panel import center_window
+
+        root.update_idletasks()
+        center_window(root, (root.winfo_reqwidth(), root.winfo_reqheight()))
+    except Exception:  # noqa: BLE001 - 居中失败也不该让建库流程打不开
+        pass
+
     if parent is None:
         root.mainloop()
     else:

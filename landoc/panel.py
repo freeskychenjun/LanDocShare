@@ -144,11 +144,21 @@ def _window_size(root) -> tuple[int, int]:
         return max(root.winfo_reqwidth(), 1), max(root.winfo_reqheight(), 1)
 
 
-def center_window(root) -> None:
-    """把窗口挪到屏幕正中：托盘「显示状态窗口」每次打开都回到中间，不用满屏找。"""
-    width, height = _window_size(root)
+def center_window(root, size: tuple[int, int] | None = None) -> None:
+    """把窗口挪到屏幕正中：托盘「显示状态窗口」每次打开都回到中间，不用满屏找。
+
+    `size` 给还没显示、Tk 也报不出尺寸的窗口用（建库向导就是先摆好再 mainloop
+    的）：这时 `winfo_width()` 只有 1、`geometry()` 也是 "1x1"，照它居中会把
+    窗口摆到屏幕左上角，所以调用方把布局要求的大小算好传进来。
+    """
+    if size is None:
+        width, height = _window_size(root)
+        x, y = center_position(width, height, work_area(root))
+        root.geometry(f"+{x}+{y}")
+        return
+    width, height = size
     x, y = center_position(width, height, work_area(root))
-    root.geometry(f"+{x}+{y}")
+    root.geometry(f"{width}x{height}+{x}+{y}")
 
 
 def version_text(status: AppStatus) -> str:
