@@ -213,3 +213,61 @@ def test_open_logs_creates_the_folder_first(tmp_path, monkeypatch):
 
     assert (lib_dir / "logs").is_dir()
     assert opened == [str(lib_dir / "logs")]
+
+
+# --------------------------------------------------------------------------- #
+# 改完建库设置要马上开扫，不能等下一次空闲扫描
+# --------------------------------------------------------------------------- #
+def test_saving_library_settings_starts_a_scan_right_away(tmp_path, monkeypatch):
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    new_folder = tmp_path / "2011年项目"
+    new_folder.mkdir()
+    cfg = tray.Config(name="老库", lib_dir=lib_dir)
+    cfg.folders = [tmp_path / "测试目录"]
+    cfg.save()
+
+    edited = tray.Config(name="陈鋆的资料库", lib_dir=lib_dir)
+    edited.folders = [tmp_path / "测试目录", new_folder]
+    monkeypatch.setattr("landoc.wizard.run_wizard", lambda *a, **k: edited)
+
+    app = _FakeApp()
+    notes: list[str] = []
+    owner = types.SimpleNamespace(
+        cfg=cfg,
+        app=app,
+        notes=notes,
+        panel=types.SimpleNamespace(show=lambda: notes.append("panel")),
+        _notify=notes.append,
+    )
+
+    tray.TrayApp._apply_library_edits(owner)
+
+    assert app.calls == ["update"]  # 强制扫描的请求确实发给了 LibraryApp
+    assert cfg.folders == [tmp_path / "测试目录", new_folder]
+    assert new_folder.name in (lib_dir / "config.json").read_text(encoding="utf-8")
+    assert "panel" in notes  # 保存后把状态窗口叫出来，让用户看见进度
+    assert any("正在收录" in note for note in notes)
+
+
+def test_cancelling_library_settings_changes_nothing(tmp_path, monkeypatch):
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    cfg = tray.Config(name="老库", lib_dir=lib_dir)
+    cfg.save()
+    monkeypatch.setattr("landoc.wizard.run_wizard", lambda *a, **k: None)
+
+    app = _FakeApp()
+    notes: list[str] = []
+    owner = types.SimpleNamespace(
+        cfg=cfg,
+        app=app,
+        notes=notes,
+        panel=types.SimpleNamespace(show=lambda: notes.append("panel")),
+        _notify=notes.append,
+    )
+
+    tray.TrayApp._apply_library_edits(owner)
+
+    assert app.calls == []
+    assert notes == []

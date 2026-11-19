@@ -196,24 +196,28 @@ class TrayApp:
 
     def _edit_library(self) -> None:
         """改库名/文件夹/共享范围：向导在后台线程里开，改完当场生效。"""
+        threading.Thread(
+            target=self._apply_library_edits, name="landoc-wizard", daemon=True
+        ).start()
 
-        def work() -> None:
-            from landoc.wizard import apply_config, run_wizard
+    def _apply_library_edits(self) -> None:
+        """弹向导 → 应用改动 → 落盘 → 立刻开扫。
 
-            chosen = run_wizard(self.cfg.lib_dir, save=False, current=self.cfg)
-            if chosen is None:
-                return
-            apply_config(self.cfg, chosen)
-            self.cfg.save()
-            self.app.update_now()
-            self.panel.show()
-            if self.icon is not None:
-                try:
-                    self.icon.notify("建库设置已更新；新的文件夹会在下一轮扫描时收录", "LanDocShare")
-                except Exception:  # noqa: BLE001
-                    pass
+        单拎出来是为了能不开线程地测：保存后必须真的**马上**开始解析新文件夹，
+        而不是等下一次空闲扫描（用户加了目录就想立刻能搜到）。
+        """
+        from landoc.wizard import apply_config, run_wizard
 
-        threading.Thread(target=work, name="landoc-wizard", daemon=True).start()
+        chosen = run_wizard(self.cfg.lib_dir, save=False, current=self.cfg)
+        if chosen is None:
+            return
+        apply_config(self.cfg, chosen)
+        self.cfg.save()
+        # 新加的文件夹不该等"用户离开电脑"：这里请求一次强制扫描，越过空闲门控，
+        # 一轮轮跑到没有新增为止（见 LibraryApp.update_now / _drain）。
+        self.app.update_now()
+        self.panel.show()
+        self._notify("建库设置已更新，正在收录新文件夹里的文档")
 
     def _toggle_autostart(self) -> None:
         autostart.set_enabled(not autostart.is_enabled())
