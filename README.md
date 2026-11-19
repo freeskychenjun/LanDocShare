@@ -75,7 +75,7 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 
 双击 `LanDocShare.exe` 之后：起检索服务 + 后台等**空闲**（5 分钟无键鼠输入，或已锁屏）才做增量转换，不跟人抢 Office；重复双击不会起第二个服务，只把已运行实例的状态窗口打开。托盘菜单：显示状态窗口 / 打开库主页 / **检查更新（发现新版后变成「下载新版本 v…」→「升级到 v…」）** / **立即重建索引（正在建库时变成「停止建库」）** / 修改建库设置… / 暂停共享 / 打开库目录 / 开机自启 / 查看日志 / 退出。
 
-- **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。**名单编辑不在向导里**：向导只显示「已登记 N 人」，增删改到「授权名单…」窗口做；首次建库先选公司内网或仅本机，建好后去授权名单窗口添加人员，再回来改「仅指定名单」。
+- **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。**名单编辑不在向导里**：向导只显示「已登记 N 人」，增删改到「授权名单…」窗口做；首次建库先选公司内网或仅本机，建好后去授权名单窗口添加人员，再回来改「仅指定名单」。窗口本身分三组（资料库 / 共享哪些文件夹 / 谁能查），每组带边框，左列标签统一 10 字宽、右缘对齐，输入框左缘成一条竖线；文件夹列表带横、竖两条滚动条（共享十几个目录、路径又长时不用猜后面还有什么）；弹出时按实际大小摆到**屏幕正中**（`panel.center_window` 支持传入还没映射的窗口尺寸——Tk 那时只会报 1×1，照它算就跑到左上角去了），多显示器跟着鼠标所在的屏、1080 屏上不压任务栏。
 - **「谁能查」三档**：公司内网（默认网段 10.91.0.0/16，**可改**，如只给本院填 10.91.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；**姓名只用于日志/分组，不能当作访问凭证**——空 IP 的条目一律不授权，知道姓名也进不来。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（恒 false，仅为旧客户端兼容）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；每行必须有 IP，空 IP 会整批拒绝并报行号；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 10.91.1.0/24,10.91.10.0/24`。改名单**即时生效**，不用重启服务。
 - **要“整段放行、只挡几台”**：`deny_cidrs` 是黑名单，命中即 403，**优先于允许网段和名单**（连 `127.0.0.1` 也会被挡，别把本机写进去）。`init --deny-cidrs 10.91.1.50,10.91.1.0/28` 设置，`--deny-cidrs ""`（或 `无`）清空；中心侧同名参数 `registry --deny-cidrs` 挡的是“能打开中心页面/清单”的来源。库端与中心都在路由分发**之前**判黑名单，网页、`/api/*`、skill 一视同仁。建库向导「允许的网段」下面一行就是「拒绝的网段」（留空=不拒绝，全角逗号/分号都认），改完当场生效；状态窗口的「共享范围」会显示「· 拒绝 N 段」，不用去翻 `config.json` 才知道黑名单有几条。
 - **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数（有转换失败时显示「N 篇 · M 篇转换失败」）、共享范围、服务地址、上次扫描、**扫描件 OCR 走哪条路**（`Windows 系统 OCR` / `Tesseract 兜底` / 两条都没有时这一行不显示）、**版本**，带「打开检索页 / 立即更新 / **检查更新（有新版时变「下载更新」/「升级到 v…」）** / 暂停共享 / 授权名单 / 复制地址 / **清理…**」按钮。**清理…** 是「库只增不减」的唯一出口：源文件已不在的文档攒到 N 篇时按钮亮起、写「清理 N 篇」，点一下先问「要删掉这些文档的副本和索引行吗」，确认后才删（删之前源文档回来了就自动从名单里消失）；命令行等价物 `LanDocShare.exe prune --lib-dir … --gone`，打包版也走同一条路（`CLI_COMMANDS` 里已含 `prune`）。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。**每次打开都回到屏幕正中**（`center_window`：按光标所在显示器的工作区居中，多屏时跟着鼠标走、任务栏不算在内；把窗口拖到别处后再打开，仍回正中）。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
@@ -252,6 +252,7 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 | 建库中途断电/被关掉会白转吗 | 索引每 20 篇 `commit` 一次、`state.json` 每 60 秒整份重写一次，重启从下一篇继续（原来是整轮跑完才在 `finally` 写一次，CLI 全量 = 整库单事务） | `pipeline.COMMIT_EVERY` / `STATE_SECONDS` |
 | 删掉/移走源文档，库里的副本会不会跟着没 | **不会**：库只增不减。源文件消失（删了、改名、移走、共享盘没插）只是记一笔 `source_missing`，md 与索引行都留着、照常可检索，状态窗口报「M 篇源文件已不在（内容仍在库中）」；源文档回来后记号自动撤掉。**把整个文件夹从 `config.folders` 移掉**也不再删 md/索引：文档标记 `withdrawn`，库主人（本机/本机网卡 IP）仍可检索，其他人看不到；文件夹加回后自动恢复。想瘦身用 `landoc prune --gone`（只清源文件已不在的，撤回文档不会被误删；顺带清掉这些文档在 `state.json`/`failures.json` 里的失败记录，状态窗的"失败 N 篇"不会留着死条目）。早先是"这一轮没扫到就删"，拔了移动硬盘启动托盘会把整个库清空 | `pipeline.run` / `pipeline.prune_gone` / `pipeline._configured_tops` / `index.mark_withdrawn` |
 | 状态窗口怎么让人信"它没死" | 首行 `建库中：已转换 300 篇 · 还剩 700 篇（约 1 小时 2 分）`，另有「待收录」一行；ETA 用实测秒/篇的滑动平均（`rate_s_per_doc`），不因某篇超时而跳 | `app.AppStatus.summary` / `panel.phase_text` |
+| 保存建库设置时为什么闪一片黑框 | `office_bridge` 每篇转换前后都要跑 `tasklist`/`taskkill` 记基线、收尾——这两个是控制台程序，`subprocess.run` 不隐藏窗口就会每调一次闪一个 cmd 窗口（一篇 3~4 次，看着像程序在抽风）。两处都带 `creationflags=CREATE_NO_WINDOW` | `office_bridge._pids_of` / `_kill_office_processes` |
 | 出问题去哪看 | 状态窗口只有"最后一句话"，细节在 `<库目录>\logs\app.log`（超 1 MB 滚成 `.1`）：启动、扫描失败、登记中心恢复，以及**每轮一行摘要**（收录/失败/尝试/剩余/用时/停止原因，空转轮不写） | `app.log_event` / `app._drain` |
 | 网段放行判定为什么只有一份 | `netinfo.cidr_allowed()` 同时给库端服务与登记中心用：空清单 = 暂停共享 = 拒绝所有来源（绝不反向变成全网放行），写错的网段跳过不致命 | `netinfo.cidr_allowed` / `server._ip_allowed` / `registry._cidr_allowed` |
 | 换网卡后管理员会不会被自己的中心挡成 403 | 不会：本机地址 60 秒缓存一次（`netinfo.cached_local_ips`，换网/插网线可 `clear_local_ips_cache()` 立即重探），没显式配 `roster_admin_ips` 时"谁算本机"随网络走 | `netinfo.cached_local_ips` / `registry._current_local_ips` |
@@ -294,7 +295,8 @@ landoc/
   office_bridge.py COM 取 WordOpenXML、Flat OPC → docx 字节、超时与进程清理
   render_docx.py   docx → Markdown（标题/GFM 表格/剔批注）
   pptx_conv.py     pptx/ppt → Markdown（明文 python-pptx / 密文 COM）
-  pdf_conv.py      pdf → 文本（pymupdf / Acrobat / 兜底临时副本）
+  pdf_conv.py      pdf → 文本（pymupdf / Acrobat / 兜底临时副本 / 扫描件 OCR）
+  ocr.py           扫描件 OCR：Windows 系统 OCR（PS 5.1 + WinRT）优先，随包 Tesseract 兜底
   pipeline.py      扫描 → 分流 → 转换 → 落 md → 写索引 → 检查点
   index.py         FTS5 索引（trigram + 短查询兜底 + 表格抽取）
   server.py        只读检索服务（CIDR 权限 / 名单按 IP 放行 / 限流 / 审计）
@@ -314,6 +316,7 @@ landoc/
   discover_ui.py   可访问库窗口（tkinter，双击开主页 / 复制地址 / 导出清单）
   updater.py       自动更新：检查 / 下载续传 / 校验解压 / 换目录 / 健康检查与回滚
   tray.py          托盘入口 + 单实例互斥量（也是打包入口）
+  tools/           随包 OCR 工具：ocr_win.ps1 + tesseract 最小 DLL 集 + tessdata fast 模型（共 14.7 MB）
 
 packaging/
   LanDocShare.spec PyInstaller onedir 打包配置（排掉 torch/cv2 等重包）
