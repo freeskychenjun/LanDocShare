@@ -17,18 +17,19 @@ from urllib.parse import quote
 
 from landoc import discover
 from landoc.config import Config
-from landoc.panel import _icon_path, release_tk
+from landoc.panel import HostedWindow, _icon_path, release_tk
 
 
-class DiscoverWindow:
+class DiscoverWindow(HostedWindow):
     """`show()` 可以从任意线程调用；关窗只是隐藏，退出走托盘菜单。"""
 
     AUTO_REFRESH_SECONDS = 60.0
     SHOW_REFRESH_SECONDS = 30.0
 
-    def __init__(self, cfg: Config, *, on_notice=None) -> None:
+    def __init__(self, cfg: Config, *, on_notice=None, host=None) -> None:
         self.cfg = cfg
         self.on_notice = on_notice
+        self._bind_host(host)
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._root = None
@@ -43,10 +44,16 @@ class DiscoverWindow:
 
     # ---- 任意线程可调 ----
     def show(self) -> None:
+        if self.hosted:
+            self._show_via_host()
+            return
         self._ensure_thread()
         self._queue.put(("show", None))
 
     def close(self) -> None:
+        if self.hosted:
+            self._close_via_host()
+            return
         self._queue.put(("close", None))
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -63,10 +70,22 @@ class DiscoverWindow:
 
     # ---- 窗口线程 ----
     def _run(self) -> None:
+        """没有 host 时：自己当根窗口（单测/单独用）。"""
+        import tkinter as tk
+
+        root = tk.Tk()
+        self._build(root)
+        root.mainloop()
+        release_tk(self)
+
+    def _on_show(self) -> None:
+        self._maybe_load()
+
+    def _build(self, root) -> None:
+        """在给定容器里搭界面并起队列泵；不 mainloop。"""
         import tkinter as tk
         from tkinter import ttk
 
-        root = tk.Tk()
         self._root = root
         root.title(f"可访问的资料库 · {self.cfg.name}")
         root.geometry("900x540")
@@ -165,8 +184,6 @@ class DiscoverWindow:
 
         root.bind("<Escape>", lambda _event: root.withdraw())
         self._pump()
-        root.mainloop()
-        release_tk(self)
 
     def _center_text(self) -> str:
         registry = (self.cfg.registry_url or "").strip()
@@ -187,8 +204,7 @@ class DiscoverWindow:
                     root.focus_force()
                     self._maybe_load()
                 elif command == "close":
-                    root.quit()
-                    root.destroy()
+                    self._shutdown_window(root)
                     return
                 elif command == "loaded":
                     self._on_loaded(payload)  # type: ignore[arg-type]

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from landoc.app import AppStatus
 from landoc import __version__
 from landoc import panel as panel_module
 from landoc.config import Config
+from landoc.discover_ui import DiscoverWindow
 from landoc.panel import (
+    HostedWindow,
     StatusPanel,
     center_position,
     center_window,
@@ -17,6 +21,7 @@ from landoc.panel import (
     update_button_text,
     version_text,
 )
+from landoc.roster_ui import RosterWindow
 
 
 def _cfg(tmp_path, **overrides):
@@ -264,3 +269,57 @@ def test_center_window_falls_back_to_the_tk_screen(monkeypatch):
     assert panel_module.work_area(root) == (0, 0, 1920, 1080)
     center_window(root)
     assert root.moved == ["+670+430"]
+
+
+# ---------------------------------------------------------------- 挂载到面板线程
+class _FakeHost:
+    """冒充 StatusPanel：只记下"排队进来的活"，不跑（跑起来就要真 Tk 了）。"""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def call(self, fn) -> None:
+        self.calls.append(fn)
+
+
+class _FakeWindow:
+    def __init__(self) -> None:
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
+def test_list_windows_run_on_the_panel_thread(tmp_path):
+    """授权名单、可访问的库都排进面板线程，自己不再起线程开第二个 Tk 解释器。"""
+    cfg = _cfg(tmp_path)
+    host = _FakeHost()
+    roster_window = RosterWindow(cfg, host=host)
+    discover_window = DiscoverWindow(cfg, host=host)
+
+    roster_window.show()
+    discover_window.show()
+    roster_window.close()
+
+    assert len(host.calls) == 3
+    assert roster_window.hosted and discover_window.hosted
+    assert roster_window._thread is None
+    assert discover_window._thread is None
+
+
+def test_hosted_close_destroys_only_its_own_window(tmp_path):
+    """挂载时关窗只能销毁自己的 Toplevel——销毁面板根窗口等于把程序关了。"""
+    window_helper = HostedWindow()
+    window_helper._bind_host(_FakeHost())
+    window = _FakeWindow()
+    window_helper._window = window
+
+    window_helper._shutdown_window(window)
+
+    assert window.destroyed
+    assert window_helper._window is None
+
+
+def test_bind_host_requires_a_thread_to_queue_on(tmp_path):
+    with pytest.raises(TypeError):
+        RosterWindow(_cfg(tmp_path), host=object())

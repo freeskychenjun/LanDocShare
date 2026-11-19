@@ -6,8 +6,9 @@
 为什么单独一个窗口而不是塞进状态面板：名单要加人、改 IP、标部门、和中心同步，
 是个"表格 + 按钮"的活；状态面板只负责"一眼看清现在什么状态"。
 
-线程模型同 `panel.StatusPanel`：tkinter 只在窗口线程里跑，托盘线程只往队列塞
-`show` / `close`；拉取、发布这种网络动作再开临时线程，结果从队列回到窗口线程。
+线程模型见 `panel.HostedWindow`：给了 host（状态窗口）时，本窗口作为它的 Toplevel
+开在面板那条 Tk 线程上；没有 host 才自己当根窗口——一个进程里只该有一个 Tk 解释器，
+两个解释器跨线程在 Windows 上会崩在 tcl86t.dll。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from landoc import roster
 from landoc.config import Config
-from landoc.panel import release_tk
+from landoc.panel import HostedWindow, release_tk
 
 
 def _icon_path() -> Path | None:
@@ -31,7 +32,7 @@ def _icon_path() -> Path | None:
     return None
 
 
-class RosterWindow:
+class RosterWindow(HostedWindow):
     """名单编辑窗口；`show()` 可从任意线程调用。"""
 
     def __init__(
@@ -40,10 +41,12 @@ class RosterWindow:
         *,
         on_saved=None,
         on_notice=None,
+        host=None,
     ) -> None:
         self.cfg = cfg
         self.on_saved = on_saved
         self.on_notice = on_notice
+        self._bind_host(host)
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -57,10 +60,16 @@ class RosterWindow:
 
     # ---------------------------------------------------------- 任意线程可调
     def show(self) -> None:
+        if self.hosted:
+            self._show_via_host()
+            return
         self._ensure_thread()
         self._queue.put(("show", None))
 
     def close(self) -> None:
+        if self.hosted:
+            self._close_via_host()
+            return
         self._queue.put(("close", None))
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
@@ -75,10 +84,22 @@ class RosterWindow:
 
     # ---------------------------------------------------------- 窗口
     def _run(self) -> None:
+        """没有 host 时：自己当根窗口（单测/单独用）。"""
+        import tkinter as tk
+
+        root = tk.Tk()
+        self._build(root)
+        root.mainloop()
+        release_tk(self)
+
+    def _on_show(self) -> None:
+        self._reload()
+
+    def _build(self, root) -> None:
+        """在给定容器里搭界面并起队列泵；不 mainloop，关窗才返回。"""
         import tkinter as tk
         from tkinter import ttk
 
-        root = tk.Tk()
         self._root = root
         root.title(f"授权名单 · {self.cfg.name}")
         root.geometry("700x520")
@@ -167,8 +188,6 @@ class RosterWindow:
         self._center_hint.grid(row=6, column=0, sticky="w", pady=(10, 0))
 
         self._pump()
-        root.mainloop()
-        release_tk(self)
 
     # ---------------------------------------------------------- 队列泵
     def _pump(self) -> None:
@@ -184,8 +203,7 @@ class RosterWindow:
                     root.lift()
                     root.focus_force()
                 elif command == "close":
-                    root.quit()
-                    root.destroy()
+                    self._shutdown_window(root)
                     return
                 elif command == "pulled":
                     self._on_pulled(payload)

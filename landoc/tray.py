@@ -94,8 +94,8 @@ class TrayApp:
             on_open_access=self._show_libraries,
             on_install=self._install_update,
         )
-        self.roster = RosterWindow(cfg, on_saved=self._roster_saved)
-        self.libraries = DiscoverWindow(cfg)
+        self.roster = RosterWindow(cfg, on_saved=self._roster_saved, host=self.panel)
+        self.libraries = DiscoverWindow(cfg, host=self.panel)
 
     # ---- pystray 回调 ----
     def _on_status(self, status: AppStatus) -> None:

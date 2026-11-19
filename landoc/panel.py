@@ -321,6 +321,15 @@ class StatusPanel:
             raise error  # type: ignore[misc]
         return box.get("value")
 
+    def call(self, fn) -> None:
+        """在窗口线程里执行 `fn(root)`，不等结果。
+
+        用来开那些"不是对话框、开完就还给我"的窗口（授权名单、可访问的库）：
+        它们必须建在这条 Tk 线程上，但调用方不该被卡住。
+        """
+        self._ensure_thread()
+        self._queue.put(("call", fn))
+
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -539,3 +548,86 @@ class StatusPanel:
                 pass
 
         root.after(1800, clear)
+
+
+class HostedWindow:
+    """把"自己开一个 Tk 根窗口"的窗口类挂到状态面板那条 Tk 线程上。
+
+    一个进程里只能有一个 Tk 解释器、也只能由一条线程碰它。早先状态窗口、授权
+    名单、可访问的库各自 `tk.Tk()` + `mainloop()`，等于同时开了好几个解释器，
+    保存/关闭时随机崩在 tcl86t.dll（0x80000003）。
+
+    子类要做的事只有三件：
+      1. `__init__` 里调 `self._bind_host(host)`（host 是 `StatusPanel`）；
+      2. 把搭界面的那一段收进 `_build(container)`，别自己 mainloop；
+      3. `show()` / `close()` 里用 `self._show_via_host()` / `self._close_via_host()`。
+
+    没给 host 时（单测、或以后有人单独用）仍走老路：自己当根窗口。
+    """
+
+    _host = None
+    _window = None
+
+    def _bind_host(self, host) -> None:
+        if host is not None and not hasattr(host, "call"):
+            raise TypeError("host 需要提供 call(fn)：窗口要排在它的 Tk 线程上")
+        self._host = host
+
+    @property
+    def hosted(self) -> bool:
+        return self._host is not None
+
+    # ---- 子类在 show()/close() 里调 ----
+    def _show_via_host(self) -> None:
+        self._host.call(self._open_hosted)
+
+    def _close_via_host(self) -> None:
+        self._host.call(self._close_hosted)
+
+    # ---- 一定要在面板线程里跑的两个 ----
+    def _open_hosted(self, root) -> None:
+        import tkinter as tk
+
+        window = self._window
+        if window is not None:
+            try:
+                alive = bool(window.winfo_exists())
+            except Exception:  # noqa: BLE001 - 解释器没了就别再碰
+                alive = False
+            if not alive:
+                window = None
+        if window is None:
+            window = tk.Toplevel(root)
+            self._window = window
+            self._build(window)
+        self._on_show()
+        window.deiconify()
+        window.lift()
+        window.focus_force()
+
+    def _close_hosted(self, _root) -> None:
+        window = self._window
+        self._window = None
+        self._root = None
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:  # noqa: BLE001 - 已经没了
+                pass
+        # 控件引用要在这条线程里丢掉：留给主线程回收会在退出时报
+        # "Tcl_AsyncDelete: async handler deleted by the wrong thread"
+        release_tk(self)
+
+    # ---- 关窗：挂载时只销毁自己的 Toplevel ----
+    def _shutdown_window(self, container) -> None:
+        if self._host is not None:
+            self._window = None
+            self._root = None
+            try:
+                container.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            release_tk(self)
+            return
+        container.quit()
+        container.destroy()
