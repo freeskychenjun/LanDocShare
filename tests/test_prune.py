@@ -48,7 +48,43 @@ def test_prune_gone_deletes_the_copy_and_the_row(tmp_path, capsys):
 
 
 def test_prune_keeps_docs_whose_source_is_still_there(tmp_path):
+    """源文件还在的文档，哪怕 --gone 也不许动。"""
     cfg, index = make_lib(tmp_path, missing=False)
     assert cli.main(["prune", "--lib-dir", str(cfg.lib_dir), "--gone"]) == 0
     assert (Path(cfg.md_dir) / "成果" / "a.docx.md").is_file()
     assert index.stats()["total"] == 1
+
+
+def test_prune_gone_also_forgets_failure_records(tmp_path, capsys):
+    """删掉一篇以后，它的转换失败记录也得跟着走。
+
+    否则 state.json 与 failures.json 里留着永远不会重试的死条目，
+    状态窗的"失败 N 篇"永远清不掉。
+    """
+    cfg, index = make_lib(tmp_path)
+    state = json.loads((cfg.lib_dir / "state.json").read_text(encoding="utf-8"))
+    state["failures"] = {"成果/a.docx": {"reason": "boom", "attempts": 3}}
+    (cfg.lib_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    (cfg.lib_dir / "failures.json").write_text(
+        json.dumps({"generated_at": "x", "failures": state["failures"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert cli.main(["prune", "--lib-dir", str(cfg.lib_dir), "--gone"]) == 0
+
+    after = json.loads((cfg.lib_dir / "state.json").read_text(encoding="utf-8"))
+    assert after["failures"] == {}
+    mirror = json.loads((cfg.lib_dir / "failures.json").read_text(encoding="utf-8"))
+    assert mirror["failures"] == {}
+
+
+def test_prune_keeps_failures_of_docs_it_does_not_touch(tmp_path):
+    cfg, index = make_lib(tmp_path, missing=False)
+    state = json.loads((cfg.lib_dir / "state.json").read_text(encoding="utf-8"))
+    state["failures"] = {"成果/a.docx": {"reason": "boom", "attempts": 1}}
+    (cfg.lib_dir / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    assert cli.main(["prune", "--lib-dir", str(cfg.lib_dir), "--gone"]) == 0
+
+    after = json.loads((cfg.lib_dir / "state.json").read_text(encoding="utf-8"))
+    assert list(after["failures"]) == ["成果/a.docx"]

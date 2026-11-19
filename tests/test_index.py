@@ -65,6 +65,51 @@ def test_short_query_uses_like_fallback(tmp_path):
     assert "<<乐平>>" in rows[0]["snippet"]
 
 
+def test_short_query_results_are_cached_until_a_write(tmp_path, monkeypatch):
+    """两字查询每次都要全表扫描：同一个词连敲两次，第二次必须走缓存。"""
+    idx = Index(tmp_path / "l.db")
+    idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
+
+    calls: list[str] = []
+    real = idx._like_search
+
+    def counting(q, *args, **kwargs):
+        calls.append(q)
+        return real(q, *args, **kwargs)
+
+    monkeypatch.setattr(idx, "_like_search", counting)
+
+    first, _ = idx.search("乐平")
+    second, _ = idx.search("乐平")
+    assert [row["path"] for row in first] == [row["path"] for row in second]
+    assert len(calls) == 1  # 第二次命中缓存，没再扫表
+
+    idx.upsert("b.md", "乐平新闸", "docx", "/s/b.docx", 10, 1.0, "乐平新闸")
+    rows, _ = idx.search("乐平")
+    assert len(rows) == 2
+    assert len(calls) == 2  # 写入让短查询缓存整体失效
+
+
+def test_cached_rows_are_copies_so_callers_cannot_corrupt_the_cache(tmp_path):
+    idx = Index(tmp_path / "l.db")
+    idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程")
+
+    first, _ = idx.search("乐平")
+    first[0]["title"] = "被调用方改过了"
+
+    again, _ = idx.search("乐平")
+    assert again[0]["title"] == "乐平枢纽"
+
+
+def test_cache_key_includes_visibility(idx: Index):
+    """主人看得到撤回的文档、客人看不到：缓存键漏了可见性就会串号。"""
+    idx.upsert("成果/乐平.md", "乐平", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽")
+    idx.mark_withdrawn("成果/乐平.md")
+
+    assert idx.search("乐平")[0]
+    assert idx.search("乐平", include_withdrawn=False)[0] == []
+
+
 def test_like_escape_turns_wildcards_literal():
     assert like_escape("a%b_c\\d") == "a\\%b\\_c\\\\d"
 

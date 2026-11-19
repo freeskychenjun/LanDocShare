@@ -110,24 +110,21 @@ function snippetHtml(raw) {
   return out;
 }
 
-async function api(path, params) {
+async function api(path, params, retried) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params || {})) if (v !== '' && v != null) url.searchParams.set(k, v);
   if (state.name) url.searchParams.set('name', state.name);
   const resp = await fetch(url, {headers: {'Accept': 'application/json'}});
   if (resp.status === 401) {
-    let reason = '';
-    try { reason = (await resp.clone().json()).error || ''; } catch (e) { /* 非 JSON 就按通用提示 */ }
-    if (reason === 'ip not registered') {
-      // 按 IP 授权的库里，认不出的机器只能报姓名（登记过姓名、没登记 IP 的人走这里）
-      throw new Error('这台电脑的 IP 不在授权名单里。如果库主人给你登记过姓名，可以试试点“换个人”后填姓名；否则请联系库主人加 IP。');
+    // 姓名只用于审计，不授权；但本地如果存着"别的机器上登记的名字"，服务端会以
+    // ip mismatch 拒绝一台本已授权的机器。这种情形丢掉名字、只按 IP 重试一次即可。
+    if (!retried && state.name) {
+      state.name = '';
+      localStorage.removeItem('landoc_name');
+      loadHeader();
+      return api(path, params, true);
     }
-    const hint = reason === 'ip mismatch for name'
-      ? '这个姓名登记的 IP 不是这台机器。核对一下姓名，或请库主人更新名单：'
-      : '这个库需要登记姓名，请输入你的名字：';
-    const asked = prompt(hint, state.name || '');
-    if (asked) { state.name = asked.trim(); localStorage.setItem('landoc_name', state.name); return api(path, params); }
-    throw new Error('需要姓名');
+    throw new Error('这台电脑的 IP 不在授权名单里，请联系库主人登记 IP。');
   }
   if (resp.status === 403) throw new Error('你的网段不在这个库的共享范围内');
   if (resp.status === 429) throw new Error('查询太频繁，请稍后再试');

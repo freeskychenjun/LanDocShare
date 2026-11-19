@@ -3,6 +3,56 @@
 from __future__ import annotations
 
 from landoc.netinfo import cidr_allowed
+from landoc import netinfo
+
+
+def test_cached_local_ips_probes_once_per_ttl(monkeypatch):
+    """`_is_owner` 每个请求都要问一次本机地址：60 秒内不许反复 getaddrinfo。"""
+    calls: list[int] = []
+
+    def fake() -> frozenset[str]:
+        calls.append(1)
+        return frozenset({"10.91.1.197"})
+
+    monkeypatch.setattr(netinfo, "local_ips", fake)
+    netinfo.clear_local_ips_cache()
+
+    assert netinfo.cached_local_ips() == frozenset({"10.91.1.197"})
+    assert netinfo.cached_local_ips() == frozenset({"10.91.1.197"})
+    assert len(calls) == 1
+
+
+def test_cached_local_ips_reprobes_after_clear(monkeypatch):
+    """地址变了（换网、插网线）要能立刻重探，不必干等 TTL 到期。"""
+    answers = [frozenset({"10.91.1.197"}), frozenset({"10.91.2.5"})]
+    calls: list[int] = []
+
+    def fake() -> frozenset[str]:
+        calls.append(1)
+        return answers[min(len(calls), 2) - 1]
+
+    monkeypatch.setattr(netinfo, "local_ips", fake)
+    netinfo.clear_local_ips_cache()
+    assert netinfo.cached_local_ips() == frozenset({"10.91.1.197"})
+
+    netinfo.clear_local_ips_cache()
+    assert netinfo.cached_local_ips() == frozenset({"10.91.2.5"})
+    assert len(calls) == 2
+
+
+def test_cached_local_ips_honours_a_short_ttl(monkeypatch):
+    """ttl=0 等于不缓存——留给"必须当场看"的调用方。"""
+    calls: list[int] = []
+
+    def fake() -> frozenset[str]:
+        calls.append(1)
+        return frozenset({"127.0.0.1"})
+
+    monkeypatch.setattr(netinfo, "local_ips", fake)
+    netinfo.clear_local_ips_cache()
+    netinfo.cached_local_ips(ttl=0.0)
+    netinfo.cached_local_ips(ttl=0.0)
+    assert len(calls) == 2
 
 
 def test_empty_list_denies_everything():

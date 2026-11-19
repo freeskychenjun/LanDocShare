@@ -145,8 +145,14 @@ def validate_lib_dir(text: str, current: Config | None = None) -> tuple[Path | N
         return None, "请填完整路径（例如 D:\\资料库）"
     if path.parent == path:
         return None, "请选一个专门的文件夹（不要直接用盘符根目录）"
+    # 只验证"能不能建"，不真的建：早先这里顺手 mkdir 父目录，用户点取消也会
+    # 在磁盘上留下空目录（校验函数不该有副作用）。找最近一个已存在的上级看权限。
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ancestor = path.parent
+        while not ancestor.exists() and ancestor.parent != ancestor:
+            ancestor = ancestor.parent
+        if not os.access(ancestor, os.W_OK):
+            return None, f"建不了这个目录：{ancestor} 不可写"
     except OSError as exc:
         return None, f"建不了这个目录：{exc}"
     same_as_current = current is not None and path == Path(current.lib_dir)
@@ -187,15 +193,10 @@ def validate_person(name: str, ip: str, cidrs: list[str] | None = None) -> str |
     return f"{address} 不在允许的网段（{'、'.join(cidrs or [])}）里，这个人会连不上"
 
 
-def parse_cidrs(text: str) -> tuple[list[str], str | None]:
-    """把"10.91.0.0/16, 10.91.1.0/24"这类输入解析成规范网段列表。
-
-    返回 (网段列表, 错误说明)；空输入按默认网段处理。
-    """
+def _parse_networks(text: str) -> tuple[list[str], str | None]:
+    """把逗号/分号/空格分隔的网段输入解析成规范 CIDR 列表（两种清单共用）。"""
     raw = (text or "").replace("，", ",").replace(";", ",").replace(" ", ",")
     parts = [part for part in (p.strip() for p in raw.split(",")) if part]
-    if not parts:
-        return list(SCOPE_CIDRS[SCOPE_LAN]), None
     networks: list[str] = []
     for part in parts:
         try:
@@ -205,16 +206,36 @@ def parse_cidrs(text: str) -> tuple[list[str], str | None]:
     return networks, None
 
 
+def parse_cidrs(text: str) -> tuple[list[str], str | None]:
+    """把"10.91.0.0/16, 10.91.1.0/24"这类输入解析成规范网段列表。
+
+    返回 (网段列表, 错误说明)；空输入按默认网段处理（允许名单不能空着）。
+    """
+    networks, error = _parse_networks(text)
+    if error:
+        return networks, error
+    return (networks or list(SCOPE_CIDRS[SCOPE_LAN])), None
+
+
+def parse_deny_cidrs(text: str) -> tuple[list[str], str | None]:
+    """解析「拒绝网段」：空输入表示不额外拒绝，**不能**像允许名单那样回落默认网段。
+
+    否则"清空拒绝网段"会变成"拒绝 10.91.0.0/16"，整个内网都被挡在外面。
+    """
+    return _parse_networks(text)
+
+
 def build_config(
     name: str,
     folders: list[Path],
     scope: str,
     lib_dir: Path,
     *,
-    acrobat_tool_dir: str | None = None,
+    acrobat_tool_dir: str | Path | None = None,
     people: dict[str, str] | None = None,
     departments: dict[str, str] | None = None,
     cidrs: list[str] | None = None,
+    deny_cidrs: list[str] | None = None,
 ) -> Config:
     """把向导里的选择拼成 Config（纯函数，方便测试）。"""
     clean_name = (name or "").strip() or "我的资料库"
@@ -238,9 +259,11 @@ def build_config(
         lib_dir=Path(lib_dir),
         folders=[Path(f) for f in folders],
         allow_cidrs=allowed,
+        deny_cidrs=list(deny_cidrs or []),
         allow_people=allow_people,
         people_departments=people_departments,
-        acrobat_tool_dir=acrobat_tool_dir or "",
+        # Config 声明的是 Path|None：这里统一成 Path，别塞一个 "" 进去
+        acrobat_tool_dir=Path(acrobat_tool_dir) if acrobat_tool_dir else None,
     )
 
 
@@ -253,6 +276,7 @@ def apply_config(target: Config, source: Config) -> Config:
     target.name = source.name
     target.folders = [Path(f) for f in source.folders]
     target.allow_cidrs = list(source.allow_cidrs)
+    target.deny_cidrs = list(source.deny_cidrs)
     target.allow_people = dict(source.allow_people)
     target.people_departments = dict(source.people_departments)
     target.acrobat_tool_dir = source.acrobat_tool_dir
@@ -423,12 +447,23 @@ def run_wizard(
         row=7, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
     )
 
+    ttk.Label(frame, text="拒绝的网段").grid(row=8, column=0, sticky="w", pady=(4, 0))
+    default_deny = "、".join(current.deny_cidrs) if current is not None else ""
+    deny_var = tk.StringVar(master=root, value=default_deny.replace("、", ", "))
+    deny_entry = ttk.Entry(frame, textvariable=deny_var, width=28)
+    deny_entry.grid(row=8, column=1, sticky="w", pady=(4, 0))
+    ttk.Label(frame, text="留空=不拒绝；优先于允许网段", foreground="#666").grid(
+        row=8, column=2, sticky="w", padx=(6, 0), pady=(4, 0)
+    )
+
     scope_hint = ttk.Label(frame, text="", foreground="#666", wraplength=390, justify="left")
-    scope_hint.grid(row=8, column=1, columnspan=2, sticky="w", pady=(6, 0))
+    scope_hint.grid(row=9, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
     def sync_scope_state() -> None:
         scope = scope_var.get()
-        cidr_entry.configure(state="disabled" if scope == SCOPE_LOCAL else "normal")
+        state = "disabled" if scope == SCOPE_LOCAL else "normal"
+        cidr_entry.configure(state=state)
+        deny_entry.configure(state=state)
         if scope == SCOPE_PEOPLE:
             if current is None:
                 text = (
@@ -460,7 +495,7 @@ def run_wizard(
         "对外只提供命中片段与表格，不提供全文或下载。"
     )
     ttk.Label(frame, text=note, foreground="#666").grid(
-        row=9, column=0, columnspan=3, sticky="w", pady=(10, 4)
+        row=10, column=0, columnspan=3, sticky="w", pady=(10, 4)
     )
 
     def confirm() -> None:
@@ -486,25 +521,31 @@ def run_wizard(
             departments = dict(current.people_departments)
         tool = _find_acrobat_tool_dir()
         cidrs = None
+        deny: list[str] = []
         if scope_var.get() != SCOPE_LOCAL:
             cidrs, cidr_error = parse_cidrs(cidr_var.get())
             if cidr_error:
                 messagebox.showwarning("网段填得不对", cidr_error)
+                return
+            deny, deny_error = parse_deny_cidrs(deny_var.get())
+            if deny_error:
+                messagebox.showwarning("拒绝网段填得不对", deny_error)
                 return
         result["config"] = build_config(
             name_var.get(),
             folders,
             scope_var.get(),
             target_lib,
-            acrobat_tool_dir=str(tool) if tool else "",
+            acrobat_tool_dir=tool,
             people=people,
             departments=departments,
             cidrs=cidrs,
+            deny_cidrs=deny,
         )
         root.destroy()
 
     actions = ttk.Frame(frame)
-    actions.grid(row=10, column=0, columnspan=3, sticky="e", pady=(12, 0))
+    actions.grid(row=11, column=0, columnspan=3, sticky="e", pady=(12, 0))
     ttk.Button(actions, text="取消", command=root.destroy).grid(row=0, column=0, padx=4)
     ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
         row=0, column=1

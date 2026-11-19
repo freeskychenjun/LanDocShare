@@ -93,6 +93,7 @@ class TrayApp:
             on_open_roster=self._show_roster,
             on_open_access=self._show_libraries,
             on_install=self._install_update,
+            on_prune=self._prune_library,
         )
         self.roster = RosterWindow(cfg, on_saved=self._roster_saved, host=self.panel)
         self.libraries = DiscoverWindow(cfg, host=self.panel)
@@ -136,6 +137,10 @@ class TrayApp:
 
     def _update_now(self) -> None:
         self.app.update_now()
+
+    def _prune_library(self) -> int:
+        """状态窗「清理…」：删掉源文件已不在的文档，返回删了几篇。"""
+        return self.app.prune_gone()
 
     def _rebuild_label(self) -> str:
         """没在转换就「立即重建索引」，正在转换就变成能停下来的「停止建库」。"""
@@ -357,7 +362,7 @@ def _existing_port(cfg: Config) -> int:
 
 
 CLI_COMMANDS = frozenset(
-    {"init", "probe", "convert", "serve", "status", "people", "registry", "update"}
+    {"init", "probe", "convert", "serve", "status", "people", "registry", "update", "prune"}
 )
 
 LAST_LIB_MARKER = (

@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from landoc import __version__
@@ -22,6 +23,7 @@ FTS_RESERVED = {"and", "or", "not", "near"}
 MIN_TRIGRAM_CHARS = 3  # FTS5 的 trigram 分词器要求查询词至少 3 个字符
 MAX_LIMIT = 30
 MAX_LIST = 500
+SHORT_QUERY_CACHE = 64  # 两字查询走全表子串扫描，按查询串缓存最近 64 个结果
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -142,6 +144,10 @@ class Index:
         self.snippet_tokens = snippet_tokens
         self.md_root = Path(md_root) if md_root else self.db_path.parent / "md"
         self._local = threading.local()
+        # 两字查询的短缓存：服务端每敲一个字都发一次请求，"洪水""乐平"这类词
+        # 每次都要全表 instr 扫描。写路径（upsert/delete/mark_withdrawn）整体失效。
+        self._cache_lock = threading.Lock()
+        self._short_cache: OrderedDict[tuple, tuple] = OrderedDict()
         with self.conn:
             rebuilt = self._migrate_fts()
             self.conn.executescript(SCHEMA)
@@ -229,6 +235,7 @@ class Index:
                  withdrawn=0""",
             (rel_path, title, ext, source_path, int(src_size), float(src_mtime), content, now),
         )
+        self._invalidate_search_cache()
 
     def mark_withdrawn(self, rel_path: str, withdrawn: bool = True) -> None:
         """撤回/恢复共享：只改可见性标记，md 与索引正文都保留。"""
@@ -236,10 +243,31 @@ class Index:
             "UPDATE documents SET withdrawn = ? WHERE rel_path = ?",
             (1 if withdrawn else 0, rel_path),
         )
+        self._invalidate_search_cache()
 
     def delete(self, rel_path: str) -> None:
         """删除一条文档（瘦身/显式清理时用）：触发器一并发删 FTS 条目，不碰磁盘文件。"""
         self.conn.execute("DELETE FROM documents WHERE rel_path = ?", (rel_path,))
+        self._invalidate_search_cache()
+
+    # ---- 两字查询的短缓存 ----
+    def _invalidate_search_cache(self) -> None:
+        with self._cache_lock:
+            self._short_cache.clear()
+
+    def _cached_search(self, key: tuple):
+        with self._cache_lock:
+            hit = self._short_cache.get(key)
+            if hit is None:
+                return None
+            self._short_cache.move_to_end(key)  # LRU：刚用过的留到最后淘汰
+            return [dict(row) for row in hit[0]], hit[1]
+
+    def _remember_search(self, key: tuple, rows: list, fell_back: bool) -> None:
+        with self._cache_lock:
+            self._short_cache[key] = (tuple(dict(row) for row in rows), fell_back)
+            while len(self._short_cache) > SHORT_QUERY_CACHE:
+                self._short_cache.popitem(last=False)
 
     def commit(self) -> None:
         self.conn.commit()
@@ -282,7 +310,8 @@ class Index:
         """AND 检索，无结果自动降级 OR；返回 (rows, fell_back)。
 
         2 个字符的查询（"乐平""洪水"这类水文常用词）低于 trigram 的最小长度，
-        走 LIKE 子串扫描兜底：个人库只有几千篇，扫一遍代价可接受。
+        走 LIKE 子串扫描兜底：个人库只有几千篇，扫一遍代价可接受；结果按
+        (查询串, 目录, 条数, 可见性) 缓存最近 64 个，写路径一到就整体失效。
 
         `include_withdrawn=False` 时只返回仍在共享范围内的文档；服务端对非本机
         请求传 False，主人本机保留完整库。
@@ -292,10 +321,20 @@ class Index:
         if not terms:
             return [], False
         if min(len(t) for t in terms) < MIN_TRIGRAM_CHARS:
+            key = (q.strip(), dir_filter, limit, include_withdrawn)
+            cached = self._cached_search(key)
+            if cached is not None:
+                return cached
             rows = self._like_search(q.strip(), dir_filter, limit, op="AND", include_withdrawn=include_withdrawn)
             if rows:
-                return rows, False
-            return self._like_search(q.strip(), dir_filter, limit, op="OR", include_withdrawn=include_withdrawn), True
+                result = (rows, False)
+            else:
+                result = (
+                    self._like_search(q.strip(), dir_filter, limit, op="OR", include_withdrawn=include_withdrawn),
+                    True,
+                )
+            self._remember_search(key, *result)
+            return result
         match = build_match_query(q, "AND")
         if not match:
             return [], False

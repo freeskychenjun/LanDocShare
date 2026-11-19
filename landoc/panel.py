@@ -179,9 +179,17 @@ def status_rows(
         scope = "、".join(cfg.allow_cidrs)
     else:
         scope = "仅本机（没有允许的网段）"
+    deny = list(getattr(cfg, "deny_cidrs", None) or [])
+    if deny:
+        # 拒绝网段优先于允许网段：只显示允许范围会让人以为这些地址也能查
+        scope += f" · 拒绝 {len(deny)} 段"
+    docs = f"{status.doc_count} 篇"
+    if status.failed:
+        # 失败常驻可见：不然只有日志里知道"有些文件一直没收进来"
+        docs += f" · {status.failed} 篇转换失败"
     rows = [
         PanelRow("状态", phase_text(status)),
-        PanelRow("文档", f"{status.doc_count} 篇"),
+        PanelRow("文档", docs),
     ]
     if status.pending > 0:
         eta = f"（{eta_phrase(status.eta_seconds)}）" if status.eta_seconds > 0 else ""
@@ -284,6 +292,7 @@ class StatusPanel:
         on_open_roster=None,
         on_open_access=None,
         on_install=None,
+        on_prune=None,
     ) -> None:
         self.cfg = cfg
         self.app = app
@@ -294,6 +303,7 @@ class StatusPanel:
         self.on_open_roster = on_open_roster
         self.on_open_access = on_open_access
         self.on_install = on_install
+        self.on_prune = on_prune
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -417,6 +427,10 @@ class StatusPanel:
         ttk.Button(actions, text="可访问的库", command=self._open_access).pack(
             side="left", padx=6
         )
+        # 库只增不减：源文件删了/改名了/移动硬盘没插，库里的副本要有人点头才删
+        self._prune_button = ttk.Button(actions, text="清理…", command=self._prune)
+        self._prune_button.pack(side="left")
+        self._prune_button.state(["disabled"])
 
         hint = ttk.Label(
             frame,
@@ -496,6 +510,14 @@ class StatusPanel:
                 else:
                     label = "检查更新"
                 button.configure(text=label)
+            prune_button = getattr(self, "_prune_button", None)
+            if prune_button is not None:
+                if status.gone:
+                    prune_button.configure(text=f"清理 {status.gone} 篇")
+                    prune_button.state(["!disabled"])
+                else:
+                    prune_button.configure(text="清理…")
+                    prune_button.state(["disabled"])
         except Exception:  # noqa: BLE001 - 窗口刚销毁时 configure 会抛
             pass
 
@@ -553,6 +575,35 @@ class StatusPanel:
             self.app.download_update_async()
             return
         self.app.check_updates_async(announce=True)
+
+    def _prune(self) -> None:
+        """删掉"源文件已不在"的文档：库只增不减，这是唯一的瘦身出口。
+
+        要点一次确认：删掉的是库里的副本与索引行，删完就搜不到了；源文件不动。
+        """
+        from tkinter import messagebox
+
+        gone = self.app.status.gone
+        if gone <= 0:
+            return
+        ok = messagebox.askyesno(
+            "清理库",
+            f"有 {gone} 篇文档的源文件已经不在（被删掉、改名、移走，或移动硬盘没插）。\n\n"
+            "要从库里删掉这些文档的副本和索引行吗？删完就搜不到它们了；"
+            "源文件本身不受影响。",
+            parent=self._root,
+        )
+        if not ok:
+            return
+        if self.on_prune is None:
+            return
+        try:
+            removed = self.on_prune()
+        except Exception as exc:  # noqa: BLE001 - 删库失败必须让人看见
+            messagebox.showerror("清理库", f"清理失败：{exc}", parent=self._root)
+            return
+        self._refresh()
+        messagebox.showinfo("清理库", f"已清理 {removed} 篇。", parent=self._root)
 
     def _copy_address(self) -> None:
         root = self._root

@@ -68,6 +68,7 @@ class AppStatus:
     pending: int = 0  # 本轮还剩多少篇没转（0 = 不知道/没有积压）
     eta_seconds: int = 0  # 按实测速度估的剩余秒数（0 = 还没测出速度）
     gone: int = 0  # 源文件已不在、内容仍留在库里的篇数（库只增不减，见 pipeline.run）
+    failed: int = 0  # 转换失败、还等着重试的篇数（state.json 的 failures）
     registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
     version: str = __version__  # 本机程序版本
     update_version: str = ""  # 中心上的新版本（空 = 没发现）
@@ -88,6 +89,8 @@ class AppStatus:
         if self.phase == "error":
             return f"出错：{self.message}"
         tail = f" · {self.gone} 篇源已不在" if self.gone else ""
+        if self.failed:
+            tail += f" · {self.failed} 篇转换失败"
         if self.update_phase == "ready" and self.update_version:
             return f"我的库：{self.doc_count} 篇{tail} · 可升级 v{self.update_version}"
         return f"我的库：{self.doc_count} 篇{tail} · 上次 {self.last_scan or '从未'}"
@@ -249,6 +252,17 @@ class LibraryApp:
         """
         self._force.set()
         self._wake.set()
+
+    def prune_gone(self) -> int:
+        """删掉"源文件已不在"的文档（状态窗「清理…」按钮），返回删了几篇。
+
+        这是删库的唯一出口：扫描器自己从不删东西，库要能整份拷到另一台机器上。
+        """
+        removed = pipeline.prune_gone(self.cfg, index=self.index)
+        if removed:
+            log_event(self.cfg.lib_dir, f"清理源文件已不在的文档：{removed} 篇")
+        self._refresh_counts()
+        return removed
 
     def stop_building(self) -> None:
         """停下正在进行的建库（托盘/状态窗在"建库中"时把按钮换成这个）。"""
@@ -536,10 +550,12 @@ class LibraryApp:
             state = pipeline._read_state(self.cfg)
         except Exception:  # noqa: BLE001
             return
+        failures = state.get("failures") or {}
         self._update(
             doc_count=stats.get("total", 0),
             last_scan=state.get("last_scan_ts", ""),
             gone=pipeline.missing_count(self.cfg),
+            failed=sum(1 for item in failures.values() if isinstance(item, dict)),
         )
 
     def _wait(self, seconds: float) -> None:

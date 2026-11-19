@@ -40,6 +40,22 @@ def test_status_rows_show_scope_and_address(tmp_path):
     assert rows["上次扫描"] == "2026-11-17 12:40"
 
 
+def test_status_rows_show_deny_count_in_scope(tmp_path):
+    """拒绝网段优先于允许网段：只显示允许范围会让人以为这些地址也能查。"""
+    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"], deny_cidrs=["10.91.1.50/32", "10.91.9.0/24"])
+    status = AppStatus(phase="serving", doc_count=13, port=8768)
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["共享范围"] == "10.91.0.0/16 · 拒绝 2 段"
+
+
+def test_status_rows_surface_failed_conversions(tmp_path):
+    """失败篇数要常驻可见，不然只有翻日志才知道有些文件一直没收进来。"""
+    cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
+    status = AppStatus(phase="serving", doc_count=13, failed=3, port=8768)
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="10.91.1.197")}
+    assert rows["文档"] == "13 篇 · 3 篇转换失败"
+
+
 def test_status_rows_mark_paused_and_empty_scan(tmp_path):
     cfg = _cfg(tmp_path, allow_cidrs=["10.91.0.0/16"])
     status = AppStatus(phase="paused", paused=True, doc_count=0, port=8768)

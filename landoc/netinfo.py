@@ -4,6 +4,16 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
+import time
+
+#: `cached_local_ips()` 的默认有效期（秒）。60 秒足够挡掉"每个请求一次 getaddrinfo"，
+#: 又不至于让换了网络的笔记本在中心那边被挡太久。
+LOCAL_IPS_TTL = 60.0
+
+_cache_lock = threading.Lock()
+_cache_at = 0.0
+_cache_ips: frozenset[str] = frozenset()
 
 
 def local_ips() -> frozenset[str]:
@@ -21,6 +31,33 @@ def local_ips() -> frozenset[str]:
     except OSError:
         pass
     return frozenset(found)
+
+
+def cached_local_ips(ttl: float = LOCAL_IPS_TTL) -> frozenset[str]:
+    """`local_ips()` 的 TTL 缓存版：库端服务每个请求都要判"是不是本机"。
+
+    服务端每个 `/api/*` 请求都会走一次 `_is_owner()`，中心的说明页也每屏都判一次；
+    `getaddrinfo(hostname)` 在网卡多、DNS/NetBIOS 慢的机器上能拖到几百毫秒。
+    缓存下沉到这里，服务端与中心共用同一份，免得各自维护一个 TTL。
+    """
+    global _cache_at, _cache_ips
+    now = time.monotonic()
+    with _cache_lock:
+        if _cache_ips and now - _cache_at < ttl:
+            return _cache_ips
+    fresh = local_ips()
+    with _cache_lock:
+        _cache_at = time.monotonic()
+        _cache_ips = fresh
+    return fresh
+
+
+def clear_local_ips_cache() -> None:
+    """让下一次 `cached_local_ips()` 重新探测（测试与"刚换了网络"时用）。"""
+    global _cache_at, _cache_ips
+    with _cache_lock:
+        _cache_at = 0.0
+        _cache_ips = frozenset()
 
 
 def cidr_allowed(ip: str, cidrs) -> bool:

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from landoc import __version__
 from landoc.index import MAX_LIMIT, Index
-from landoc.netinfo import cidr_allowed, cidr_blocked, local_ips
+from landoc.netinfo import cached_local_ips, cidr_allowed, cidr_blocked
 from landoc.ratelimit import DEFAULT_RATE, RateLimiter
 
 MAX_QUERY_LEN = 200
@@ -166,6 +166,10 @@ class Handler(BaseHTTPRequestHandler):
     rate: RateLimiter = None  # type: ignore[assignment]
     audit: Audit = None  # type: ignore[assignment]
     server_version = "landoc/0.1"
+    # 每个响应都带 Content-Length，可以让浏览器/客户端复用连接：
+    # 检索页一次搜索要发 4~5 个请求，HTTP/1.0 每次都要重连。
+    protocol_version = "HTTP/1.1"
+    timeout = 60  # 空闲连接最多占线程 60 秒，免得长连接把线程池的线程全攥着
 
     def log_message(self, *args):  # 不走 stderr 访问日志，改自写审计
         return
@@ -223,8 +227,12 @@ class Handler(BaseHTTPRequestHandler):
             self._error(500, f"internal error: {exc.__class__.__name__}")
 
     def _is_owner(self, ip: str) -> bool:
-        """来源是不是这台机器自己：只有主人能看到已撤回共享的文档。"""
-        return ip in local_ips()
+        """来源是不是这台机器自己：只有主人能看到已撤回共享的文档。
+
+        用带 TTL 的 `cached_local_ips()`：这个判断每个请求都做一次，
+        而 `getaddrinfo` 在慢网卡上能到几百毫秒。
+        """
+        return ip in cached_local_ips()
 
     def _dispatch(self, route: str, params: dict, ip: str, name: str | None) -> None:
         owner = self._is_owner(ip)

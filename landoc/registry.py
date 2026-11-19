@@ -519,11 +519,6 @@ def _audience_allows(entry: dict, viewer_ip: str, viewer_name: str) -> bool:
 _ROSTER_CACHE: dict[str, tuple[tuple[int, int], dict | None]] = {}
 _ROSTER_CACHE_LOCK = threading.Lock()
 
-_LOCAL_IPS_TTL = 60.0
-_LOCAL_IPS_CACHE: dict[str, object] = {"at": 0.0, "ips": frozenset()}
-_LOCAL_IPS_LOCK = threading.Lock()
-
-
 def _local_ips() -> frozenset[str]:
     """本机所有地址：名单发布只认这些来源（含回环）。
 
@@ -534,17 +529,11 @@ def _local_ips() -> frozenset[str]:
 
 
 def _current_local_ips() -> frozenset[str]:
-    """`_local_ips()` 的 60 秒缓存版：每个请求都 getaddrinfo 会拖慢说明页。"""
-    now = time.time()
-    with _LOCAL_IPS_LOCK:
-        cached_at = float(_LOCAL_IPS_CACHE["at"])  # type: ignore[arg-type]
-        if cached_at and now - cached_at < _LOCAL_IPS_TTL:
-            return _LOCAL_IPS_CACHE["ips"]  # type: ignore[return-value]
-    ips = _local_ips()
-    with _LOCAL_IPS_LOCK:
-        _LOCAL_IPS_CACHE["at"] = now
-        _LOCAL_IPS_CACHE["ips"] = ips
-    return ips
+    """`_local_ips()` 的缓存版：每个请求都 getaddrinfo 会拖慢说明页。
+
+    缓存已下沉到 `netinfo.cached_local_ips()`，服务端与中心共用同一份 TTL。
+    """
+    return netinfo.cached_local_ips()
 
 
 _ROSTER_PAGE_STYLE = """
@@ -654,6 +643,9 @@ class RegistryHandler(BaseHTTPRequestHandler):
     # 每 IP 限流（可选）：只在真正对外开服务时挂上，测试里默认不限
     rate: "RateLimiter | None" = None
     server_version = f"landoc-registry/{__version__}"
+    # 响应都带 Content-Length：允许 keep-alive，库端每分钟一次心跳不必重连。
+    protocol_version = "HTTP/1.1"
+    timeout = 60
 
     def log_message(self, *args):  # 不刷 stderr，审计靠库端日志
         pass

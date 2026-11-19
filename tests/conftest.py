@@ -25,6 +25,20 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_local_ips_cache():
+    """`netinfo.cached_local_ips()` 是进程级缓存：每个用例前后都清掉。
+
+    否则某个用例把 `local_ips` 换成假地址（验证 owner 判定），缓存会把假地址
+    带进后面的用例里。
+    """
+    from landoc import netinfo
+
+    netinfo.clear_local_ips_cache()
+    yield
+    netinfo.clear_local_ips_cache()
+
+
 @pytest.fixture
 def flat_opc() -> str:
     """一份小文档的 Flat OPC 字符串（由 tests/testdata/make_flat_opc.py 生成）。"""

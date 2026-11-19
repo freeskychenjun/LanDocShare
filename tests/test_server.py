@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import urllib.error
@@ -11,6 +12,7 @@ import pytest
 
 from landoc.config import Config
 from landoc.index import Index
+from landoc import server as server_module
 from landoc.server import make_server
 
 
@@ -164,7 +166,7 @@ def test_withdrawn_docs_are_hidden_from_remote_clients(lib, monkeypatch):
     index.mark_withdrawn("成果/乐平.md")
     index.commit()
     # 把本机地址伪装成别的机器：127.0.0.1 仍是允许来源，但不再是 owner
-    monkeypatch.setattr("landoc.server.local_ips", lambda: frozenset({"192.0.2.9"}))
+    monkeypatch.setattr("landoc.server.cached_local_ips", lambda: frozenset({"192.0.2.9"}))
     httpd = make_server(cfg, index=index, port=0)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -441,3 +443,40 @@ def test_snippet_tokens_from_config_is_honored(tmp_path: Path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_two_requests_can_share_one_connection(lib):
+    """HTTP/1.1 keep-alive：响应都带 Content-Length，一条连接能连着发两次请求。
+
+    检索页一次搜索要发 4~5 个请求（meta/tree/search），HTTP/1.0 下每次都要重连。
+    """
+    cfg, index = lib
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        conn.request("GET", "/api/health")
+        first = conn.getresponse()
+        assert first.version == 11
+        assert json.loads(first.read())["status"] == "online"
+        assert first.will_close is False
+
+        conn.request("GET", "/api/stats")
+        second = conn.getresponse()
+        assert json.loads(second.read())["service"] == "landoc"
+    finally:
+        conn.close()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_page_sends_unregistered_visitors_to_the_owner_not_to_a_name_form():
+    """0.2.10 起姓名不再授权：401 之后再让用户"填个名字重试"就是死循环。
+
+    页面必须直接说清"IP 没登记，找库主人"，不能留任何重试入口。
+    """
+    page = (Path(server_module.__file__).with_name("web") / "index.html").read_text(encoding="utf-8")
+    assert "这台电脑的 IP 不在授权名单里，请联系库主人登记 IP" in page
+    assert "这个库需要登记姓名" not in page
+    assert "ip mismatch for name" not in page

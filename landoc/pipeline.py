@@ -184,6 +184,18 @@ def _write_state(cfg, state: dict) -> None:
     _write_json_atomic(_state_path(cfg), state)
 
 
+def _write_failures(cfg, failures: dict) -> None:
+    """把失败清单镜像到库目录（给人看的，真相在 state.json 里）。
+
+    镜像是 state 的副本，凡改动 `state["failures"]` 的地方（扫描落盘、prune）
+    都得一起刷，否则镜像里会留着已经清掉的死条目。
+    """
+    _write_json_atomic(
+        Path(cfg.lib_dir) / FAILURES_NAME,
+        {"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "failures": failures},
+    )
+
+
 def env_signature() -> dict:
     """本机"有没有可用的转换器"的指纹（注册表查询，毫秒级，不启动任何进程）。
 
@@ -390,10 +402,7 @@ def run(
             stamp = time.strftime("%Y-%m-%d %H:%M:%S")
             state["last_scan_ts"] = stamp
             _write_state(cfg, state)
-            _write_json_atomic(
-                Path(cfg.lib_dir) / FAILURES_NAME,
-                {"generated_at": stamp, "failures": failures},
-            )
+            _write_failures(cfg, failures)
             last_state = now
         if on_progress is not None:
             try:
@@ -711,6 +720,7 @@ def prune_gone(cfg, index=None) -> int:
         index = Index(cfg.db_path, md_root=cfg.md_dir)
     state = _read_state(cfg)
     files = state.get("files") or {}
+    failures = state.get("failures")
     gone = [
         rel
         for rel, item in list(files.items())
@@ -726,10 +736,16 @@ def prune_gone(cfg, index=None) -> int:
         except Exception:  # noqa: BLE001 - 替身 index 可能没有 delete
             pass
         files.pop(rel, None)
+        # 转换失败记录跟着走：库都删了，这条失败没有重试的对象，
+        # 留着只会让"失败 N 篇"永远清不掉。
+        if isinstance(failures, dict):
+            failures.pop(rel, None)
     if gone:
         try:
             index.commit()
         except Exception:  # noqa: BLE001
             pass
         _write_state(cfg, state)
+        if isinstance(failures, dict):
+            _write_failures(cfg, failures)
     return len(gone)

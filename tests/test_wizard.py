@@ -204,13 +204,62 @@ def test_validate_lib_dir_rejects_existing_library(tmp_path):
 
 
 def test_validate_lib_dir_accepts_fresh_folder_and_strips_quotes(tmp_path):
-    target = tmp_path / "新库位置"
+    target = tmp_path / "父目录" / "新库位置"
     path, error = wizard.validate_lib_dir(f'"{target}"')
     assert error is None
     assert path == target
-    # 父目录建好、目标本身留给建库时建
-    assert target.parent.is_dir()
+    # 校验没有副作用：父目录与目标都留到真正建库时再建（点取消不该在磁盘上留空目录）
+    assert not target.parent.exists()
     assert not target.exists()
+
+
+def test_parse_deny_cidrs_empty_means_no_deny():
+    """空输入=不额外拒绝；绝不能像允许名单那样回落到 10.91.0.0/16。"""
+    assert wizard.parse_deny_cidrs("") == ([], None)
+    assert wizard.parse_deny_cidrs("   ") == ([], None)
+
+
+def test_parse_deny_cidrs_normalises_and_rejects_junk():
+    assert wizard.parse_deny_cidrs("10.91.1.50，10.91.2.0/24") == (
+        ["10.91.1.50/32", "10.91.2.0/24"],
+        None,
+    )
+    networks, error = wizard.parse_deny_cidrs("10.91.0.0/16, 乱写")
+    assert networks == []
+    assert "乱写" in error
+
+
+def test_build_config_carries_deny_cidrs(tmp_path):
+    cfg = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["10.91.9.0/24"]
+    )
+    assert cfg.deny_cidrs == ["10.91.9.0/24"]
+    # 不给就是"不额外拒绝"，不是继承某个默认网段
+    assert wizard.build_config("库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib").deny_cidrs == []
+
+
+def test_build_config_normalises_acrobat_tool_dir_to_path(tmp_path):
+    """Config 声明的是 Path|None：别塞一个 str 或 "" 进去（4.1）。"""
+    cfg = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", acrobat_tool_dir=str(tmp_path / "tool")
+    )
+    assert cfg.acrobat_tool_dir == tmp_path / "tool"
+    empty = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", acrobat_tool_dir=""
+    )
+    assert empty.acrobat_tool_dir is None
+
+
+def test_apply_config_copies_deny_cidrs(tmp_path):
+    """改建库设置时，向导里显示并回写的拒绝网段要真的生效（不能只改不存）。"""
+    target = wizard.build_config("旧库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
+    source = wizard.build_config(
+        "新库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", deny_cidrs=["10.91.1.50/32"]
+    )
+
+    wizard.apply_config(target, source)
+
+    assert target.deny_cidrs == ["10.91.1.50/32"]
 
 
 def test_validate_lib_dir_allows_current_library_in_edit_mode(tmp_path):

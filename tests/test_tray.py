@@ -287,3 +287,31 @@ def test_cancelling_library_settings_changes_nothing(tmp_path, monkeypatch):
 
     assert app.calls == []
     assert notes == []
+
+
+def test_prune_is_a_reachable_cli_command():
+    """打包成 exe 后 `LanDocShare.exe prune --gone` 必须能走通。
+
+    「库只增不减」里删库只有这一个出口，CLI 写好了但不在白名单里 = 用户根本够不到。
+    """
+    assert "prune" in tray.CLI_COMMANDS
+
+
+def test_main_dispatches_prune_to_cli(tmp_path, monkeypatch):
+    from landoc import cli
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: calls.append(list(argv)) or 0)
+
+    assert tray.main(["prune", "--lib-dir", str(tmp_path), "--gone"]) == 0
+    assert calls == [["prune", "--lib-dir", str(tmp_path), "--gone"]]
+
+
+def test_panel_cleanup_button_calls_back_into_the_app():
+    """状态窗「清理…」最终调的是 LibraryApp.prune_gone()（删库只有一个出口）。"""
+    calls: list[str] = []
+    app = types.SimpleNamespace(prune_gone=lambda: calls.append("prune") or 2)
+    owner = types.SimpleNamespace(app=app)
+
+    assert tray.TrayApp._prune_library(owner) == 2
+    assert calls == ["prune"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import http.client
 import threading
 import time
 import urllib.error
@@ -40,6 +41,26 @@ def post_json(url: str, payload: dict):
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=3) as resp:
         return resp.status, json.loads(resp.read().decode("utf-8"))
+
+
+def test_registry_keeps_a_connection_alive_for_heartbeats(center):
+    """库端每分钟一次心跳：HTTP/1.1 下复用同一条连接，不必每次重连。"""
+    base, _store = center
+    conn = http.client.HTTPConnection(
+        base.removeprefix("http://"), timeout=5
+    )
+    try:
+        conn.request("GET", "/libraries")
+        first = conn.getresponse()
+        assert first.version == 11
+        assert json.loads(first.read())["count"] == 0
+        assert first.will_close is False
+
+        conn.request("GET", "/libraries")
+        second = conn.getresponse()
+        assert json.loads(second.read())["count"] == 0
+    finally:
+        conn.close()
 
 
 def test_register_then_list(center):
@@ -662,10 +683,10 @@ def test_roster_admin_ips_follow_current_machine_addresses(monkeypatch):
     笔记本换了网/接手机热点后，中心进程常常几天不重启；用快照会让人在自己机器上
     被 403 挡住，还看不出原因。
     """
-    from landoc import registry
+    from landoc import netinfo, registry
 
-    registry._LOCAL_IPS_CACHE["at"] = 0.0
-    monkeypatch.setattr(registry, "_local_ips", lambda: frozenset({"10.9.9.9", "127.0.0.1"}))
+    netinfo.clear_local_ips_cache()
+    monkeypatch.setattr(netinfo, "local_ips", lambda: frozenset({"10.9.9.9", "127.0.0.1"}))
     handler = object.__new__(registry.RegistryHandler)
     handler.roster_admin_ips = frozenset({"127.0.0.1"})  # 启动那一刻的快照早就过期了
     handler.client_address = ("10.9.9.9", 5555)

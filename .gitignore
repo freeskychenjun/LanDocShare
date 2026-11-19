@@ -17,6 +17,9 @@ __pycache__/
 # 真实样本目录（只在本机做验收，不进仓库）
 测试目录/
 
+# 发版临时笔记（写进 GitHub Release 后即删；别让它污染 git status）
+.release-notes-*.txt
+
 distribution/
 
 # 会话临时产物（截图/临时构建目录，不进仓）
