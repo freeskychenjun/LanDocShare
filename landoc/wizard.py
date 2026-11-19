@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import ctypes
 import ipaddress
+import os
 import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from landoc import probe
-from landoc.config import Config
+from landoc.config import CONFIG_NAME, Config
 from landoc.roster import MAX_DEPARTMENT_CHARS
 
 SCOPE_LAN = "lan"
@@ -98,6 +99,64 @@ def validate_folder(path: Path) -> str | None:
     if kind == DRIVE_REMOVABLE:
         return "不支持 U 盘等可移动盘（拔出后库就断了）"
     return None
+
+
+def documents_dir(home: Path | None = None) -> Path:
+    """用户的"文档"目录（中文系统、以及 OneDrive 重定向都认）。
+
+    都找不到就退回用户主目录本身，由 `default_lib_dir()` 决定改放哪。
+    """
+    base = Path(home) if home is not None else Path.home()
+    for name in ("Documents", "文档", "OneDrive/Documents"):
+        candidate = base.joinpath(*name.split("/"))
+        if candidate.is_dir():
+            return candidate
+    return base
+
+
+def default_lib_dir(home: Path | None = None) -> Path:
+    r"""首次建库的默认位置：`<我的文档>\LanDocShare\<用户名>的资料库`。
+
+    以前写死 `D:/MyLib`：没有 D 盘的机器第一次双击就建不了库，用户也没处改。
+    现在这里只给一个**建议值**，向导里可以直接改成别处。
+    """
+    base = Path(home) if home is not None else Path.home()
+    docs = documents_dir(base)
+    leaf = f"{base.name or '我的'}的资料库"
+    if docs != base:
+        return docs / "LanDocShare" / leaf
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "LanDocShare" / "library" / leaf
+    return base / ".landoc" / "library" / leaf
+
+
+def validate_lib_dir(text: str, current: Config | None = None) -> tuple[Path | None, str | None]:
+    """校验向导里填的「库位置」：返回 (路径, 错误说明)。
+
+    只拦三件事：必须是绝对路径、不能是盘符根目录、不能盖在已经存在的库上。
+    目录本身允许还不存在——建库时连父目录一起建；这里先试建父目录，好当场报错。
+    """
+    raw = (text or "").strip().strip('"').strip("'")
+    if not raw:
+        return None, "库位置不能为空"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return None, "请填完整路径（例如 D:\\资料库）"
+    if path.parent == path:
+        return None, "请选一个专门的文件夹（不要直接用盘符根目录）"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return None, f"建不了这个目录：{exc}"
+    same_as_current = current is not None and path == Path(current.lib_dir)
+    if not same_as_current and (path / CONFIG_NAME).is_file():
+        try:
+            name = Config.load(path).name
+        except (OSError, ValueError):
+            name = "无法读取"
+        return None, f"这个目录里已经有一个资料库（{name}），请换一个空目录，或直接打开它"
+    return path, None
 
 
 def validate_person(name: str, ip: str, cidrs: list[str] | None = None) -> str | None:
@@ -236,9 +295,29 @@ def run_wizard(
     name_var = tk.StringVar(master=root, value=default_name)
     ttk.Entry(frame, textvariable=name_var, width=42).grid(row=0, column=1, columnspan=2, sticky="we", pady=4)
 
-    ttk.Label(frame, text="共享哪些文件夹").grid(row=1, column=0, sticky="nw", pady=(8, 0))
+    ttk.Label(frame, text="库位置").grid(row=1, column=0, sticky="w")
+    lib_var = tk.StringVar(master=root, value=str(lib_dir))
+    lib_entry = ttk.Entry(frame, textvariable=lib_var, width=42)
+    lib_entry.grid(row=1, column=1, sticky="we", pady=4)
+
+    def choose_lib_dir() -> None:
+        chosen = filedialog.askdirectory(
+            title="选择资料库放在哪里（索引与 md 副本会写在这里）",
+            initialdir=str(lib_var.get() or lib_dir),
+        )
+        if chosen:
+            lib_var.set(chosen)
+
+    lib_button = ttk.Button(frame, text="选择…", command=choose_lib_dir)
+    lib_button.grid(row=1, column=2, sticky="w", padx=(4, 0))
+    if current is not None:
+        # 改建库设置时不搬库：位置一变，配置/索引/md 全得跟着搬，不在这里冒险
+        lib_entry.configure(state="disabled")
+        lib_button.configure(state="disabled")
+
+    ttk.Label(frame, text="共享哪些文件夹").grid(row=2, column=0, sticky="nw", pady=(8, 0))
     listbox = tk.Listbox(frame, height=5, width=42, selectmode="extended")
-    listbox.grid(row=1, column=1, sticky="we", pady=4)
+    listbox.grid(row=2, column=1, sticky="we", pady=4)
     if current is not None:
         for folder in current.folders:
             listbox.insert("end", str(folder))
@@ -261,12 +340,12 @@ def run_wizard(
         kick_estimate()
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=1, column=2, sticky="n")
+    buttons.grid(row=2, column=2, sticky="n")
     ttk.Button(buttons, text="添加…", command=add_folder).grid(row=0, column=0, sticky="we")
     ttk.Button(buttons, text="移除", command=remove_folder).grid(row=1, column=0, sticky="we", pady=4)
 
     estimate_label = ttk.Label(frame, text="还没选文件夹", foreground="#666")
-    estimate_label.grid(row=2, column=1, columnspan=2, sticky="w")
+    estimate_label.grid(row=3, column=1, columnspan=2, sticky="w")
 
     # 估算在后台线程做（大目录 walk 要一两秒），结果用队列送回 tk 线程
     est_queue: queue.Queue[tuple[int, FolderEstimate]] = queue.Queue()
@@ -300,7 +379,7 @@ def run_wizard(
             pass
         root.after(250, poll_estimate)
 
-    ttk.Label(frame, text="谁能查").grid(row=3, column=0, sticky="w", pady=(8, 0))
+    ttk.Label(frame, text="谁能查").grid(row=4, column=0, sticky="w", pady=(8, 0))
     default_scope = SCOPE_LAN
     if current is not None:
         if current.allow_people:
@@ -309,16 +388,16 @@ def run_wizard(
             default_scope = SCOPE_LOCAL
     scope_var = tk.StringVar(master=root, value=default_scope)
     ttk.Radiobutton(frame, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN).grid(
-        row=3, column=1, columnspan=2, sticky="w"
-    )
-    ttk.Radiobutton(frame, text="仅指定名单（按 IP 放行，姓名仅备注）", variable=scope_var, value=SCOPE_PEOPLE).grid(
         row=4, column=1, columnspan=2, sticky="w"
     )
-    ttk.Radiobutton(frame, text="仅本机", variable=scope_var, value=SCOPE_LOCAL).grid(
+    ttk.Radiobutton(frame, text="仅指定名单（按 IP 放行，姓名仅备注）", variable=scope_var, value=SCOPE_PEOPLE).grid(
         row=5, column=1, columnspan=2, sticky="w"
     )
+    ttk.Radiobutton(frame, text="仅本机", variable=scope_var, value=SCOPE_LOCAL).grid(
+        row=6, column=1, columnspan=2, sticky="w"
+    )
 
-    ttk.Label(frame, text="允许的网段").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(frame, text="允许的网段").grid(row=7, column=0, sticky="w", pady=(6, 0))
     default_cidrs = "、".join(
         current.allow_cidrs
         if current is not None and list(current.allow_cidrs) != SCOPE_CIDRS[SCOPE_LOCAL]
@@ -326,13 +405,13 @@ def run_wizard(
     )
     cidr_var = tk.StringVar(master=root, value=default_cidrs.replace("、", ", "))
     cidr_entry = ttk.Entry(frame, textvariable=cidr_var, width=28)
-    cidr_entry.grid(row=6, column=1, sticky="w", pady=(6, 0))
+    cidr_entry.grid(row=7, column=1, sticky="w", pady=(6, 0))
     ttk.Label(frame, text="多个用逗号分隔", foreground="#666").grid(
-        row=6, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
+        row=7, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
     )
 
     scope_hint = ttk.Label(frame, text="", foreground="#666", wraplength=390, justify="left")
-    scope_hint.grid(row=7, column=1, columnspan=2, sticky="w", pady=(6, 0))
+    scope_hint.grid(row=8, column=1, columnspan=2, sticky="w", pady=(6, 0))
 
     def sync_scope_state() -> None:
         scope = scope_var.get()
@@ -368,13 +447,17 @@ def run_wizard(
         "对外只提供命中片段与表格，不提供全文或下载。"
     )
     ttk.Label(frame, text=note, foreground="#666").grid(
-        row=8, column=0, columnspan=3, sticky="w", pady=(10, 4)
+        row=9, column=0, columnspan=3, sticky="w", pady=(10, 4)
     )
 
     def confirm() -> None:
         folders = [Path(p) for p in listbox.get(0, "end")]
         if not folders:
             messagebox.showwarning("还没选文件夹", "至少选一个要共享的文件夹。")
+            return
+        target_lib, lib_error = validate_lib_dir(lib_var.get(), current)
+        if lib_error:
+            messagebox.showwarning("库位置不能用", lib_error)
             return
         people: dict[str, str] = {}
         departments: dict[str, str] = {}
@@ -399,7 +482,7 @@ def run_wizard(
             name_var.get(),
             folders,
             scope_var.get(),
-            lib_dir,
+            target_lib,
             acrobat_tool_dir=str(tool) if tool else "",
             people=people,
             departments=departments,
@@ -408,7 +491,7 @@ def run_wizard(
         root.destroy()
 
     actions = ttk.Frame(frame)
-    actions.grid(row=9, column=0, columnspan=3, sticky="e", pady=(12, 0))
+    actions.grid(row=10, column=0, columnspan=3, sticky="e", pady=(12, 0))
     ttk.Button(actions, text="取消", command=root.destroy).grid(row=0, column=0, padx=4)
     ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
         row=0, column=1

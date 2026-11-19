@@ -139,30 +139,89 @@ def test_apply_config_copies_people(tmp_path):
     assert target.allow_cidrs == ["10.91.0.0/16"]
 
 
-def test_build_config_keeps_departments_for_people_only(tmp_path):
-    cfg = build_config(
-        "库",
-        [tmp_path],
-        SCOPE_PEOPLE,
-        tmp_path / "lib",
-        people={"陈鋆": "10.91.1.197", "老王": ""},
-        departments={"陈鋆": "规划一所", "不相干的人": "水文所"},
-    )
-    assert cfg.people_departments == {"陈鋆": "规划一所"}
+def _make_home(tmp_path: Path, *subdirs: str) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    for sub in subdirs:
+        home.joinpath(*sub.split("/")).mkdir(parents=True)
+    return home
 
 
-def test_apply_config_copies_departments(tmp_path):
-    source = build_config(
-        "库",
-        [tmp_path],
-        SCOPE_PEOPLE,
-        tmp_path / "lib",
-        people={"陈鋆": "10.91.1.197"},
-        departments={"陈鋆": "规划一所"},
-    )
-    target = Config(name="旧", lib_dir=tmp_path / "old")
-    apply_config(target, source)
-    assert target.people_departments == {"陈鋆": "规划一所"}
+def test_default_lib_dir_lands_in_documents(tmp_path):
+    home = _make_home(tmp_path, "Documents")
+    assert wizard.default_lib_dir(home) == home / "Documents" / "LanDocShare" / f"{home.name}的资料库"
+
+
+def test_default_lib_dir_accepts_chinese_documents_folder(tmp_path):
+    home = _make_home(tmp_path, "文档")
+    assert wizard.default_lib_dir(home) == home / "文档" / "LanDocShare" / f"{home.name}的资料库"
+
+
+def test_default_lib_dir_accepts_onedrive_documents(tmp_path):
+    home = _make_home(tmp_path, "OneDrive/Documents")
+    got = wizard.default_lib_dir(home)
+    assert got == home / "OneDrive" / "Documents" / "LanDocShare" / f"{home.name}的资料库"
+
+
+def test_default_lib_dir_falls_back_to_localappdata(tmp_path, monkeypatch):
+    home = _make_home(tmp_path)  # 没有"文档"目录
+    local = tmp_path / "local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    assert wizard.default_lib_dir(home) == local / "LanDocShare" / "library" / f"{home.name}的资料库"
+
+
+def test_default_lib_dir_falls_back_to_home_when_no_localappdata(tmp_path, monkeypatch):
+    home = _make_home(tmp_path)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert wizard.default_lib_dir(home) == home / ".landoc" / "library" / f"{home.name}的资料库"
+
+
+def test_validate_lib_dir_rejects_empty():
+    assert wizard.validate_lib_dir("   ")[1] == "库位置不能为空"
+
+
+def test_validate_lib_dir_rejects_relative(tmp_path):
+    path, error = wizard.validate_lib_dir("资料库")
+    assert path is None
+    assert "完整路径" in error
+
+
+def test_validate_lib_dir_rejects_drive_root(tmp_path):
+    path, error = wizard.validate_lib_dir(tmp_path.anchor)
+    assert path is None
+    assert "盘符根目录" in error
+
+
+def test_validate_lib_dir_rejects_existing_library(tmp_path):
+    lib = tmp_path / "已有库"
+    lib.mkdir()
+    cfg = wizard.build_config("老王的库", [tmp_path], wizard.SCOPE_LOCAL, lib)
+    cfg.save()
+
+    path, error = wizard.validate_lib_dir(str(lib))
+    assert path is None
+    assert "老王的库" in error
+
+
+def test_validate_lib_dir_accepts_fresh_folder_and_strips_quotes(tmp_path):
+    target = tmp_path / "新库位置"
+    path, error = wizard.validate_lib_dir(f'"{target}"')
+    assert error is None
+    assert path == target
+    # 父目录建好、目标本身留给建库时建
+    assert target.parent.is_dir()
+    assert not target.exists()
+
+
+def test_validate_lib_dir_allows_current_library_in_edit_mode(tmp_path):
+    lib = tmp_path / "库"
+    lib.mkdir()
+    cfg = wizard.build_config("库", [tmp_path], wizard.SCOPE_LOCAL, lib)
+    cfg.save()
+
+    path, error = wizard.validate_lib_dir(str(lib), cfg)
+    assert error is None
+    assert path == lib
 
 
 def test_build_config_keeps_departments_for_people_only(tmp_path):

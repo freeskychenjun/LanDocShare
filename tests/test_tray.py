@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import types
 import uuid
-from pathlib import Path
 
 from landoc import tray
 from landoc.config import Config
@@ -25,8 +24,10 @@ def test_remember_and_reuse_last_library(tmp_path, monkeypatch):
 
 def test_default_library_falls_back_when_marker_points_nowhere(tmp_path, monkeypatch):
     monkeypatch.setattr(tray, "LAST_LIB_MARKER", tmp_path / "missing.txt")
+    fallback = tmp_path / "Documents" / "LanDocShare" / "我的资料库"
+    monkeypatch.setattr("landoc.wizard.default_lib_dir", lambda home=None: fallback)
 
-    assert tray._default_lib_dir() == Path("D:/MyLib")
+    assert tray._default_lib_dir() == fallback
 
 
 def test_second_instance_loses_the_mutex():

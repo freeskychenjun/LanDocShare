@@ -371,7 +371,11 @@ def _default_lib_dir() -> Path:
             return remembered
     except (OSError, ValueError):
         pass
-    return Path("D:/MyLib")
+    # 以前写死 D:/MyLib：没有 D 盘的机器建不了库。现在给"我的文档\LanDocShare"下的建议位置，
+    # 用户还能在向导里改。懒导入，免得起 tray 就牵连 wizard 的 tkinter 依赖。
+    from landoc.wizard import default_lib_dir
+
+    return default_lib_dir()
 
 
 def main(argv: list[str] | None = None) -> int:

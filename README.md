@@ -85,7 +85,7 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 
 - **单实例**：命名互斥量 `Local\LanDocShare-single-instance`。
 - **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
-- **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`，双击回落 `D:\MyLib` 或开向导。
+- **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`；没有记录就开向导，库位置默认填 `<我的文档>\LanDocShare\<用户名>的资料库`（没有"文档"目录时退 `%LOCALAPPDATA%\LanDocShare\library`），可当场改成别的文件夹。
 - **包体**：约 175 MB（onedir）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
 
 ### 日志与失败文件（远程排障用）
@@ -167,7 +167,7 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip   # 
 
 1. 启动 25 秒后检查一次，之后每 6 小时一次；有新版自动下载（局域网千兆 1-2 秒，断网可续传，不会被算成"正在建库"）。
 2. 就绪后托盘菜单变成 **「升级到 v0.3.0（重启程序）」**，状态窗口版本行显示 `v0.2.0 → v0.3.0（已下载，可升级）`，并弹一条气泡提示。
-3. 点它 → 关服务、切换目录、重启新版，约 3 秒。资料库数据在独立目录（`D:\MyLib` 等），**程序升级不动数据**。
+3. 点它 → 关服务、切换目录、重启新版，约 3 秒。资料库数据在独立目录（向导里选定的库位置），**程序升级不动数据**。
 
 **失败怎么办：**
 
