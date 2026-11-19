@@ -243,6 +243,32 @@ def release_tk(window: object) -> None:
     gc.collect()
 
 
+def attach_transient(window, master) -> None:
+    """把 `window` 挂成 `master` 的 transient（父窗口关了它也跟着关）。
+
+    注意 Windows 上 Tk 的行为：父窗口如果正收着（withdraw），子窗口也会跟着
+    不显示——看起来就是"点了没反应"。所以父窗口不可见时干脆不挂，让它当独立
+    窗口自己显示。
+    """
+    try:
+        if master is not None and master.winfo_viewable():
+            window.transient(master.winfo_toplevel())
+    except Exception:  # noqa: BLE001 - 挂不上就算了，不影响显示
+        pass
+
+
+def present(window) -> None:
+    """把窗口摆到最前面一次（不长期置顶）。"""
+    try:
+        window.deiconify()
+        window.lift()
+        window.focus_force()
+        window.attributes("-topmost", True)
+        window.after(200, lambda: window.attributes("-topmost", False))
+    except Exception:  # noqa: BLE001 - 窗口已经没了
+        pass
+
+
 class StatusPanel:
     """一个常驻线程里跑 tkinter；`show()` 可以从任意线程调用。"""
 
@@ -302,9 +328,9 @@ class StatusPanel:
         box: dict[str, object] = {}
         done = threading.Event()
 
-        # 先把状态窗口摆出来：对话框是它的 transient，主窗口收着的时候
-        # 子窗口也会跟着不显示（看起来就是"点了没反应"）。
-        self._queue.put(("show", None))
+        # 不弹状态窗口：对话框自己就是独立窗口，用不着把面板一起摆出来给
+        # 用户看（早先为了绕开"transient 的父窗口收着、子窗口也不显示"，
+        # 这里先 show 一次，结果用户右键"修改建库设置"时面板跟着冒出来）。
 
         def wrapper(root):
             try:
@@ -599,11 +625,10 @@ class HostedWindow:
         if window is None:
             window = tk.Toplevel(root)
             self._window = window
+            attach_transient(window, root)
             self._build(window)
         self._on_show()
-        window.deiconify()
-        window.lift()
-        window.focus_force()
+        present(window)
 
     def _close_hosted(self, _root) -> None:
         window = self._window

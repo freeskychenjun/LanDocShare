@@ -287,8 +287,12 @@ def run_wizard(
     # "点了保存，程序就消失了"）。所以有 parent 就挂在它上面开 Toplevel，
     # 没有 parent（首次建库、命令行 --wizard）才自己当根窗口。
     if parent is not None:
+        from landoc.panel import attach_transient, present
+
         root = tk.Toplevel(parent)
-        root.transient(parent.winfo_toplevel())
+        # 父窗口收着的时候别挂 transient：Windows 上子窗口会跟着不显示，
+        # 用户看到的就是"点了没反应"。父窗口开着才挂（关父窗口时一起关）。
+        attach_transient(root, parent)
     else:
         root = tk.Tk()
     root.title("LanDocShare · 建库向导" if current is None else "LanDocShare · 修改建库设置")
@@ -521,6 +525,8 @@ def run_wizard(
             root.grab_set()
         except Exception:  # noqa: BLE001 - 抢占失败也只是不模态
             pass
+        # 父窗口可能正收着，对话框得自己摆到前面来
+        present(root)
         parent.wait_window(root)
     cfg = result["config"]
     if parent is None:
