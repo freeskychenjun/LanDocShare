@@ -650,6 +650,15 @@ class RegistryHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 不刷 stderr，审计靠库端日志
         pass
 
+    def handle(self):
+        # keep-alive 下客户端拿到 403/404 就直接挂断（浏览器、PowerShell 都会），
+        # 服务端再去读下一条请求就吃 ConnectionResetError。那不是故障，别往日志里
+        # 刷整段 traceback——真出事时会被这些噪声埋掉。
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            pass
+
     # ---- 响应 ----
     def _send(self, code: int, body: bytes, content_type: str, headers: dict | None = None) -> None:
         self.send_response(code)

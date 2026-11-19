@@ -294,6 +294,8 @@ def _update_app(tmp_path, monkeypatch, *, fetch, prepare=None, **kwargs) -> Libr
         tmp_path,
         idle_check=lambda: False,
         server_factory=lambda cfg: FakeServer(port=18080),
+        # 心跳得挡住：否则这些用例会真的往生产登记中心注册一个假库（10.91.1.197:18080）
+        poster=lambda url, payload: {"ok": True},
         update_fetch=fetch,
         update_prepare=prepare or (lambda info, progress=None: _staged(tmp_path)),
         update_initial_delay=0.01,

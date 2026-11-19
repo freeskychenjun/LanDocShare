@@ -174,6 +174,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 不走 stderr 访问日志，改自写审计
         return
 
+    def handle(self):
+        # 长连接下访客拿到 401/403 就挂断（浏览器很常见），再去读下一条请求会吃
+        # ConnectionResetError；这不是服务出错，不该往 stderr 刷 traceback。
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError, TimeoutError):
+            pass
+
     # ---- 响应 ----
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)

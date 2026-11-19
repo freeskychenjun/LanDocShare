@@ -112,6 +112,19 @@ def test_child_command_uses_exe_when_frozen(monkeypatch):
     monkeypatch.setattr(sys, "executable", r"C:\Apps\LanDocShare\LanDocShare.exe")
     assert watchdog.child_command(["--port", "8767"]) == [
         r"C:\Apps\LanDocShare\LanDocShare.exe",
+        "registry",
+        "--port",
+        "8767",
+    ]
+
+
+def test_child_command_does_not_double_the_registry_subcommand(monkeypatch):
+    # 打包版靠第一个参数分派：已经带了 "registry" 的 argv 不能再补一个
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", r"C:\Apps\LanDocShare\LanDocShare.exe")
+    assert watchdog.child_command(["registry", "--port", "8767", "--watchdog"]) == [
+        r"C:\Apps\LanDocShare\LanDocShare.exe",
+        "registry",
         "--port",
         "8767",
     ]

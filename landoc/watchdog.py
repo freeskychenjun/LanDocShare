@@ -76,6 +76,12 @@ def child_command(argv: Sequence[str]) -> list[str]:
     """子进程命令行：打包版是 exe 自己，源码运行时是 `python -m landoc.registry`。"""
     args = strip_watchdog_args(argv)
     if getattr(sys, "frozen", False):
+        # 打包版靠第一个参数分派子命令（tray.main → cli.main → registry.main），
+        # 而 cli.main 在把参数交给 registry.main 之前已经把 "registry" 切掉了；
+        # 这里不补回去，子进程会落进托盘程序的 argparse，报
+        # 「unrecognized arguments: --port」后立刻退出，看门狗就一直空转重启。
+        if not args or args[0] != "registry":
+            args = ["registry", *args]
         return [sys.executable, *args]
     return [sys.executable, "-m", "landoc.registry", *args]
 
