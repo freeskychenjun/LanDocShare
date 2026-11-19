@@ -346,19 +346,33 @@ def run_wizard(
     root.resizable(False, False)
     frame = ttk.Frame(root, padding=16)
     frame.grid()
+    frame.columnconfigure(0, weight=1)
 
-    ttk.Label(frame, text="库名称").grid(row=0, column=0, sticky="w")
+    # 分三组（资料库 / 共享哪些文件夹 / 谁能查），每组一个 LabelFrame，
+    # 组内左列标签统一宽度、右缘对齐：以前所有控件挤在一张网格里，
+    # 标签长短不一、输入框右缘对不齐，看上去就是"乱"。
+    lib_box = ttk.LabelFrame(frame, text="资料库", padding=(12, 8))
+    lib_box.grid(row=0, column=0, sticky="we")
+    lib_box.columnconfigure(1, weight=1)
+
     default_name = current.name if current is not None else f"{Path.home().name}的资料库"
     # 必须显式绑定 master=root：向导可能从正在运行的托盘/状态窗口里打开，
     # 此时进程里已经有一个 Tk 根窗口；不写 master 的 StringVar 会绑到那个
     # 旧根上，新向导里的输入框/单选钮就会显示空白、没有选中项。
     name_var = tk.StringVar(master=root, value=default_name)
-    ttk.Entry(frame, textvariable=name_var, width=42).grid(row=0, column=1, columnspan=2, sticky="we", pady=4)
+    ttk.Label(lib_box, text="库名称", width=10, anchor="w").grid(
+        row=0, column=0, sticky="w", pady=3
+    )
+    ttk.Entry(lib_box, textvariable=name_var).grid(
+        row=0, column=1, columnspan=2, sticky="we", pady=3
+    )
 
-    ttk.Label(frame, text="库位置").grid(row=1, column=0, sticky="w")
+    ttk.Label(lib_box, text="库位置", width=10, anchor="w").grid(
+        row=1, column=0, sticky="w", pady=3
+    )
     lib_var = tk.StringVar(master=root, value=str(lib_dir))
-    lib_entry = ttk.Entry(frame, textvariable=lib_var, width=42)
-    lib_entry.grid(row=1, column=1, sticky="we", pady=4)
+    lib_entry = ttk.Entry(lib_box, textvariable=lib_var)
+    lib_entry.grid(row=1, column=1, sticky="we", pady=3)
 
     def choose_lib_dir() -> None:
         chosen = filedialog.askdirectory(
@@ -368,16 +382,18 @@ def run_wizard(
         if chosen:
             lib_var.set(chosen)
 
-    lib_button = ttk.Button(frame, text="选择…", command=choose_lib_dir)
-    lib_button.grid(row=1, column=2, sticky="w", padx=(4, 0))
+    lib_button = ttk.Button(lib_box, text="选择…", width=8, command=choose_lib_dir)
+    lib_button.grid(row=1, column=2, sticky="w", padx=(8, 0), pady=3)
     if current is not None:
         # 改建库设置时不搬库：位置一变，配置/索引/md 全得跟着搬，不在这里冒险
         lib_entry.configure(state="disabled")
         lib_button.configure(state="disabled")
 
-    ttk.Label(frame, text="共享哪些文件夹").grid(row=2, column=0, sticky="nw", pady=(8, 0))
-    folders_box, listbox = folder_list(frame)
-    folders_box.grid(row=2, column=1, sticky="we", pady=4)
+    folders_panel = ttk.LabelFrame(frame, text="共享哪些文件夹", padding=(12, 8))
+    folders_panel.grid(row=1, column=0, sticky="we", pady=(10, 0))
+    folders_panel.columnconfigure(0, weight=1)
+    folders_box, listbox = folder_list(folders_panel)
+    folders_box.grid(row=0, column=0, sticky="nsew")
     if current is not None:
         for folder in current.folders:
             listbox.insert("end", str(folder))
@@ -399,13 +415,15 @@ def run_wizard(
             listbox.delete(index)
         kick_estimate()
 
-    buttons = ttk.Frame(frame)
-    buttons.grid(row=2, column=2, sticky="n")
-    ttk.Button(buttons, text="添加…", command=add_folder).grid(row=0, column=0, sticky="we")
-    ttk.Button(buttons, text="移除", command=remove_folder).grid(row=1, column=0, sticky="we", pady=4)
+    side = ttk.Frame(folders_panel)
+    side.grid(row=0, column=1, sticky="n", padx=(8, 0))
+    ttk.Button(side, text="添加…", width=8, command=add_folder).grid(row=0, column=0, sticky="we")
+    ttk.Button(side, text="移除", width=8, command=remove_folder).grid(
+        row=1, column=0, sticky="we", pady=(6, 0)
+    )
 
-    estimate_label = ttk.Label(frame, text="还没选文件夹", foreground="#666")
-    estimate_label.grid(row=3, column=1, columnspan=2, sticky="w")
+    estimate_label = ttk.Label(folders_panel, text="还没选文件夹", foreground="#666")
+    estimate_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     # 估算在后台线程做（大目录 walk 要一两秒），结果用队列送回 tk 线程
     est_queue: queue.Queue[tuple[int, FolderEstimate]] = queue.Queue()
@@ -439,7 +457,10 @@ def run_wizard(
             pass
         root.after(250, poll_estimate)
 
-    ttk.Label(frame, text="谁能查").grid(row=4, column=0, sticky="w", pady=(8, 0))
+    scope_panel = ttk.LabelFrame(frame, text="谁能查", padding=(12, 8))
+    scope_panel.grid(row=2, column=0, sticky="we", pady=(10, 0))
+    scope_panel.columnconfigure(1, weight=1)
+
     default_scope = SCOPE_LAN
     if current is not None:
         if current.allow_people:
@@ -447,40 +468,48 @@ def run_wizard(
         elif list(current.allow_cidrs) == SCOPE_CIDRS[SCOPE_LOCAL]:
             default_scope = SCOPE_LOCAL
     scope_var = tk.StringVar(master=root, value=default_scope)
-    ttk.Radiobutton(frame, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN).grid(
-        row=4, column=1, columnspan=2, sticky="w"
-    )
-    ttk.Radiobutton(frame, text="仅指定名单（按 IP 放行，姓名仅备注）", variable=scope_var, value=SCOPE_PEOPLE).grid(
-        row=5, column=1, columnspan=2, sticky="w"
-    )
-    ttk.Radiobutton(frame, text="仅本机", variable=scope_var, value=SCOPE_LOCAL).grid(
-        row=6, column=1, columnspan=2, sticky="w"
-    )
+    radios = [
+        ttk.Radiobutton(
+            scope_panel, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN
+        ),
+        ttk.Radiobutton(
+            scope_panel, text="仅指定名单（按 IP 放行，姓名仅备注）", variable=scope_var, value=SCOPE_PEOPLE
+        ),
+        ttk.Radiobutton(scope_panel, text="仅本机", variable=scope_var, value=SCOPE_LOCAL),
+    ]
+    for row, radio in enumerate(radios):
+        radio.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 2))
 
-    ttk.Label(frame, text="允许的网段").grid(row=7, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(scope_panel, text="允许的网段", width=10, anchor="w").grid(
+        row=3, column=0, sticky="w", pady=(8, 0)
+    )
     default_cidrs = "、".join(
         current.allow_cidrs
         if current is not None and list(current.allow_cidrs) != SCOPE_CIDRS[SCOPE_LOCAL]
         else SCOPE_CIDRS[SCOPE_LAN]
     )
     cidr_var = tk.StringVar(master=root, value=default_cidrs.replace("、", ", "))
-    cidr_entry = ttk.Entry(frame, textvariable=cidr_var, width=28)
-    cidr_entry.grid(row=7, column=1, sticky="w", pady=(6, 0))
-    ttk.Label(frame, text="多个用逗号分隔", foreground="#666").grid(
-        row=7, column=2, sticky="w", padx=(6, 0), pady=(6, 0)
-    )
+    # 网段输入框横跨后两列：默认 20 字符宽装不下 "10.91.0.0/16, 127.0.0.1/32"，
+    # 右边还会被提示文字挤掉，所以提示统一挪到下面一行。
+    cidr_entry = ttk.Entry(scope_panel, textvariable=cidr_var)
+    cidr_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=(8, 0))
 
-    ttk.Label(frame, text="拒绝的网段").grid(row=8, column=0, sticky="w", pady=(4, 0))
+    ttk.Label(scope_panel, text="拒绝的网段", width=10, anchor="w").grid(
+        row=4, column=0, sticky="w", pady=(6, 0)
+    )
     default_deny = "、".join(current.deny_cidrs) if current is not None else ""
     deny_var = tk.StringVar(master=root, value=default_deny.replace("、", ", "))
-    deny_entry = ttk.Entry(frame, textvariable=deny_var, width=28)
-    deny_entry.grid(row=8, column=1, sticky="w", pady=(4, 0))
-    ttk.Label(frame, text="留空=不拒绝；优先于允许网段", foreground="#666").grid(
-        row=8, column=2, sticky="w", padx=(6, 0), pady=(4, 0)
-    )
+    deny_entry = ttk.Entry(scope_panel, textvariable=deny_var)
+    deny_entry.grid(row=4, column=1, columnspan=2, sticky="we", pady=(6, 0))
 
-    scope_hint = ttk.Label(frame, text="", foreground="#666", wraplength=390, justify="left")
-    scope_hint.grid(row=9, column=1, columnspan=2, sticky="w", pady=(6, 0))
+    ttk.Label(
+        scope_panel,
+        text="多个网段用逗号分隔；拒绝网段留空 = 不拒绝，且优先于允许网段。",
+        foreground="#666",
+    ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(4, 0))
+
+    scope_hint = ttk.Label(scope_panel, text="", foreground="#666", wraplength=430, justify="left")
+    scope_hint.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def sync_scope_state() -> None:
         scope = scope_var.get()
@@ -509,16 +538,15 @@ def run_wizard(
             text = "公司内网：网段内、且不在拒绝网段里的机器都能查；不启用姓名名单。"
         scope_hint.configure(text=text)
 
-    for radio in frame.winfo_children():
-        if isinstance(radio, ttk.Radiobutton):
-            radio.configure(command=sync_scope_state)
+    for radio in radios:
+        radio.configure(command=sync_scope_state)
 
     note = (
         "索引与 md 副本都是文档全文明文，只落在本机；\n"
         "对外只提供命中片段与表格，不提供全文或下载。"
     )
-    ttk.Label(frame, text=note, foreground="#666").grid(
-        row=10, column=0, columnspan=3, sticky="w", pady=(10, 4)
+    ttk.Label(frame, text=note, foreground="#666", justify="left").grid(
+        row=3, column=0, sticky="w", pady=(10, 4)
     )
 
     def confirm() -> None:
@@ -568,9 +596,11 @@ def run_wizard(
         root.destroy()
 
     actions = ttk.Frame(frame)
-    actions.grid(row=11, column=0, columnspan=3, sticky="e", pady=(12, 0))
-    ttk.Button(actions, text="取消", command=root.destroy).grid(row=0, column=0, padx=4)
-    ttk.Button(actions, text="保存" if current is not None else "建库", command=confirm).grid(
+    actions.grid(row=4, column=0, sticky="e", pady=(12, 0))
+    ttk.Button(actions, text="取消", width=10, command=root.destroy).grid(
+        row=0, column=0, padx=(0, 8)
+    )
+    ttk.Button(actions, text="保存" if current is not None else "建库", width=10, command=confirm).grid(
         row=0, column=1
     )
     # 回车=保存、Esc=取消：填完最后一格不用再去够鼠标
