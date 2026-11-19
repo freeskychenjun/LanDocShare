@@ -613,6 +613,54 @@ def test_env_signature_is_recorded_in_state(one_bad_doc, monkeypatch):
     assert state["env"] == {"office": True, "acrobat": False}
 
 
+def test_installing_chinese_ocr_clears_no_ocr_failures(monkeypatch):
+    """装好中文 OCR 语言包后，旧的 no_ocr 失败记录要作废重试；文件自身的失败保留。"""
+    state = {
+        "env": {"office": True, "acrobat": True, "ocr": False},
+        "failures": {
+            "成果/扫描件.pdf": {"reason": "no_ocr", "attempts": 1},
+            "成果/坏.pdf": {"reason": "parse_failed", "attempts": 1},
+        },
+    }
+    monkeypatch.setattr(
+        pipeline, "env_signature", lambda: {"office": True, "acrobat": True, "ocr": True}
+    )
+    dropped = pipeline._drop_stale_env_failures(state)
+    assert dropped == 1
+    assert "成果/扫描件.pdf" not in state["failures"]
+    assert "成果/坏.pdf" in state["failures"]
+
+
+def test_ocr_becoming_available_also_retries_no_text_layer(monkeypatch):
+    """0.2.15 之前攒下的 no_text_layer 失败，在 OCR 刚可用时也要重试一次。"""
+    state = {
+        "env": {"office": True, "acrobat": True, "ocr": False},
+        "failures": {
+            "成果/扫描件.pdf": {"reason": "no_text_layer", "attempts": 1},
+            "成果/坏.pdf": {"reason": "parse_failed", "attempts": 1},
+        },
+    }
+    monkeypatch.setattr(
+        pipeline, "env_signature", lambda: {"office": True, "acrobat": True, "ocr": True}
+    )
+    assert pipeline._drop_stale_env_failures(state) == 1
+    assert "成果/扫描件.pdf" not in state["failures"]
+    assert "成果/坏.pdf" in state["failures"]
+
+
+def test_ocr_already_available_keeps_no_text_layer_failures(monkeypatch):
+    """OCR 一直可用时不动 no_text_layer：那是"OCR 也没认出字"的终态，别每轮重跑。"""
+    state = {
+        "env": {"office": True, "acrobat": True, "ocr": True},
+        "failures": {"成果/扫描件.pdf": {"reason": "no_text_layer", "attempts": 1}},
+    }
+    monkeypatch.setattr(
+        pipeline, "env_signature", lambda: {"office": True, "acrobat": False, "ocr": True}
+    )
+    assert pipeline._drop_stale_env_failures(state) == 0
+    assert "成果/扫描件.pdf" in state["failures"]
+
+
 # ============ 一批加密 PDF 共用同一个 Acrobat（省掉每篇 5.5 秒起停）============
 
 

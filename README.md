@@ -78,15 +78,16 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 - **首次运行自动弹建库向导**（`landoc/wizard.py`，tkinter）：没有 `config.json` 时（或 `--wizard`）先问库名、要共享的文件夹、谁能查，选完才起服务。选文件夹时当场估"约多少篇 · 多大 · 要多久"（只 walk + stat，不打开文件）。已经建过库的，从托盘菜单「修改建库设置…」重开：字段预填当前值，改完**当场生效**（服务端每请求现读共享范围、调度线程每轮现读文件夹），不必重启；存储策略（`store_content` 等）不在向导里，重开向导不会把它冲掉。**名单编辑不在向导里**：向导只显示「已登记 N 人」，增删改到「授权名单…」窗口做；首次建库先选公司内网或仅本机，建好后去授权名单窗口添加人员，再回来改「仅指定名单」。
 - **「谁能查」三档**：公司内网（默认网段 10.91.0.0/16，**可改**，如只给本院填 10.91.1.0/24）/ **仅指定名单** / 仅本机。名单是"**按 IP 放行、姓名只作备注**"：填了 IP 的机器一打开网页就能查（不用报姓名），审计日志里记那条对应的姓名；**姓名只用于日志/分组，不能当作访问凭证**——空 IP 的条目一律不授权，知道姓名也进不来。填了 IP 会校验落在允许网段内（否则提示"这个人会连不上"）。名单只存本机 `config.json`，`/api/meta` 只回 `name_required`（恒 false，仅为旧客户端兼容）、不回名单本身。命令行维护：`people --csv 名单.csv`（`姓名,IP` 两列，可带表头；每行必须有 IP，空 IP 会整批拒绝并报行号；`--replace` 整体替换、`--set 姓名=IP`、`--remove 姓名`、`--export` 导出给客户端分发）；命令行等价物还有 `init --allow-cidrs 10.91.1.0/24,10.91.10.0/24`。改名单**即时生效**，不用重启服务。
 - **要“整段放行、只挡几台”**：`deny_cidrs` 是黑名单，命中即 403，**优先于允许网段和名单**（连 `127.0.0.1` 也会被挡，别把本机写进去）。`init --deny-cidrs 10.91.1.50,10.91.1.0/28` 设置，`--deny-cidrs ""`（或 `无`）清空；中心侧同名参数 `registry --deny-cidrs` 挡的是“能打开中心页面/清单”的来源。库端与中心都在路由分发**之前**判黑名单，网页、`/api/*`、skill 一视同仁。建库向导「允许的网段」下面一行就是「拒绝的网段」（留空=不拒绝，全角逗号/分号都认），改完当场生效；状态窗口的「共享范围」会显示「· 拒绝 N 段」，不用去翻 `config.json` 才知道黑名单有几条。
-- **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数（有转换失败时显示「N 篇 · M 篇转换失败」）、共享范围、服务地址、上次扫描、**版本**，带「打开检索页 / 立即更新 / **检查更新（有新版时变「下载更新」/「升级到 v…」）** / 暂停共享 / 授权名单 / 复制地址 / **清理…**」按钮。**清理…** 是「库只增不减」的唯一出口：源文件已不在的文档攒到 N 篇时按钮亮起、写「清理 N 篇」，点一下先问「要删掉这些文档的副本和索引行吗」，确认后才删（删之前源文档回来了就自动从名单里消失）；命令行等价物 `LanDocShare.exe prune --lib-dir … --gone`，打包版也走同一条路（`CLI_COMMANDS` 里已含 `prune`）。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。**每次打开都回到屏幕正中**（`center_window`：按光标所在显示器的工作区居中，多屏时跟着鼠标走、任务栏不算在内；把窗口拖到别处后再打开，仍回正中）。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
+- **状态窗口**：启动即弹出的小窗（`landoc/panel.py`，tkinter，无新依赖），一眼看到状态、篇数（有转换失败时显示「N 篇 · M 篇转换失败」）、共享范围、服务地址、上次扫描、**扫描件 OCR 走哪条路**（`Windows 系统 OCR` / `Tesseract 兜底` / 两条都没有时这一行不显示）、**版本**，带「打开检索页 / 立即更新 / **检查更新（有新版时变「下载更新」/「升级到 v…」）** / 暂停共享 / 授权名单 / 复制地址 / **清理…**」按钮。**清理…** 是「库只增不减」的唯一出口：源文件已不在的文档攒到 N 篇时按钮亮起、写「清理 N 篇」，点一下先问「要删掉这些文档的副本和索引行吗」，确认后才删（删之前源文档回来了就自动从名单里消失）；命令行等价物 `LanDocShare.exe prune --lib-dir … --gone`，打包版也走同一条路（`CLI_COMMANDS` 里已含 `prune`）。关窗只是隐藏，双击托盘图标可再打开；真正退出在托盘菜单里。**每次打开都回到屏幕正中**（`center_window`：按光标所在显示器的工作区居中，多屏时跟着鼠标走、任务栏不算在内；把窗口拖到别处后再打开，仍回正中）。开机自启的 `--autostart` 模式不弹窗、不抢浏览器，只驻留托盘并弹一条"已在托盘运行"的提示。
 - **「立即重建索引」是真的立即**（旧版只是叫醒调度线程，仍要过空闲门控——正在用电脑时点了没反应）：点下去就置 `_force`，本轮门控与每篇开始前的收工检查都放行，**一直跑到没有新增为止**（不是跑一轮就收工），状态窗口同时显示"已转换 N 篇 · 还剩 M 篇（约 X 分钟）"。转换起的是独立的隐藏 Office/WPS 进程（`DispatchEx` + `Visible=False`），不碰你正开着的窗口，只占 CPU。跑完弹回音：有新增说"已收录 N 篇，可被检索"，没有新增说"已是最新：没有需要收录的新文档"（有失败则报失败篇数）——点了没动静和"按钮坏了"看着一样，所以必须有这句话。**停下**：建库期间托盘那一项和状态窗按钮都变成「停止建库」；「暂停共享」也会把它撤掉（恢复共享后不会自己又跑起来）。
+- **扫描件 PDF 会 OCR**（0.2.16）：没有文字层的 PDF（扫描件）不再直接记失败——先用 Windows 自带的 OCR（`zh-Hans-CN` 语言包，0 体积），识别不出来再退回随包的 Tesseract（`landoc/tools/tesseract` 约 8.4 MB + `landoc/tools/tessdata` 的 fast 模型 6.3 MB，chi_sim+eng）。只对"整页是图"的 PDF 动手（文字少但没有图的短通知不白跑），默认 300 dpi、最多前 60 页；识别结果带 `<!-- page N -->` 锚点与提示行「（扫描件：以下文字由 OCR 识别，可能有错字）」。开关在 `config.json`：`ocr_scanned_pdfs`（默认 true，关掉就完全不渲染）、`ocr_dpi`、`ocr_max_pages`。体量参考：2 页意见函约 2.2 秒 / 1648 字；38 篇 175 页约 7 分钟。质量：打印体公文基本可读（`赣` 可能认成 `考` 这类），手写、表格线密的效果一般，所以正文里留了提示行——别把 OCR 结果当原文引用。
 - Win11 会把新图标收进任务栏的 `^` 溢出区：点开 `^`，把纸页图标拖到任务栏上就常驻了。
 - **托盘图标怎么才画得出来**（`landoc/notifyicon.py`）：pystray 0.19.5 发 `NOTIFYICONDATAW` 时传的是 `hID=`，而字段名是 `uID`，ctypes 不校验关键字 → **uID 永远是 0**，外壳只会留个空槽（没图标、右键点不出菜单）。程序启动时给 `Shell_NotifyIcon` 包了一层：uID 补成非零；`NIM_ADD` 失败（外壳残留上一条记录时常见）就删掉重加，还不行就补一条带 `NIF_ICON` 的 `NIM_MODIFY`，并在后台再试几次。排障可设 `LANDOC_TRAY_DEBUG=1`，日志在 `%LOCALAPPDATA%\LanDocShare\logs\tray.log`。
 
 - **单实例**：命名互斥量 `Local\LanDocShare-single-instance`。
 - **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
 - **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`；没有记录就开向导，库位置默认填 `<我的文档>\LanDocShare\<用户名>的资料库`（没有"文档"目录时退 `%LOCALAPPDATA%\LanDocShare\library`），可当场改成别的文件夹。
-- **包体**：约 175 MB（onedir）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
+- **包体**：约 184 MB（onedir；其中 `landoc/tools` 的 OCR 工具与模型占 14.7 MB，zip 约 92 MB）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
 
 ### 日志与失败文件（远程排障用）
 
@@ -94,7 +95,7 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 
 同目录另有 `access_log.jsonl`（谁查了什么，按 4 MB 轮转，也留一份 `.1`）与 `update.log`（自动更新）。
 
-转换失败的文件记在 `<库目录>\failures.json`，每篇带 `attempts`/`reason`/`mtime`/`size`：同一版本连续失败一次就不再自动重试，累计 3 次也停；装好 Office/Acrobat 后环境指纹变化会自动把 `no_office`/`no_reader` 这类失败放回队列。要人工重试某篇，删掉它在 `failures.json` 里的那条（或改一下源文件让 mtime 变化）即可。
+转换失败的文件记在 `<库目录>\failures.json`，每篇带 `attempts`/`reason`/`mtime`/`size`：同一版本连续失败一次就不再自动重试，累计 3 次也停；装好 Office/Acrobat 后环境指纹变化会自动把 `no_office`/`no_reader` 这类失败放回队列。扫描件没有文字层又没装 OCR 时记 `no_ocr`（同样算环境原因，不白耗 3 次重试）；OCR 后来可用了（装语言包/换成带 Tesseract 的打包版），`no_ocr` 与旧的 `no_text_layer` 会一起放回队列重试。要人工重试某篇，删掉它在 `failures.json` 里的那条（或改一下源文件让 mtime 变化）即可。
 
 ## 登记中心（P2，8767）
 
@@ -234,6 +235,8 @@ python skill/lan-lib-search/scripts/query.py tables --lib 陈鋆 --path "测试�
 | Office 另存为的中间文件读不出来 | **加密与否取决于"谁写"**：白名单进程写盘一律是密文 | 故一律"Office 内存取字符串 → python 落盘" |
 | 加密 docx 如何转 md | `doc.Content.WordOpenXML` 取 Flat OPC → python 补 `[Content_Types].xml` 重建 docx → `python-docx` 解析 | `office_bridge` |
 | 加密 pdf 如何转文本 | **本机有 Acrobat 就用它**（`PDDoc.Open` + 逐页 `CreateTextSelect`/`GetText`，21 页 0.8 秒、不落明文副本）；否则用伪装名 `acrobat.exe` 解**临时副本**，抽完即删。工具目录查找顺序：`init --acrobat-tool-dir` → 环境变量 `LANDOC_ACROBAT_TOOL_DIR` → exe 同级的 `工具\`（打包版，同事机器用这个）→ 仓库根 `工具\` 与开发路径（仅源码运行时） | `pdf_conv` / `cli.acrobat_tool_candidates` |
+| 扫描件 pdf 为什么也能转 | 取不到文字层时先试 **Windows 系统 OCR**（WinRT，经 `landoc/tools/ocr_win.ps1` 走 PS 5.1，不装任何 Python 包），结果太短再退回**随包 Tesseract**（最小 DLL 集 8.4 MB，不需要 ICU；fast 模型）。只认"页里有图"的 PDF（无图的短文本不渲染），默认 300 dpi、前 60 页，结果带页码锚点与提示行。两条路都没有 → `no_ocr` | `ocr.py` / `pdf_conv._ocr_text` |
+| OCR 装没装怎么记 | 环境指纹多了 `ocr` 一项；`no_ocr` 属环境原因（装好就放回队列），且 OCR 刚变可用时连旧的 `no_text_layer` 一起放回——否则 0.2.15 之前攒下的扫描件失败永远不会重试 | `pipeline.env_signature` / `_drop_stale_env_failures` |
 | Acrobat 取文本为什么要拼接 | `GetText(i)` 返回的是**单个字符**，直接 join 会得到逐字断行的碎片，trigram 命中率归零；`_join_tokens` 做中文不加空格/ASCII 补空格 | `pdf_conv._join_tokens` |
 | 一批文档为什么共用一个 Office | 每篇重启 Office 要白付 6 秒；`OfficeSession` 把整批固定在同一 COM 线程 | `office_bridge` |
 | 一批加密 pdf 为什么也共用一个 Acrobat | 同上但更贵：每篇 `Dispatch`+杀进程要白付 **5.5 秒（占 6.2 秒的 88%）**；`PDFSession` 用一次 `Dispatch` 连转一批、每篇只新建 `PDDoc`（复用 PDDoc 无收益），每 500 篇换新会话（内存约 +0.44 MB/篇） | `pdf_conv.PDFSession` |

@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from landoc import office_bridge, pdf_conv, pptx_conv, probe, render_docx
+from landoc import ocr, office_bridge, pdf_conv, pptx_conv, probe, render_docx
 
 STATE_NAME = "state.json"
 FAILURES_NAME = "failures.json"
@@ -40,8 +40,9 @@ MAX_ATTEMPTS = 3  # 同一份文件连续失败超过这个次数就不再自动
 # 换一个会话只花一次 4.5 秒的启动，所以每 500 篇回收一次（千篇成本 9 秒）。
 PDF_SESSION_MAX_DOCS = 500
 # 装/卸 Office、Acrobat 之后，旧的"没有可用的转换器"失败记录必须作废，否则同事机器
-# 补装完也永远不重试。只清这两类：它们说的是"机器缺东西"，不是"这份文件坏"。
-ENV_REASONS = frozenset({"no_office", "no_reader"})
+# 补装完也永远不重试。只清这三类：它们说的是"机器缺东西"，不是"这份文件坏"。
+# no_ocr 是"扫描件需要 OCR、但这台机器既没有系统中文识别包也没装 Tesseract"。
+ENV_REASONS = frozenset({"no_office", "no_reader", "no_ocr"})
 
 # 一轮里"转了多少篇就落一次盘"：索引提交便宜（20 篇一次实测比整轮单事务只多 15%），
 # 但 state.json 是整份重写（5 万篇时 ≈6 MB），所以它按时间落（60 秒），索引按篇数落。
@@ -199,8 +200,9 @@ def _write_failures(cfg, failures: dict) -> None:
 def env_signature() -> dict:
     """本机"有没有可用的转换器"的指纹（注册表查询，毫秒级，不启动任何进程）。
 
-    存进 state.json 之后，下一轮只要指纹变了就知道同事刚装了/卸了 Office 或 Acrobat，
-    可以放心把 no_office / no_reader 的失败记录作废重试。
+    存进 state.json 之后，下一轮只要指纹变了就知道同事刚装了/卸了 Office、Acrobat，
+    或者刚装好中文 OCR 语言包，可以放心把 no_office / no_reader / no_ocr 的失败记录
+    作废重试。
     """
     def _probe(name: str) -> bool:
         fn = getattr(probe, name, None)
@@ -211,11 +213,16 @@ def env_signature() -> dict:
         except Exception:  # noqa: BLE001 - 探测失败不该拦住建库
             return True
 
-    return {"office": _probe("has_office"), "acrobat": _probe("has_acrobat")}
+    try:
+        # OCR 探测第一次要起一次 PowerShell（约 0.4 秒），ocr 模块内部缓存 5 分钟
+        has_ocr = ocr.backend() != ""
+    except Exception:  # noqa: BLE001 - 探测失败按"有"处理，别凭空清空失败记录
+        has_ocr = True
+    return {"office": _probe("has_office"), "acrobat": _probe("has_acrobat"), "ocr": has_ocr}
 
 
 def _drop_stale_env_failures(state: dict) -> int:
-    """环境指纹变了就丢掉 no_office / no_reader 的失败记录，返回丢掉的条数。"""
+    """环境指纹变了就丢掉 no_office / no_reader / no_ocr 的失败记录，返回丢掉的条数。"""
     current = env_signature()
     previous = state.get("env")
     state["env"] = current
@@ -223,8 +230,12 @@ def _drop_stale_env_failures(state: dict) -> int:
         return 0  # 第一次记账（老版本升级上来也一样）：只记指纹，不动历史失败
     if previous == current:
         return 0
+    stale_reasons = set(ENV_REASONS)
+    if current.get("ocr") and not previous.get("ocr"):
+        # OCR 刚变得可用：以前记成"没有文字层"的扫描件，现在值得再试一次
+        stale_reasons.add("no_text_layer")
     failures = state.get("failures") or {}
-    stale = [rel for rel, item in failures.items() if str(item.get("reason", "")) in ENV_REASONS]
+    stale = [rel for rel, item in failures.items() if str(item.get("reason", "")) in stale_reasons]
     for rel in stale:
         failures.pop(rel, None)
     return len(stale)

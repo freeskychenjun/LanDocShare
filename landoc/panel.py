@@ -194,6 +194,9 @@ def status_rows(
     if status.pending > 0:
         eta = f"（{eta_phrase(status.eta_seconds)}）" if status.eta_seconds > 0 else ""
         rows.append(PanelRow("待收录", f"{status.pending} 篇{eta}"))
+    if status.ocr:
+        # 扫描件 OCR 用哪条路：缺中文识别包时这里会直说"不可用"，省得翻日志
+        rows.append(PanelRow("扫描件 OCR", status.ocr))
     rows += [
         PanelRow("共享范围", scope),
         PanelRow("服务地址", f"http://{lan_ip}:{actual_port}/"),

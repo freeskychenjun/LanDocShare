@@ -54,15 +54,109 @@ def test_unreadable_path_is_skipped(tmp_path: Path):
     assert result.reason == "unreadable"
 
 
-def test_pdf_without_text_layer_reports_reason(tmp_path: Path):
+def _add_image_page(doc):
+    """给 PDF 加一页"整页是图"的页面：OCR 只对这种页面动手（见 pdf_conv._ocr_text）。"""
+    import fitz
+
+    page = doc.new_page()
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), 0)
+    pix.clear_with(200)
+    page.insert_image(fitz.Rect(0, 0, 8, 8), pixmap=pix)
+    return page
+
+
+def test_pdf_without_text_layer_reports_reason(tmp_path: Path, monkeypatch):
     import fitz
 
     doc = fitz.open()
-    doc.new_page()  # 空白页：没有文本层
+    _add_image_page(doc)  # 扫描页：有图、没有文本层
     path = tmp_path / "scan.pdf"
     doc.save(path)
     doc.close()
+    # OCR 这条路单独测；这里只关心"有 OCR 但没识别出字"时记 no_text_layer
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    monkeypatch.setattr(pdf_conv, "_ocr_text", lambda path, cfg=None: None)
     result = pdf_conv.pdf_to_text(path)
+    assert result.via == "pymupdf"
+    assert result.reason == "no_text_layer"
+
+
+def test_scanned_pdf_reports_no_ocr_when_engine_is_missing(tmp_path: Path, monkeypatch):
+    import fitz
+
+    doc = fitz.open()
+    _add_image_page(doc)
+    path = tmp_path / "scan.pdf"
+    doc.save(path)
+    doc.close()
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "")
+    result = pdf_conv.pdf_to_text(path)
+    assert result.via == "pymupdf"
+    assert result.reason == "no_ocr"
+
+
+def test_scanned_pdf_is_ocrd_when_engine_is_available(tmp_path: Path, monkeypatch):
+    """没有文字层的 PDF 走 OCR：结果带上提示行与页码锚点，via 记 ocr。"""
+    import fitz
+
+    doc = fitz.open()
+    _add_image_page(doc)
+    path = tmp_path / "scan.pdf"
+    doc.save(path)
+    doc.close()
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    monkeypatch.setattr(
+        pdf_conv.ocr,
+        "ocr_images",
+        lambda images, lang="zh-Hans-CN", timeout=None: "江 西 省 水 利 厅 文 件" * 5,
+    )
+    result = pdf_conv.pdf_to_text(path)
+    assert result.via == "ocr"
+    assert result.reason == ""
+    assert pdf_conv.OCR_NOTICE in result.text
+    assert "<!-- page 1 -->" in result.text
+    assert "江 西 省" not in result.text  # 汉字之间的空格要清掉
+
+
+def test_short_text_pdf_without_images_is_not_ocrd(tmp_path: Path, monkeypatch):
+    """文字很少但没有图的 PDF（一页短通知）不该白渲染一遍：OCR 只认"整页是图"的扫描件。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "附件1", fontsize=12)
+    path = tmp_path / "short.pdf"
+    doc.save(path)
+    doc.close()
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    monkeypatch.setattr(
+        pdf_conv.ocr,
+        "ocr_images",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("没有图的 PDF 不该跑 OCR")),
+    )
+    result = pdf_conv.pdf_to_text(path)
+    assert result.via == "pymupdf"
+    assert result.reason == "no_text_layer"
+
+
+def test_ocr_can_be_switched_off_per_library(tmp_path: Path, monkeypatch):
+    import fitz
+
+    from landoc.config import Config
+
+    doc = fitz.open()
+    _add_image_page(doc)
+    path = tmp_path / "scan.pdf"
+    doc.save(path)
+    doc.close()
+    cfg = Config(name="t", lib_dir=tmp_path, ocr_scanned_pdfs=False)
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    monkeypatch.setattr(
+        pdf_conv.ocr,
+        "ocr_images",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("关掉 OCR 后不该渲染任何页面")),
+    )
+    result = pdf_conv.pdf_to_text(path, cfg=cfg)
     assert result.via == "pymupdf"
     assert result.reason == "no_text_layer"
 

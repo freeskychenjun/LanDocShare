@@ -15,6 +15,11 @@ datas = [
     (str(ROOT / "packaging" / "landoc.ico"), "landoc"),
     # 登记中心的 /skill.zip 现场打包要用这份模板（设计 §9 分发）
     (str(ROOT / "skill" / "lan-lib-search"), "skill/lan-lib-search"),
+    # 扫描件 OCR：Windows OCR 桥脚本 + Tesseract 最小集（exe + 6 个 DLL + 中英 fast 模型，
+    # 共约 15 MB）。系统缺中文识别包的机器靠它兜底，见 landoc/ocr.py。
+    (str(ROOT / "landoc" / "tools" / "ocr_win.ps1"), "landoc/tools"),
+    (str(ROOT / "landoc" / "tools" / "tesseract"), "landoc/tools/tesseract"),
+    (str(ROOT / "landoc" / "tools" / "tessdata"), "landoc/tools/tessdata"),
 ]
 
 hiddenimports = [

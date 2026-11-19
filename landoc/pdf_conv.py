@@ -19,11 +19,13 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from landoc import office_bridge
+from landoc import ocr, office_bridge
 from landoc.probe import classify, has_acrobat  # noqa: F401 - has_acrobat 供测试替换
 
 MIN_TEXT_CHARS = 50
 TOOL_EXE_NAME = "acrobat.exe"
+# OCR 文本里留一句提示：识别结果会有错字，看的人得知道这不是原文
+OCR_NOTICE = "（扫描件：以下文字由 OCR 识别，可能有错字）"
 
 _ASCII_START = re.compile(r"[A-Za-z0-9]")
 _ASCII_END = re.compile(r"[A-Za-z0-9]$")
@@ -309,6 +311,63 @@ def _acrobat_text(path: Path, timeout: float = 120.0) -> str:
         return session.extract(path, timeout)
 
 
+def _ocr_text(path: Path, cfg=None) -> str | None:
+    """把 PDF 前几页渲染成 PNG 交给 OCR；不可用/没识别出字就返回 None。
+
+    只有"没有文字层"的扫描件才走到这里，代价约 1~2 秒/页（300dpi），所以默认最多 60 页；
+    页数更多的扫描件只识别前 60 页，md 里会写明"只识别了前 N 页"。
+    """
+    if cfg is not None and not getattr(cfg, "ocr_scanned_pdfs", True):
+        return None
+    if ocr.backend() == "":
+        return None
+    try:
+        import fitz
+    except ImportError:  # 没装 pymupdf 时明文 PDF 本来也读不了
+        return None
+    dpi = int(getattr(cfg, "ocr_dpi", 300) or 300)
+    max_pages = int(getattr(cfg, "ocr_max_pages", 60) or 60)
+    try:
+        doc = fitz.open(path)
+    except Exception:  # noqa: BLE001 - 打不开就交给上层记失败
+        return None
+    images: list[tuple[str, Path]] = []
+    total_pages = 0
+    tmpdir = Path(tempfile.mkdtemp(prefix="landoc_ocr_"))
+    try:
+        total_pages = doc.page_count
+        # 只有"页面是图片"的 PDF 才值得 OCR：文字少但没有图的（一页短通知/表单）没有
+        # 可识别的东西，白渲染一遍只会让建库变慢。
+        if not any(doc[index].get_images(full=True) for index in range(min(total_pages, 3))):
+            return None
+        for index in range(min(total_pages, max_pages)):
+            target = tmpdir / f"p{index + 1:04d}.png"
+            doc[index].get_pixmap(dpi=dpi).save(str(target))
+            images.append((f"p{index + 1:04d}", target))
+    except Exception:  # noqa: BLE001 - 渲染失败就放弃 OCR，别把建库拖死
+        return None
+    finally:
+        doc.close()
+    try:
+        if not images:
+            return None
+        raw = ocr.ocr_images(images)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    if not raw:
+        return None
+    pages = [page.strip() for page in raw.split("\f")]
+    pages = [page for page in pages if page]
+    if not pages:
+        return None
+    body = "\n\n".join(f"<!-- page {index + 1} -->\n{page}" for index, page in enumerate(pages))
+    header = OCR_NOTICE
+    if total_pages > len(pages):
+        header += f"（只识别了前 {len(pages)} 页，共 {total_pages} 页）"
+    # 只对识别出来的正文做收尾：提示行里的空格是给人看的，不能被"去汉字间空格"吃掉
+    return f"{header}\n\n{ocr.tidy(body)}"
+
+
 def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0, session=None) -> PDFResult:
     """PDF → 文本。`session` 是一个 `PDFSession`（批量转换用，省掉每篇重启 Acrobat）。"""
     path = Path(path)
@@ -318,7 +377,12 @@ def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0, session=None) -> P
     kind = classify(path)
     if kind == "plain":
         text = _extract_with_fitz(path)
-        reason = "" if len(text.strip()) >= MIN_TEXT_CHARS else "no_text_layer"
+        if len(text.strip()) >= MIN_TEXT_CHARS:
+            return PDFResult(text, "pymupdf")
+        ocr_text = _ocr_text(path, cfg)
+        if ocr_text:
+            return PDFResult(ocr_text, "ocr")
+        reason = "no_ocr" if ocr.backend() == "" else "no_text_layer"
         return PDFResult(text, "pymupdf", reason)
 
     if kind == "blocked":
@@ -343,7 +407,11 @@ def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0, session=None) -> P
         try:
             copy = decrypt_via_disguise(path, Path(tool_dir), timeout=timeout)
             text = _extract_with_fitz(copy)
-            reason = "" if len(text.strip()) >= MIN_TEXT_CHARS else "no_text_layer"
+            if len(text.strip()) < MIN_TEXT_CHARS:
+                ocr_text = _ocr_text(copy, cfg)
+                if ocr_text:
+                    return PDFResult(ocr_text, "ocr")
+            reason = "" if len(text.strip()) >= MIN_TEXT_CHARS else ("no_ocr" if ocr.backend() == "" else "no_text_layer")
             return PDFResult(text, "acrobat_disguise", reason)
         finally:
             if copy is not None:

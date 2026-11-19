@@ -19,7 +19,7 @@ from typing import Callable
 
 from landoc import __version__
 from landoc import idle as idle_module
-from landoc import pipeline, updater
+from landoc import ocr, pipeline, updater
 from landoc.cli import pick_port
 from landoc.config import Config
 
@@ -69,6 +69,7 @@ class AppStatus:
     eta_seconds: int = 0  # 按实测速度估的剩余秒数（0 = 还没测出速度）
     gone: int = 0  # 源文件已不在、内容仍留在库里的篇数（库只增不减，见 pipeline.run）
     failed: int = 0  # 转换失败、还等着重试的篇数（state.json 的 failures）
+    ocr: str = ""  # 扫描件 OCR 用哪条路（空 = 不显示，见 ocr.describe）
     registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
     version: str = __version__  # 本机程序版本
     update_version: str = ""  # 中心上的新版本（空 = 没发现）
@@ -214,6 +215,11 @@ class LibraryApp:
             self._update(phase="serving", port=actual, doc_count=total, last_scan=state.get("last_scan_ts", ""))
         except Exception:  # noqa: BLE001 - 读不到就用默认值，别拦住启动
             self._update(phase="serving", port=actual)
+        try:
+            # 扫描件 OCR 走哪条路：状态窗里常驻显示，缺中文识别包时能一眼看出来
+            self._update(ocr=ocr.describe())
+        except Exception:  # noqa: BLE001 - 探测失败不影响服务
+            pass
         log_event(self.cfg.lib_dir, f"库服务启动：端口 {actual}，版本 {__version__}")
         self._spawn(self.httpd.serve_forever, "landoc-server")
         self._spawn(self._worker, "landoc-worker")

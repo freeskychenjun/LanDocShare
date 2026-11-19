@@ -40,6 +40,12 @@ class Config:
     check_updates / auto_download 是自动更新开关（设计 §9，默认都开）：启动后约半分钟
     问一次中心有没有新版本，有就在后台下好；**安装始终由用户点"升级"触发**，不静默替换。
     关掉 check_updates 后完全不去问中心，只在托盘菜单里手动"检查更新"。
+
+    ocr_scanned_pdfs / ocr_dpi / ocr_max_pages 控制扫描件 OCR（没有文字层的 PDF）：
+    默认开启，按 300 dpi 渲染、最多识别前 60 页。识别优先用 Windows 系统 OCR（随中文
+    语言包提供，零体积），系统缺中文识别包时用随包带的 Tesseract 兜底；两条都没有时
+    这类文件仍按"没有文字层"记失败。关掉开关就不会把任何页面渲染成图片，适合只收
+    电子版文档、或不想让建库机多做 OCR 的机器。
     """
 
     name: str
@@ -58,6 +64,9 @@ class Config:
     snippet_only_chars: int = 20000
     render_md: bool = True
     acrobat_tool_dir: Path | None = None
+    ocr_scanned_pdfs: bool = True
+    ocr_dpi: int = 300
+    ocr_max_pages: int = 60
 
     # ---- 派生路径 ----
     @property

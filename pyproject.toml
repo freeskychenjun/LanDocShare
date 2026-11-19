@@ -1,6 +1,6 @@
 [project]
 name = "landoc"
-version = "0.2.15"
+version = "0.2.16"
 description = "局域网个人资料库共享：加密/明文办公文档转 Markdown、FTS5 索引、只读检索服务"
 requires-python = ">=3.12"
 dependencies = [
@@ -26,8 +26,14 @@ build-backend = "setuptools.build_meta"
 packages = ["landoc"]
 
 [tool.setuptools.package-data]
-# 检索页是纯静态文件，装成 wheel 时别漏（PyInstaller 打包同样要 --add-data）
-landoc = ["web/*.html"]
+# 检索页是纯静态文件，装成 wheel 时别漏（PyInstaller 打包同样要 --add-data）；
+# tools/ 是扫描件 OCR 的桥脚本与 Tesseract 最小集
+landoc = [
+    "web/*.html",
+    "tools/*.ps1",
+    "tools/tesseract/*",
+    "tools/tessdata/*.traineddata",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
