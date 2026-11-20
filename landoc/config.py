@@ -9,7 +9,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_ALLOW_CIDRS = ["172.16.0.0/16"]
+#: 占位值：源码里不留任何单位的具体网段。真正的默认值由向导/CLI 现算
+#: （`wizard.default_lan_cidrs()` = 本机所在网段），见 README「谁能访问」。
+DEFAULT_ALLOW_CIDRS = ["192.168.0.0/16"]
 CONFIG_NAME = "config.json"
 # 配置文件的语义版本：只用于"这个字段在新版里含义变了"时的迁移钩子，不参与鉴权/比对。
 # 加字段不用升；只有当同一个键的语义变了（比如 allow_cidrs 从"额外放行"改成"唯一口径"）才升。

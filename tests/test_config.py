@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from landoc.config import Config
+from landoc.config import DEFAULT_ALLOW_CIDRS, Config
 
 
 def test_config_roundtrip(tmp_path):
@@ -25,7 +25,8 @@ def test_config_defaults(tmp_path):
     assert cfg.store_content is True
     assert cfg.render_md is True
     assert cfg.snippet_only_chars == 20000  # 召回优先：片段长度默认给足
-    assert cfg.allow_cidrs == ["172.16.0.0/16"]
+    # 源码里只留占位值，真实默认由向导/CLI 按本机网段现算（landoc/wizard.py default_lan_cidrs）
+    assert cfg.allow_cidrs == DEFAULT_ALLOW_CIDRS == ["192.168.0.0/16"]
     assert cfg.deny_cidrs == []
     assert cfg.acrobat_tool_dir is None
     assert cfg.md_dir == tmp_path / "md"

@@ -118,8 +118,10 @@ def _cmd_init(args) -> int:
     # 已存在的库：读旧配置再合并，避免把共享范围/工具目录打回默认
     try:
         cfg = Config.load(lib_dir)
+        fresh = False
     except (OSError, ValueError):
         cfg = Config(name=args.name, lib_dir=lib_dir)
+        fresh = True
     cfg.name = args.name
     if args.folder:
         merged = list(cfg.folders)
@@ -147,6 +149,11 @@ def _cmd_init(args) -> int:
             print(f"[错误] {error}", file=sys.stderr)
             return 2
         cfg.allow_cidrs = cidrs
+    elif fresh:
+        # 新建库：默认放行"本机所在网段"，而不是源码里那个占位网段
+        from landoc.wizard import default_lan_cidrs
+
+        cfg.allow_cidrs = default_lan_cidrs()
     deny, deny_error = _parse_optional_cidrs(getattr(args, "deny_cidrs", None))
     if deny_error:
         print(f"[错误] {deny_error}", file=sys.stderr)

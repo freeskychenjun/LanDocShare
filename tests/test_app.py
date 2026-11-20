@@ -158,6 +158,7 @@ def test_heartbeat_registers_with_registry(tmp_path):
         heartbeat_seconds=0.05,
     )
     app.cfg.registry_url = "http://172.16.1.197:8767/"
+    app.cfg.allow_cidrs = ["10.91.0.0/16"]  # 显式给：默认值现在是按本机网卡现算的
     app.start()
     try:
         assert wait_for(lambda: calls)
@@ -167,7 +168,7 @@ def test_heartbeat_registers_with_registry(tmp_path):
         assert payload["doc_count"] == 13
         assert payload["port"] == 18080
         assert payload["version"]
-        assert payload["allow_cidrs"] == ["172.16.0.0/16"]
+        assert payload["allow_cidrs"] == ["10.91.0.0/16"]
         assert payload["deny_cidrs"] == []
         assert payload["allow_people"] == {}
         assert app.last_register["ok"] is True

@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from landoc import probe
+from landoc import index, netinfo, probe
 from landoc.config import CONFIG_NAME, Config
 from landoc.roster import MAX_DEPARTMENT_CHARS
 
@@ -22,11 +22,19 @@ SCOPE_LAN = "lan"
 SCOPE_PEOPLE = "people"
 SCOPE_LOCAL = "local"
 SCOPE_CIDRS = {
-    SCOPE_LAN: ["172.16.0.0/16"],
+    # 占位用：真正的默认值由 default_lan_cidrs() 现算（本机所在网段），
+    # 源码里不留任何一个单位的具体网段。源码树与打包版都是这个口径。
+    SCOPE_LAN: ["192.168.0.0/16"],
     # 名单是在网段之上再叠一层：先过网段，再认 IP（认不出 IP 时才看姓名）
-    SCOPE_PEOPLE: ["172.16.0.0/16"],
+    SCOPE_PEOPLE: ["192.168.0.0/16"],
     SCOPE_LOCAL: ["127.0.0.1"],
 }
+
+
+def default_lan_cidrs() -> list[str]:
+    """「公司内网」那一档的默认网段：本机所在网段（算不出来才用占位值）。"""
+    cidrs = list(netinfo.local_subnets())
+    return cidrs or list(SCOPE_CIDRS[SCOPE_LAN])
 
 DRIVE_REMOVABLE = 2
 DRIVE_REMOTE = 4
@@ -46,6 +54,11 @@ def _drive_type(path: Path) -> int:
     return int(ctypes.WinDLL("kernel32").GetDriveTypeW(drive + "\\"))
 
 
+def _time_text(seconds: float) -> str:
+    minutes = seconds / 60
+    return f"约 {minutes:.0f} 分钟" if minutes >= 1 else f"约 {seconds:.0f} 秒"
+
+
 @dataclass(frozen=True)
 class FolderEstimate:
     """一个（或一组）文件夹的粗估，只用来给用户一个"大概多少"的感觉。"""
@@ -54,34 +67,91 @@ class FolderEstimate:
     size_bytes: int
     seconds: float
     capped: bool = False
+    # 只有「修改建库设置」才有：库已建好，磁盘上还没收进索引（或源文件变过）的篇数。
+    # None = 首次建库，库里没有清单可对，只能报"从零建要多久、占多少盘"。
+    pending: int | None = None
+
+    @property
+    def indexed(self) -> int | None:
+        """扫描范围内的文档里，已经收进索引的篇数。"""
+        return None if self.pending is None else max(self.docs - self.pending, 0)
 
     def describe(self) -> str:
         if self.docs == 0:
             return "没扫到可转换的文档（下面这些扩展名才算：doc/docx/wps/ppt/pptx/dps/pdf）"
         size = self.size_bytes / (1024 * 1024)
         size_text = f"{size / 1024:.1f} GB" if size >= 1024 else f"{size:.0f} MB"
-        minutes = self.seconds / 60
-        time_text = f"约 {minutes:.0f} 分钟" if minutes >= 1 else f"约 {self.seconds:.0f} 秒"
+        if self.pending is None:
+            prefix = "≥" if self.capped else "约"
+            return f"{prefix} {self.docs} 篇 · {size_text} · {_time_text(self.seconds)}"
+        # 库已经建好：这时候"从零建要多久"是个假想值（保存后只增量补收），
+        # 要回答的是"再点保存还得补多少篇、等多久"。
+        if self.pending == 0:
+            return f"当前库 {self.docs} 篇 · {size_text} · 都已收录（保存后只做增量检查）"
         prefix = "≥" if self.capped else "约"
-        return f"{prefix} {self.docs} 篇 · {size_text} · {time_text}"
+        seconds = _SECONDS_PER_ROUND + _SECONDS_PER_DOC * self.pending
+        return (
+            f"当前库 {self.docs} 篇 · {size_text}"
+            f"（已收录 {self.indexed}，待补收 {prefix} {self.pending} 篇 · {_time_text(seconds)}）"
+        )
 
 
-def estimate_folders(folders: list[Path], cap: int = _ESTIMATE_CAP) -> FolderEstimate:
-    """数一遍候选文档并累加体积（只 walk + stat，不打开文件）。"""
+def _rel_key(base: Path, path: Path) -> str:
+    """候选文档在库内的键（md 相对路径），口径与转换器的扫描保持一致。
+
+    延迟导入 pipeline：这里只是要它那两行路径规则（顶层文件夹名 + 相对路径 +
+    `.md` 后缀），不想因此把整条转换链（OCR/Office/PDF 模块）拉进向导的启动路径。
+    """
+    from landoc.pipeline import _md_rel, _top_name
+
+    return _md_rel(f"{_top_name(base)}/{path.relative_to(base).as_posix()}")
+
+
+def estimate_folders(
+    folders: list[Path],
+    cap: int = _ESTIMATE_CAP,
+    known: dict[str, tuple[int, float]] | None = None,
+) -> FolderEstimate:
+    """数一遍候选文档并累加体积（只 walk + stat，不打开文件）。
+
+    `known` 是索引里的 `rel_path → (src_size, src_mtime)`（见 `index.read_records`）。
+    给了它，就顺带算出"还差多少篇"：索引里没有、或体积/修改时间已经变过（保存后
+    会被重转）的，都算待补收。不给（首次建库）则只报总量。
+    """
     docs = 0
     total = 0
     capped = False
-    for path in probe._iter_docs(folders):
-        if docs >= cap:
-            capped = True
+    pending = 0 if known is not None else None
+    stop = False
+    for folder in folders:
+        if stop:
             break
-        total += path.stat().st_size
-        docs += 1
+        try:
+            base = Path(folder).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        for path in probe._iter_docs([base]):
+            if docs >= cap:
+                capped = True
+                stop = True
+                break
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            total += stat.st_size
+            docs += 1
+            if pending is not None:
+                record = known.get(_rel_key(base, path))
+                if record is None or int(record[0]) != stat.st_size or record[1] != stat.st_mtime:
+                    pending += 1
     return FolderEstimate(
         docs=docs,
         size_bytes=total,
-        seconds=_SECONDS_PER_ROUND + _SECONDS_PER_DOC * docs,
+        # 首次建库按"全部要转"算；修改模式只有待补收的那部分才真会去转
+        seconds=_SECONDS_PER_ROUND + _SECONDS_PER_DOC * (docs if pending is None else pending),
         capped=capped,
+        pending=pending,
     )
 
 
@@ -207,20 +277,20 @@ def _parse_networks(text: str) -> tuple[list[str], str | None]:
 
 
 def parse_cidrs(text: str) -> tuple[list[str], str | None]:
-    """把"172.16.0.0/16, 172.16.1.0/24"这类输入解析成规范网段列表。
+    """把"192.168.1.0/24, 192.168.2.0/24"这类输入解析成规范网段列表。
 
     返回 (网段列表, 错误说明)；空输入按默认网段处理（允许名单不能空着）。
     """
     networks, error = _parse_networks(text)
     if error:
         return networks, error
-    return (networks or list(SCOPE_CIDRS[SCOPE_LAN])), None
+    return (networks or default_lan_cidrs()), None
 
 
 def parse_deny_cidrs(text: str) -> tuple[list[str], str | None]:
     """解析「拒绝网段」：空输入表示不额外拒绝，**不能**像允许名单那样回落默认网段。
 
-    否则"清空拒绝网段"会变成"拒绝 172.16.0.0/16"，整个内网都被挡在外面。
+    否则"清空拒绝网段"会变成"拒绝整个内网"，把所有人都挡在外面。
     """
     return _parse_networks(text)
 
@@ -243,7 +313,7 @@ def build_config(
         # "仅本机"是硬语义，不接受外部网段
         allowed = list(SCOPE_CIDRS[SCOPE_LOCAL])
     else:
-        allowed = list(cidrs or SCOPE_CIDRS.get(scope, SCOPE_CIDRS[SCOPE_LAN]))
+        allowed = list(cidrs or default_lan_cidrs())
     allow_people: dict[str, str] = {}
     people_departments: dict[str, str] = {}
     if scope == SCOPE_PEOPLE:
@@ -437,10 +507,14 @@ def run_wizard(
             estimate_label.configure(text="还没选文件夹")
             return
         estimate_label.configure(text="正在估算…")
+        # 库里已经有东西时（修改建库设置），要报"还差多少篇"，所以先把它读出来比对；
+        # 首次建库还没库可读，只报总量与从零建的耗时。
+        db_path = current.db_path if current is not None else None
 
         def work() -> None:
             try:
-                estimate = estimate_folders(chosen)
+                known = index.read_records(db_path) if db_path is not None else None
+                estimate = estimate_folders(chosen, known=known)
             except OSError:
                 estimate = FolderEstimate(0, 0, 0.0)
             est_queue.put((token, estimate))
@@ -486,10 +560,10 @@ def run_wizard(
     default_cidrs = "、".join(
         current.allow_cidrs
         if current is not None and list(current.allow_cidrs) != SCOPE_CIDRS[SCOPE_LOCAL]
-        else SCOPE_CIDRS[SCOPE_LAN]
+        else default_lan_cidrs()
     )
     cidr_var = tk.StringVar(master=root, value=default_cidrs.replace("、", ", "))
-    # 网段输入框横跨后两列：默认 20 字符宽装不下 "172.16.0.0/16, 127.0.0.1/32"，
+    # 网段输入框横跨后两列：默认 20 字符宽装不下 "192.168.1.0/24, 127.0.0.1/32"，
     # 右边还会被提示文字挤掉，所以提示统一挪到下面一行。
     cidr_entry = ttk.Entry(scope_panel, textvariable=cidr_var)
     cidr_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=(8, 0))

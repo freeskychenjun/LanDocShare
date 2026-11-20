@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from landoc.index import Index, build_match_query, like_escape
+from landoc.index import Index, build_match_query, like_escape, read_records
 
 
 @pytest.fixture
@@ -356,3 +356,39 @@ def test_legacy_library_is_migrated_in_place(tmp_path: Path):
     again = Index(db)
     assert again.search("乐平")[0][0]["path"] == "a.md"
     assert again.conn.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0] == 2
+
+
+def test_read_records_returns_path_size_mtime(tmp_path: Path):
+    """向导靠这份清单算"还差多少篇"，不能少字段、也不能顺带跑迁移。"""
+    db = tmp_path / "library.db"
+    idx = Index(db)
+    idx.upsert("顶层/a.docx.md", "a", "docx", r"C:\x\a.docx", 1234, 1712345678.5, "正文")
+    idx.commit()
+
+    assert read_records(db) == {"顶层/a.docx.md": (1234, 1712345678.5)}
+
+
+def test_read_records_missing_or_unbuilt_library_is_empty(tmp_path: Path):
+    """库还没建、或干脆是空文件时给空清单，向导退回"只报总量"。"""
+    assert read_records(tmp_path / "没有这个库.db") == {}
+    blank = tmp_path / "blank.db"
+    blank.write_bytes(b"")
+    assert read_records(blank) == {}
+
+
+def test_read_records_does_not_migrate_legacy_library(tmp_path: Path):
+    """只读连接不能触发迁移：老库的 FTS 表必须原样留着。"""
+    db = tmp_path / "legacy.db"
+    _legacy_library(db)
+
+    assert read_records(db)["a.md"] == (10, 1.0)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='documents_fts'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert "content='documents'" not in sql  # 还是老结构，没被顺手升级
+

@@ -4,15 +4,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from landoc import wizard
 
 
-def test_build_config_falls_back_to_default_name(tmp_path):
+@pytest.fixture
+def site_cidrs(monkeypatch):
+    """把"本机所在网段"钉死：默认允许网段现在按网卡现算，断言不能靠恰好是某台机器。"""
+    cidrs = ["10.91.0.0/16"]
+    monkeypatch.setattr(wizard, "default_lan_cidrs", lambda: list(cidrs))
+    return cidrs
+
+
+def test_build_config_falls_back_to_default_name(tmp_path, site_cidrs):
     cfg = wizard.build_config("   ", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
     assert cfg.name == "我的资料库"
     assert cfg.folders == [tmp_path]
     assert cfg.lib_dir == tmp_path / "lib"
-    assert cfg.allow_cidrs == ["172.16.0.0/16"]
+    assert cfg.allow_cidrs == site_cidrs
 
 
 def test_build_config_local_scope_allows_only_loopback(tmp_path):
@@ -60,6 +70,74 @@ def test_estimate_folders_empty_folder_says_so(tmp_path):
     assert "没扫到" in estimate.describe()
 
 
+def _indexed_records(tmp_path, files: dict[str, tuple[int, float]]) -> dict[str, tuple[int, float]]:
+    """造一份"索引里已有这些文档"的清单（键是库内 md 相对路径）。"""
+    top = tmp_path.name
+    return {f"{top}/{name}.md": record for name, record in files.items()}
+
+
+def test_estimate_folders_edit_mode_reports_pending(tmp_path):
+    """已建好库：要报"还差多少篇"，不是"从零建要多久"。"""
+    (tmp_path / "a.docx").write_bytes(b"x" * 100)
+    (tmp_path / "b.pdf").write_bytes(b"y" * 300)
+    (tmp_path / "c.docx").write_bytes(b"z" * 50)
+    stats = {}
+    for name in ("a.docx", "b.pdf"):
+        path = tmp_path / name
+        stats[name] = (path.stat().st_size, path.stat().st_mtime)
+    known = _indexed_records(tmp_path, stats)
+
+    estimate = wizard.estimate_folders([tmp_path], known=known)
+
+    assert estimate.docs == 3
+    assert estimate.pending == 1  # c.docx 还没收
+    assert estimate.indexed == 2
+    text = estimate.describe()
+    assert "当前库 3 篇" in text
+    assert "已收录 2" in text
+    assert "待补收" in text and "1 篇" in text
+    assert "从零" not in text
+
+
+def test_estimate_folders_edit_mode_all_indexed_says_incremental(tmp_path):
+    (tmp_path / "a.docx").write_bytes(b"x" * 100)
+    path = tmp_path / "a.docx"
+    known = _indexed_records(tmp_path, {"a.docx": (path.stat().st_size, path.stat().st_mtime)})
+
+    estimate = wizard.estimate_folders([tmp_path], known=known)
+
+    assert estimate.pending == 0
+    assert "都已收录" in estimate.describe()
+
+
+def test_estimate_folders_edit_mode_counts_changed_doc_as_pending(tmp_path):
+    """源文件改过（体积/修改时间变了）保存后会被重转，也该算待补收。"""
+    path = tmp_path / "a.docx"
+    path.write_bytes(b"x" * 100)
+    known = _indexed_records(tmp_path, {"a.docx": (100, 1.0)})  # 老记录
+
+    assert wizard.estimate_folders([tmp_path], known=known).pending == 1
+
+
+def test_estimate_folders_first_build_has_no_pending(tmp_path):
+    """首次建库没有清单可比：pending 必须是 None，文案不能出现"已收录"。"""
+    (tmp_path / "a.docx").write_bytes(b"x" * 100)
+
+    estimate = wizard.estimate_folders([tmp_path])
+
+    assert estimate.pending is None
+    assert estimate.indexed is None
+    assert "已收录" not in estimate.describe()
+
+
+def test_wizard_module_exposes_index_for_edit_mode_estimate():
+    """`kick_estimate` 里直接调 `index.read_records`，这个名字没导入只在点开窗口时炸。"""
+    from landoc import index as index_module
+
+    assert wizard.index is index_module
+    assert callable(wizard.index.read_records)
+
+
 def test_apply_config_keeps_storage_policy(tmp_path):
     target = wizard.build_config("旧名", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
     target.store_content = False
@@ -74,7 +152,7 @@ def test_apply_config_keeps_storage_policy(tmp_path):
     assert target.snippet_only_chars == 5000
 
 
-def test_build_config_people_scope_keeps_roster(tmp_path):
+def test_build_config_people_scope_keeps_roster(tmp_path, site_cidrs):
     cfg = wizard.build_config(
         "小库",
         [tmp_path],
@@ -82,7 +160,7 @@ def test_build_config_people_scope_keeps_roster(tmp_path):
         tmp_path / "lib",
         people={"赵六": "172.16.1.197", "张三": ""},
     )
-    assert cfg.allow_cidrs == ["172.16.0.0/16"]  # 先过网段，再核姓名
+    assert cfg.allow_cidrs == site_cidrs  # 先过网段，再核姓名
     assert cfg.allow_people == {"赵六": "172.16.1.197", "张三": ""}
 
 
@@ -93,7 +171,7 @@ def test_build_config_ignores_roster_when_scope_is_lan(tmp_path):
     assert cfg.allow_people == {}
 
 
-def test_parse_cidrs_normalises_and_rejects_junk():
+def test_parse_cidrs_normalises_and_rejects_junk(site_cidrs):
     assert wizard.parse_cidrs("172.16.1.0/24, 172.16.10.0/24") == (
         ["172.16.1.0/24", "172.16.10.0/24"],
         None,
@@ -101,7 +179,7 @@ def test_parse_cidrs_normalises_and_rejects_junk():
     # 只给 IP 时按单主机网段处理；全角逗号/空格也认
     assert wizard.parse_cidrs("172.16.1.5") == (["172.16.1.5/32"], None)
     assert wizard.parse_cidrs("172.16.1.0/24，172.16.2.0/24")[0] == ["172.16.1.0/24", "172.16.2.0/24"]
-    assert wizard.parse_cidrs("")[0] == ["172.16.0.0/16"]
+    assert wizard.parse_cidrs("")[0] == site_cidrs  # 空输入回落到"本机所在网段"
     assert wizard.parse_cidrs("172.16.300.0/24")[1] is not None
 
 
@@ -120,7 +198,8 @@ def test_build_config_local_scope_ignores_custom_cidrs(tmp_path):
 
 
 def test_validate_person_rules():
-    cidrs = wizard.SCOPE_CIDRS[wizard.SCOPE_PEOPLE]
+    # 显式给网段：默认值现在按本机网卡现算，不能再拿 SCOPE_CIDRS 里的占位值当断言依据
+    cidrs = ["172.16.0.0/16"]
     assert wizard.validate_person("", "172.16.1.197", cidrs) == "姓名不能为空"
     assert "不要带" in wizard.validate_person("陈=鋆", "", cidrs)
     assert "不是合法的 IP" in wizard.validate_person("赵六", "172.16.1", cidrs)
@@ -129,14 +208,14 @@ def test_validate_person_rules():
     assert "不在允许的网段" in wizard.validate_person("赵六", "192.168.1.9", cidrs)
 
 
-def test_apply_config_copies_people(tmp_path):
+def test_apply_config_copies_people(tmp_path, site_cidrs):
     target = wizard.build_config("旧名", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
     source = wizard.build_config(
         "新名", [tmp_path], wizard.SCOPE_PEOPLE, tmp_path / "lib", people={"赵六": "172.16.1.197"}
     )
     wizard.apply_config(target, source)
     assert target.allow_people == {"赵六": "172.16.1.197"}
-    assert target.allow_cidrs == ["172.16.0.0/16"]
+    assert target.allow_cidrs == site_cidrs
 
 
 def _make_home(tmp_path: Path, *subdirs: str) -> Path:

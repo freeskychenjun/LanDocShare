@@ -578,7 +578,6 @@ def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
     import argparse
 
     from landoc.registry import (
-        DEFAULT_CIDRS,
         WATCHDOG_DEFAULT_FAILURES,
         WATCHDOG_DEFAULT_INTERVAL,
         _autostart_args,
@@ -586,7 +585,7 @@ def test_autostart_args_skip_defaults_and_resolve_paths(tmp_path):
 
     bare = argparse.Namespace(
         state_dir=str(Path.home() / ".landoc-registry"),
-        allow_cidrs=",".join(DEFAULT_CIDRS),
+        allow_cidrs="",  # 默认放开：启动时现算本机网段，自启项里不写死网段
         package_zip=None,
         manifest=None,
         advertise="",

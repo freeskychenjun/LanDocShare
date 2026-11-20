@@ -66,7 +66,15 @@ from landoc.server import authorize_person, decode_param, parse_query
 from landoc.updater import is_newer, parse_version, sha256_file
 
 DEFAULT_PORT = 8767
-DEFAULT_CIDRS = ["172.16.0.0/16"]
+#: 最后兜底用：`--allow-cidrs` 没给、又探不到本机网段时才会用。正常情况走
+#: `default_cidrs()`（本机所在网段），源码里不留任何单位的具体网段。
+DEFAULT_CIDRS = ["192.168.0.0/16"]
+
+
+def default_cidrs() -> list[str]:
+    """允许来源网段的默认值：本机所在网段，探不到才退回占位值。"""
+    cidrs = list(netinfo.local_subnets())
+    return cidrs or list(DEFAULT_CIDRS)
 WATCHDOG_DEFAULT_INTERVAL = 30.0
 WATCHDOG_DEFAULT_FAILURES = 3
 ONLINE_TTL = 300.0  # 5 分钟内有心跳 = 在线
@@ -1430,7 +1438,7 @@ def make_registry_server(
         (RegistryHandler,),
         {
             "store": store,
-            "allow_cidrs": list(allow_cidrs or DEFAULT_CIDRS),
+            "allow_cidrs": list(allow_cidrs or default_cidrs()),
             "deny_cidrs": list(deny_cidrs or []),
             "package_zip": Path(package_zip) if package_zip else None,
             "manifest_path": Path(manifest) if manifest else None,
@@ -1495,7 +1503,8 @@ def _autostart_args(args: argparse.Namespace) -> list[str]:
     default_state = Path.home() / ".landoc-registry"
     if Path(args.state_dir) != default_state:
         extra += ["--state-dir", str(Path(args.state_dir).resolve())]
-    if args.allow_cidrs != ",".join(DEFAULT_CIDRS):
+    # 只有显式给过才写进自启命令：没给就每次启动现算本机网段，换网段不用改自启项
+    if str(getattr(args, "allow_cidrs", "") or "").strip():
         extra += ["--allow-cidrs", str(args.allow_cidrs)]
     deny = str(getattr(args, "deny_cidrs", "") or "").strip()
     if deny:
@@ -1531,7 +1540,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="landoc-registry", description="LanDocShare 登记中心")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--state-dir", default=str(Path.home() / ".landoc-registry"))
-    parser.add_argument("--allow-cidrs", default=",".join(DEFAULT_CIDRS), help="允许来源网段，逗号分隔")
+    parser.add_argument(
+        "--allow-cidrs",
+        default="",
+        help="允许来源网段，逗号分隔（默认取本机所在网段，如 --allow-cidrs 10.1.0.0/16）",
+    )
     parser.add_argument(
         "--deny-cidrs",
         default="",
@@ -1614,7 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
             health_failures=args.watchdog_failures,
         )
 
-    cidrs = [part.strip() for part in args.allow_cidrs.split(",") if part.strip()]
+    cidrs = [part.strip() for part in args.allow_cidrs.split(",") if part.strip()] or default_cidrs()
     deny_cidrs = [part.strip() for part in str(args.deny_cidrs or "").split(",") if part.strip()]
     # 黑名单不能“写错就静默失效”：坏项直接拒绝启动，避免管理员以为挡住了其实没挡。
     try:

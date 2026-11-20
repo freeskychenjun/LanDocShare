@@ -133,6 +133,30 @@ def _safe_md_path(md_root: Path, rel: str) -> Path | None:
     return target
 
 
+def read_records(db_path: Path) -> dict[str, tuple[int, float]]:
+    """只读地读出全部已收录文档：`rel_path → (src_size, src_mtime)`。
+
+    "修改建库设置"里要回答"保存后还得补收多少篇"，需要拿库里的清单和磁盘对一遍。
+    这里单独开一条 `mode=ro` 连接，不走 `Index()`：构造 Index 会跑 FTS/字段迁移
+    （可能 DROP 表、VACUUM），而向导只是"看一眼还差多少"，绝不能碰写路径，也不能
+    和正在跑的转换线程抢写锁。库文件不存在或还没建表时给空 dict。
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute("SELECT rel_path, src_size, src_mtime FROM documents").fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {row[0]: (int(row[1] or 0), float(row[2] or 0.0)) for row in rows}
+
+
 class Index:
     """一个资料库的索引。线程内各持有自己的连接（服务端多线程访问）。"""
 
