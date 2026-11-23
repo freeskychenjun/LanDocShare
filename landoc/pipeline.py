@@ -678,11 +678,15 @@ def run(
             if not isinstance(item, dict):
                 item = {}
                 files[rel] = item
-            item["withdrawn"] = True
-            item.setdefault("withdrawn_since", time.strftime("%Y-%m-%d %H:%M:%S"))
-            mark = getattr(index, "mark_withdrawn", None)
-            if mark is not None:
-                mark(_md_rel(rel), True)
+            # 只在"没撤回 -> 撤回"那一刻写库：docs 的 AU 触发器会把整篇正文在 FTS 里
+            # 删了再插一遍，每轮重复标一次就等于每轮把整库重建一遍。
+            if not item.get("withdrawn"):
+                item["withdrawn"] = True
+                item["withdrawn_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                mark = getattr(index, "mark_withdrawn", None)
+                if mark is not None:
+                    mark(_md_rel(rel), True)
+            # 计数照旧每轮都记：状态窗口那句"跳过 N 篇"报的是当前处于撤回状态的篇数。
             report.skip("withdrawn")
         if not report.stop_reason:
             report.stop_reason = "done"

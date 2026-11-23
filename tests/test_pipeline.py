@@ -20,6 +20,7 @@ class StubIndex:
 
     def __init__(self):
         self.rows: list[dict] = []
+        self.withdraw_calls: list[tuple[str, bool]] = []
 
     def upsert(self, rel_path, title, ext, source_path, src_size, src_mtime, content):
         self.rows.append(
@@ -36,6 +37,7 @@ class StubIndex:
         )
 
     def mark_withdrawn(self, rel_path, withdrawn=True):
+        self.withdraw_calls.append((rel_path, withdrawn))
         for row in self.rows:
             if row["rel_path"] == rel_path:
                 row["withdrawn"] = 1 if withdrawn else 0
@@ -336,6 +338,26 @@ def test_removing_a_folder_from_shares_withdraws_its_docs(cfg, docs_dir, flat_op
     assert md.is_file()
     assert all(row["withdrawn"] == 0 for row in index.rows)
     assert again.skipped.get("unchanged") == 2
+
+
+def test_withdrawal_marks_the_index_only_once(cfg, docs_dir, flat_opc, monkeypatch):
+    """撤回标记只在"没撤回 -> 撤回"那一刻写库；之后每轮仍是撤回状态，不重复写。
+
+    docs 的 AU 触发器会把整篇正文在 FTS 里删了再插一遍，早先每轮都对已撤回的文档
+    重复标一次，等于每轮把整库重建一遍（1500 篇的库里每轮 2.4 s、WAL 涨 48 MB）。
+    """
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    cfg.folders = []
+    first = pipeline.run(cfg, index=index)
+    assert first.skipped["withdrawn"] == 2
+    assert len(index.withdraw_calls) == 2  # 两篇，各标一次
+
+    second = pipeline.run(cfg, index=index)
+    # 口径不变：状态窗口那句"跳过 N 篇"报的是当前处于撤回状态的篇数
+    assert second.skipped["withdrawn"] == 2
+    assert len(index.withdraw_calls) == 2  # 第二轮不重复写库
 
 
 def test_unreachable_folder_does_not_wipe_the_library(cfg, docs_dir, flat_opc, monkeypatch):
