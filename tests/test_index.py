@@ -110,6 +110,19 @@ def test_cache_key_includes_visibility(idx: Index):
     assert idx.search("乐平", include_withdrawn=False)[0] == []
 
 
+def test_uppercase_query_is_highlighted_like_lowercase(idx: Index):
+    """GIS、PDF 这类全大写查询词以前搜得到但不标、也不居中：截片段时不该按大小写筛词。"""
+    filler = "前言部分先交代背景。" * 12  # 命中点必须落在文首 96 字之外
+    idx.upsert("a.md", "GIS 应用", "docx", "/s/a.docx", 10, 1.0, f"{filler}GIS 在水利上的应用")
+    rows, _ = idx.search("GIS")
+    snippet = rows[0]["snippet"]
+    assert "<<GIS>>" in snippet
+    assert snippet.startswith("…")  # 不是从文首硬截的
+    # 大小写混写同样能标上
+    rows, _ = idx.search("gis")
+    assert "<<GIS>>" in rows[0]["snippet"]
+
+
 def test_like_escape_turns_wildcards_literal():
     assert like_escape("a%b_c\\d") == "a\\%b\\_c\\\\d"
 

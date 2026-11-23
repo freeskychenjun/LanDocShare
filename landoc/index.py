@@ -87,7 +87,10 @@ def _query_terms(match: str) -> list[str]:
 def _make_snippet(raw: str, match: str, window: int = 48) -> str:
     """从原始正文里截取命中窗口，并用 <<词>> 标出命中位置。"""
     text = " ".join(raw.split())
-    terms = [t for t in _query_terms(match) if t and not t.isupper()]
+    # 不按大小写筛词：`build_match_query` 只给检索词加引号，AND/OR 这类操作符
+    # 根本不会出现在这里，早先的 `not t.isupper()` 只会让 GIS、PDF 这类全大写
+    # 查询词搜得到却不标、也不居中。
+    terms = [t for t in _query_terms(match) if t]
     lowered = text.lower()
     position = -1
     hit = ""
