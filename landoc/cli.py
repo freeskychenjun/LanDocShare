@@ -129,6 +129,15 @@ def _cmd_init(args) -> int:
             candidate = Path(raw)
             if candidate not in merged:
                 merged.append(candidate)
+        # 同名顶层文件夹会让不同文档在库内撞成同一个键、每轮互相覆盖，建库前拒掉
+        dup = pipeline.duplicate_tops(merged)
+        if dup:
+            names = "、".join(dup)
+            print(
+                f"[错误] 两个共享文件夹同名：{names}；库内会互相覆盖，请改名或改共享上级目录",
+                file=sys.stderr,
+            )
+            return 2
         cfg.folders = merged
     tool_dir = Path(args.acrobat_tool_dir) if args.acrobat_tool_dir else None
     if tool_dir is None and cfg.acrobat_tool_dir is None:

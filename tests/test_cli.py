@@ -31,6 +31,18 @@ def test_init_accepts_multiple_folders(tmp_path: Path):
     assert len(Config.load(lib).folders) == 2
 
 
+def test_init_refuses_two_folders_with_the_same_name(tmp_path: Path, capsys):
+    """同名文件夹会让不同文档在库内撞成同一个键：建库前就拒掉，退出码 2。"""
+    lib = tmp_path / "lib"
+    a, b = tmp_path / "甲" / "资料", tmp_path / "乙" / "资料"
+    a.mkdir(parents=True)
+    b.mkdir(parents=True)
+    code = cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--folder", str(a), "--folder", str(b)])
+    assert code == 2
+    assert "同名" in capsys.readouterr().err
+    assert not (lib / "config.json").exists()
+
+
 def test_status_prints_counts(tmp_path: Path, capsys):
     lib = tmp_path / "lib"
     cli.main(["init", "--lib-dir", str(lib), "--name", "库"])

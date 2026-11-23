@@ -171,6 +171,26 @@ def validate_folder(path: Path) -> str | None:
     return None
 
 
+def same_home_name_conflict(folders: list[Path]) -> str | None:
+    """返回「两个文件夹同名」的说明；不冲突返回 None。
+
+    库内按"顶层文件夹名 + 相对路径"存文档（见 `pipeline._iter_docs`），两个同名的
+    文件夹会让不同文档撞成同一个键、每轮互相覆盖，所以在建库前就要拦下来。
+    口径与转换器一致，延迟导入 pipeline 的理由同 `_rel_key`。
+    """
+    from landoc.pipeline import duplicate_tops
+
+    dup = duplicate_tops(folders)
+    if not dup:
+        return None
+    names = "、".join(f"「{name}」" for name in dup)
+    return (
+        f"{names} 有不止一个同名文件夹。\n\n"
+        "库内按「顶层文件夹名 + 相对路径」存文档，同名的会互相覆盖、每轮重转一篇。\n"
+        "请给文件夹改名，或只共享它们的上级目录。"
+    )
+
+
 def documents_dir(home: Path | None = None) -> Path:
     """用户的"文档"目录（中文系统、以及 OneDrive 重定向都认）。
 
@@ -477,6 +497,11 @@ def run_wizard(
             messagebox.showwarning("这个文件夹不行", problem)
             return
         if chosen not in listbox.get(0, "end"):
+            picked = [*[Path(p) for p in listbox.get(0, "end")], Path(chosen)]
+            conflict = same_home_name_conflict(picked)
+            if conflict:
+                messagebox.showwarning("两个文件夹同名", conflict)
+                return
             listbox.insert("end", chosen)
             kick_estimate()
 
@@ -627,6 +652,11 @@ def run_wizard(
         folders = [Path(p) for p in listbox.get(0, "end")]
         if not folders:
             messagebox.showwarning("还没选文件夹", "至少选一个要共享的文件夹。")
+            return
+        # 改建库设置时列表是预填的，配置里已经存在的重名只有在这里能拦住
+        conflict = same_home_name_conflict(folders)
+        if conflict:
+            messagebox.showwarning("两个文件夹同名", conflict)
             return
         target_lib, lib_error = validate_lib_dir(lib_var.get(), current)
         if lib_error:

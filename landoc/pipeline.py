@@ -121,6 +121,29 @@ def _configured_tops(folders) -> set[str]:
     return tops
 
 
+def duplicate_tops(folders) -> list[str]:
+    """共享列表里出现不止一个同名顶层文件夹时，返回重复的名字（顺序稳定、不重复）。
+
+    库内键是"顶层文件夹名 + 相对路径"，两个同名的文件夹（`D:\\工作\\资料` 与
+    `E:\\备份\\资料`）会让不同文档撞成同一个键：每轮互相覆盖、永远重转一篇。
+    同一个路径写两遍不算冲突（那是配置手改的锅，`add_folder` 已经挡了）。
+    """
+    seen: dict[str, Path] = {}
+    dup: list[str] = []
+    for folder in folders or []:
+        try:
+            base = Path(folder).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        top = _top_name(base)
+        first = seen.get(top)
+        if first is None:
+            seen[top] = base
+        elif first != base and top not in dup:
+            dup.append(top)
+    return dup
+
+
 def snippet_cap(cfg) -> int:
     """当前库"仅存片段"的前缀长度；配置缺失/太小/非法时退回默认值。"""
     try:
@@ -270,6 +293,7 @@ def _stat_many(paths: list[Path]) -> list[os.stat_result | None]:
 def _iter_docs(folders) -> list[tuple[Path, str]]:
     """返回 (绝对路径, 库内相对路径)；相对路径带顶层文件夹名，避免同名目录互相覆盖。"""
     out: list[tuple[Path, str]] = []
+    seen_tops: set[str] = set()
     for folder in folders:
         # 必须是绝对路径：COM 的 Documents.Open 会把相对路径解析到 Office 自己的工作目录，
         # WPS 直接报"文档打开失败（3010）"。
@@ -277,6 +301,11 @@ def _iter_docs(folders) -> list[tuple[Path, str]]:
         if not folder.is_dir():
             continue
         top = _top_name(folder)
+        # 同名的第二个文件夹直接跳过（先到先得，顺序由配置决定）：两边的文档会撞成同一个
+        # 库内键。向导和 CLI 在建库前就拦住了，这里只是兜底，宁可少收也不能互相覆盖。
+        if top in seen_tops:
+            continue
+        seen_tops.add(top)
         for dirpath, dirnames, filenames in os.walk(folder):
             dirnames[:] = [
                 d for d in dirnames if d not in probe.SKIP_DIR_NAMES and not d.startswith(".")

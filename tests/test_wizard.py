@@ -53,6 +53,28 @@ def test_validate_folder_accepts_local_fixed_drive(tmp_path, monkeypatch):
     assert wizard.validate_folder(tmp_path) is None
 
 
+def test_same_home_name_conflict_detects_two_folders_with_the_same_leaf(tmp_path):
+    """两个「资料」会让库内键撞车，必须建库前就拦下来。"""
+    first = tmp_path / "甲" / "资料"
+    second = tmp_path / "乙" / "资料"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    message = wizard.same_home_name_conflict([first, second])
+    assert message is not None
+    assert "「资料」" in message
+    assert "改名" in message
+
+
+def test_same_home_name_conflict_is_quiet_for_distinct_names(tmp_path):
+    a = tmp_path / "资料"
+    b = tmp_path / "成果"
+    a.mkdir()
+    b.mkdir()
+    assert wizard.same_home_name_conflict([a, b]) is None
+    # 同一个路径写两遍不算冲突
+    assert wizard.same_home_name_conflict([a, a]) is None
+
+
 def test_estimate_folders_counts_only_convertible_docs(tmp_path):
     (tmp_path / "a.docx").write_bytes(b"x" * 100)
     (tmp_path / "b.pdf").write_bytes(b"y" * 300)

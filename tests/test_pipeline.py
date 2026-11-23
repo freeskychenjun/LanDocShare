@@ -360,6 +360,36 @@ def test_withdrawal_marks_the_index_only_once(cfg, docs_dir, flat_opc, monkeypat
     assert len(index.withdraw_calls) == 2  # 第二轮不重复写库
 
 
+def test_same_named_folders_only_index_the_first(tmp_path, flat_opc, monkeypatch):
+    """两个同名文件夹会让库内键撞车：只收第一个（先到先得），另一份整体跳过。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    folders = []
+    for where, text in (("甲", "甲方的报告。"), ("乙", "乙方的报告。")):
+        folder = tmp_path / where / "资料"
+        folder.mkdir(parents=True)
+        doc = docx.Document()
+        doc.add_paragraph(text)
+        doc.save(folder / f"{where}.docx")
+        folders.append(folder)
+    assert pipeline.duplicate_tops(folders) == ["资料"]
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    cfg = Config(name="测试库", lib_dir=lib, folders=folders)
+    index = StubIndex()
+    report = pipeline.run(cfg, index=index)
+    assert report.converted == 1
+    assert len(index.rows) == 1
+    assert index.rows[0]["rel_path"].startswith("资料/")
+
+
+def test_duplicate_tops_ignores_the_same_path_listed_twice(tmp_path):
+    """同一个路径写两遍不算冲突（那是配置手改的锅，向导已经挡了）。"""
+    folder = tmp_path / "资料"
+    folder.mkdir()
+    assert pipeline.duplicate_tops([folder, folder]) == []
+
+
 def test_unreachable_folder_does_not_wipe_the_library(cfg, docs_dir, flat_opc, monkeypatch):
     """拔了移动硬盘/网盘没连：文件夹仍在共享列表里，库一篇都不能少。"""
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
