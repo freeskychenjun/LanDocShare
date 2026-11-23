@@ -275,8 +275,22 @@ async function openTables(path) {
       const md = String(t.markdown || '');
       if (t.kind === 'gfm') {
         const lines = md.split('\n').filter((line) => line.trim());
-        // 第 2 行是 |---| 分隔行，去掉；其余按 | 拆格
-        const cells = (line) => line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+        // 第 2 行是 |---| 分隔行，去掉；其余按 | 拆格。
+        // 单元格里的竖线在服务端被转义成 \|（render_docx.py 那边），这里要还回去，
+        // 不能直接 split('|')，否则带竖线的单元格会把一格切成两格。
+        const cells = (line) => {
+          const inner = line.replace(/^\s*\|/, '').replace(/\|\s*$/, '');
+          const out = [];
+          let cur = '';
+          for (let i = 0; i < inner.length; i += 1) {
+            const ch = inner[i];
+            if (ch === '\\' && inner[i + 1] === '|') { cur += '|'; i += 1; continue; }
+            if (ch === '|') { out.push(cur.trim()); cur = ''; continue; }
+            cur += ch;
+          }
+          out.push(cur.trim());
+          return out;
+        };
         const body = lines.slice(2).map((line) => '<tr>' + cells(line).map((c) => `<td>${esc(c)}</td>`).join('') + '</tr>').join('');
         const head = lines.length ? '<tr>' + cells(lines[0]).map((c) => `<th>${esc(c)}</th>`).join('') + '</tr>' : '';
         return title + `<table>${head}${body}</table>`;

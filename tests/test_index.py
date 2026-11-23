@@ -281,6 +281,15 @@ def test_recent_honours_limit_and_empty_library(idx: Index):
     assert len(idx.recent(limit=0)) == 1  # 下界夹到 1，绝不返回空列表骗前端
 
 
+def test_list_dir_and_recent_carry_the_source_extension(idx: Index):
+    """列表行要带源扩展名：检索页的类型标签一直读它，早先这两条 SQL 没查 ext。"""
+    idx.upsert("成果/报告.md", "报告", "docx", "/s/报告.docx", 10, 1.0, "乐平")
+    idx.upsert("成果/图纸.md", "图纸", "pdf", "/s/图纸.pdf", 20, 2.0, "乐平")
+    listed = {row["title"]: row["ext"] for row in idx.list_dir("成果")}
+    assert listed == {"报告": "docx", "图纸": "pdf"}
+    assert {row["title"]: row["ext"] for row in idx.recent()} == {"报告": "docx", "图纸": "pdf"}
+
+
 def test_fts_shares_one_copy_of_the_text(idx: Index):
     """正文只存 documents 一份：FTS 是 external content 表，不再自带 title/content。"""
     idx.upsert("a.md", "乐平枢纽", "docx", "/s/a.docx", 10, 1.0, "乐平水利枢纽工程概况")

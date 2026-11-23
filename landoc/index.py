@@ -468,13 +468,15 @@ class Index:
         if not include_withdrawn:
             condition += " AND withdrawn = 0"
         rows = self.conn.execute(
-            f"""SELECT rel_path, title, src_size FROM documents
+            f"""SELECT rel_path, title, ext, src_size FROM documents
                WHERE rowid IN (SELECT rowid FROM documents
                                WHERE {condition})
                ORDER BY title LIMIT ?""",
             (needle, len(prefix) + 2 if prefix else 1, limit),
         ).fetchall()
-        return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
+        return [
+            {"path": r[0], "title": r[1], "ext": r[2] or "", "size": r[3]} for r in rows
+        ]
 
     def recent(self, limit: int = 50, *, include_withdrawn: bool = True) -> list[dict]:
         """最近收录的文档（按入库时间倒序）：检索页一打开就能看见库里有东西。
@@ -485,12 +487,14 @@ class Index:
         limit = max(1, min(int(limit), MAX_LIST))
         condition = "1=1" if include_withdrawn else "withdrawn = 0"
         rows = self.conn.execute(
-            f"""SELECT rel_path, title, src_size FROM documents
+            f"""SELECT rel_path, title, ext, src_size FROM documents
                WHERE {condition}
                ORDER BY COALESCE(indexed_at, '') DESC, rowid DESC LIMIT ?""",
             (limit,),
         ).fetchall()
-        return [{"path": r[0], "title": r[1], "size": r[2]} for r in rows]
+        return [
+            {"path": r[0], "title": r[1], "ext": r[2] or "", "size": r[3]} for r in rows
+        ]
 
     def tables(self, rel_path: str, max_bytes: int = 300_000, *, include_withdrawn: bool = True) -> list[dict] | None:
         """返回该文档内的全部表格（GFM + HTML）。路径必须存在于索引且不越界，否则 None。"""

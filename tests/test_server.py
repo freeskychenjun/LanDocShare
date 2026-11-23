@@ -119,7 +119,7 @@ def test_recent_lists_newest_first(running):
     payload = client.json("/api/recent")
     assert payload["count"] == 2
     assert [f["path"] for f in payload["files"]] == ["成果/溪霞.md", "成果/乐平.md"]
-    assert set(payload["files"][0]) == {"path", "title", "size"}
+    assert set(payload["files"][0]) == {"path", "title", "ext", "size"}
 
 
 def test_recent_limit_is_clamped(running):
