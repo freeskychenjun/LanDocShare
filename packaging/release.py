@@ -174,7 +174,7 @@ def release(
     print(f"[3/3] 版本清单：{out_dir / _DEFAULT_MANIFEST}")
     print(f"      v{version} · {size / 1024 / 1024:.1f} MB · sha256 {digest[:16]}…")
     print("      登记中心无需重启：它按修改时间读清单，下一请求就是新版本。")
-    print("      同事侧 6 小时内自动发现，或右键托盘 →「检查更新」。")
+    print("      同事侧 1 分钟内自动发现（心跳回包带来 upgrade），或右键托盘 →「检查更新」。")
     if old_version:
         print(f"      上一版：v{old_version}")
     return manifest

@@ -178,6 +178,69 @@ def test_heartbeat_registers_with_registry(tmp_path):
         app.stop()
 
 
+def test_heartbeat_starts_update_check_when_registry_says_upgrade(tmp_path):
+    """中心在心跳回包里说"有新版"就立刻查一次，别等 6 小时那一轮。"""
+    pings: list[int] = []
+
+    def poster(url, payload):
+        return {
+            "ok": True,
+            "server_time": "2026-11-17 20:18:11",
+            "latest_version": "9.9.9",
+            "upgrade": True,
+        }
+
+    app = make_app(
+        tmp_path,
+        index=FakeIndex(total=1),
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18082),
+        poster=poster,
+        heartbeat_seconds=0.05,
+    )
+    app.cfg.registry_url = "http://172.16.1.197:8767"
+    app.cfg.check_updates = False  # 只测心跳这条触发路径，别让检查器线程也跑起来
+    app.check_updates_async = lambda **kw: pings.append(1)
+    app.start()
+    try:
+        assert wait_for(lambda: pings)
+        time.sleep(0.2)  # 再等几轮心跳
+        assert len(pings) == 1  # 半小时节流：同一个状态下只触发一次
+    finally:
+        app.stop()
+
+
+def test_heartbeat_ignores_registry_reply_without_upgrade(tmp_path):
+    pings: list[int] = []
+
+    def poster(url, payload):
+        return {
+            "ok": True,
+            "server_time": "2026-11-17 20:18:11",
+            "latest_version": "0.0.1",
+            "upgrade": False,
+        }
+
+    app = make_app(
+        tmp_path,
+        index=FakeIndex(total=1),
+        idle_check=lambda: False,
+        server_factory=lambda cfg: FakeServer(port=18083),
+        poster=poster,
+        heartbeat_seconds=0.05,
+    )
+    app.cfg.registry_url = "http://172.16.1.197:8767"
+    app.cfg.check_updates = False
+    app.check_updates_async = lambda **kw: pings.append(1)
+    app.start()
+    try:
+        assert wait_for(lambda: app.last_register is not None)
+        time.sleep(0.2)
+        assert pings == []
+    finally:
+        app.stop()
+
+
 def test_heartbeat_reports_empty_audience_when_paused(tmp_path):
     """暂停共享时 allow_cidrs 为空，中心就该把这个库藏起来。"""
     calls: list[tuple[str, dict]] = []

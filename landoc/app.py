@@ -165,6 +165,7 @@ class LibraryApp:
         self._update_initial_delay = update_initial_delay
         self.last_register: dict | None = None
         self._updates: updater.UpdateChecker | None = None
+        self._last_update_ping = 0.0  # 心跳触发更新检查的节流（monotonic 秒）
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -595,6 +596,7 @@ class LibraryApp:
                     log_event(self.cfg.lib_dir, "登记中心恢复连接")
                 self._registry_ok = True
                 self._update(registry=f"已登记 {stamp}".strip())
+                self._maybe_start_update_check(reply)
             except Exception as exc:  # noqa: BLE001 - 中心不可达就跳过这一轮
                 # 只在"从通到不通"这一刻记一行：否则中心断一晚，日志会被 60 s 一条刷满
                 if self._registry_ok is not False:
@@ -606,6 +608,27 @@ class LibraryApp:
                 self.last_register = None
                 self._update(registry="连不上登记中心")
             self._stop.wait(self._heartbeat_seconds)
+
+    _UPDATE_PING_GAP = 30 * 60.0
+
+    def _maybe_start_update_check(self, reply) -> None:
+        """中心在心跳回包里说"有新版"就立刻查一次，别等 6 小时那一轮。
+
+        心跳每 60 s 一次，而检查更新要走一次 /update 请求，所以只在本地还没进入
+        「下载中 / 已就绪 / 需手动重装」时触发，同一状态下半小时最多一次 —— 下载
+        一直失败时也得留个重试的机会，但不能每分钟重来一遍。
+        """
+        if not isinstance(reply, dict) or not reply.get("upgrade"):
+            return
+        if not str(reply.get("latest_version") or "").strip():
+            return
+        if self.status.update_phase in ("downloading", "ready", "manual"):
+            return
+        now = time.monotonic()
+        if now - self._last_update_ping < self._UPDATE_PING_GAP:
+            return
+        self._last_update_ping = now
+        self.check_updates_async()
 
     def _idle(self) -> bool:
         try:
