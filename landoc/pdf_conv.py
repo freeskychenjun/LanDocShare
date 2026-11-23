@@ -90,11 +90,16 @@ def decrypt_via_disguise(
         raise FileNotFoundError(f"兜底工具不存在：{tool}")
     tmpdir = Path(tempfile.mkdtemp(prefix="landoc_pdf_"))
     copy = tmpdir / (Path(path).stem + ".pdf")
-    shutil.copy2(path, copy)
-    (runner or _run_tool)(tool, copy, Path(tool_dir), timeout)
-    if classify(copy) != "plain":
+    # 工具超时/被杀、或解完还是密文，都得把这份副本目录清掉：早先只看后一种，
+    # 超时那条路上 %TEMP% 会一直堆 landoc_pdf_* 目录。
+    try:
+        shutil.copy2(path, copy)
+        (runner or _run_tool)(tool, copy, Path(tool_dir), timeout)
+        if classify(copy) != "plain":
+            raise PDFDecryptError(f"工具执行后文件仍是密文：{copy}")
+    except BaseException:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        raise PDFDecryptError(f"工具执行后文件仍是密文：{copy}")
+        raise
     return copy
 
 
@@ -334,38 +339,44 @@ def _ocr_text(path: Path, cfg=None) -> str | None:
     images: list[tuple[str, Path]] = []
     total_pages = 0
     tmpdir = Path(tempfile.mkdtemp(prefix="landoc_ocr_"))
+    # rmtree 必须管住整个函数体：图片就摊在这个目录里，既要等 ocr_images 读完才能删，
+    # 又不能在"前三页没图""渲染失败"这些提前 return 上漏掉（早先就是漏的，%TEMP% 一直涨）。
     try:
-        total_pages = doc.page_count
-        # 只有"页面是图片"的 PDF 才值得 OCR：文字少但没有图的（一页短通知/表单）没有
-        # 可识别的东西，白渲染一遍只会让建库变慢。
-        if not any(doc[index].get_images(full=True) for index in range(min(total_pages, 3))):
+        try:
+            total_pages = doc.page_count
+            # 只有"页面是图片"的 PDF 才值得 OCR：文字少但没有图的（一页短通知/表单）没有
+            # 可识别的东西，白渲染一遍只会让建库变慢。
+            if not any(doc[index].get_images(full=True) for index in range(min(total_pages, 3))):
+                return None
+            for index in range(min(total_pages, max_pages)):
+                target = tmpdir / f"p{index + 1:04d}.png"
+                doc[index].get_pixmap(dpi=dpi).save(str(target))
+                images.append((f"p{index + 1:04d}", target))
+        except Exception:  # noqa: BLE001 - 渲染失败就放弃 OCR，别把建库拖死
             return None
-        for index in range(min(total_pages, max_pages)):
-            target = tmpdir / f"p{index + 1:04d}.png"
-            doc[index].get_pixmap(dpi=dpi).save(str(target))
-            images.append((f"p{index + 1:04d}", target))
-    except Exception:  # noqa: BLE001 - 渲染失败就放弃 OCR，别把建库拖死
-        return None
-    finally:
-        doc.close()
-    try:
+        finally:
+            doc.close()
         if not images:
             return None
         raw = ocr.ocr_images(images)
+        if not raw:
+            return None
+        pages = [page.strip() for page in raw.split("\f")]
+        # 空白页只跳过、不重编号：`<!-- page N -->` 要跟原始页序对得上，否则
+        # 用户拿页码去找原文会差一截。
+        body = "\n\n".join(
+            f"<!-- page {index + 1} -->\n{page}" for index, page in enumerate(pages) if page
+        )
+        if not body:
+            return None
+        header = OCR_NOTICE
+        tried = len(images)
+        if total_pages > tried:
+            header += f"（只识别了前 {tried} 页，共 {total_pages} 页）"
+        # 只对识别出来的正文做收尾：提示行里的空格是给人看的，不能被"去汉字间空格"吃掉
+        return f"{header}\n\n{ocr.tidy(body)}"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    if not raw:
-        return None
-    pages = [page.strip() for page in raw.split("\f")]
-    pages = [page for page in pages if page]
-    if not pages:
-        return None
-    body = "\n\n".join(f"<!-- page {index + 1} -->\n{page}" for index, page in enumerate(pages))
-    header = OCR_NOTICE
-    if total_pages > len(pages):
-        header += f"（只识别了前 {len(pages)} 页，共 {total_pages} 页）"
-    # 只对识别出来的正文做收尾：提示行里的空格是给人看的，不能被"去汉字间空格"吃掉
-    return f"{header}\n\n{ocr.tidy(body)}"
 
 
 def pdf_to_text(path: Path, cfg=None, timeout: float = 120.0, session=None) -> PDFResult:

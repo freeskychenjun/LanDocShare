@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -159,6 +160,112 @@ def test_ocr_can_be_switched_off_per_library(tmp_path: Path, monkeypatch):
     result = pdf_conv.pdf_to_text(path, cfg=cfg)
     assert result.via == "pymupdf"
     assert result.reason == "no_text_layer"
+
+
+def _scanned_pdf(tmp_path: Path, pages: int = 1) -> Path:
+    import fitz
+
+    doc = fitz.open()
+    for _ in range(pages):
+        _add_image_page(doc)
+    path = tmp_path / "scan.pdf"
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def _track_ocr_tmpdirs(monkeypatch) -> list[Path]:
+    """记下 pdf_conv 建的临时目录，用于断言"出口上都删干净了"。"""
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def fake(*args, **kwargs):
+        path = Path(real(*args, **kwargs))
+        made.append(path)
+        return str(path)
+
+    monkeypatch.setattr(pdf_conv.tempfile, "mkdtemp", fake)
+    return made
+
+
+def _ocr_ready(monkeypatch, text: str = "江 西 省 水 利 厅 文 件" * 5) -> None:
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    monkeypatch.setattr(
+        pdf_conv.ocr,
+        "ocr_images",
+        lambda images, lang="zh-Hans-CN", timeout=None: text,
+    )
+
+
+def test_ocr_temp_dir_is_removed_when_pages_have_no_images(tmp_path: Path, monkeypatch):
+    """文字少但没有图的 PDF 会提前 return：临时目录不能留在 %TEMP% 里。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "附件1", fontsize=12)
+    path = tmp_path / "short.pdf"
+    doc.save(path)
+    doc.close()
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+    made = _track_ocr_tmpdirs(monkeypatch)
+    assert pdf_conv._ocr_text(path, None) is None
+    assert made and not any(p.exists() for p in made)
+
+
+def test_ocr_temp_dir_is_removed_when_rendering_fails(tmp_path: Path, monkeypatch):
+    """渲染到一半失败也是提前 return：明文页面图不能留在 %TEMP% 里。"""
+    import fitz
+
+    path = _scanned_pdf(tmp_path)
+    monkeypatch.setattr(pdf_conv.ocr, "backend", lambda lang="zh-Hans-CN": "windows")
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("渲染失败")
+
+    monkeypatch.setattr(fitz.Page, "get_pixmap", boom)
+    made = _track_ocr_tmpdirs(monkeypatch)
+    assert pdf_conv._ocr_text(path, None) is None
+    assert made and not any(p.exists() for p in made)
+
+
+def test_disguise_timeout_leaves_no_temp_dir(tmp_path: Path, monkeypatch):
+    """兜底工具超时：那份明文副本目录必须一起删掉。"""
+    encrypted = tmp_path / "secret.pdf"
+    encrypted.write_bytes(bytes.fromhex("17da5fa01633cd9a") + b"cipher" * 32)
+    tool_dir = tmp_path / "tool"
+    tool_dir.mkdir()
+    (tool_dir / pdf_conv.TOOL_EXE_NAME).write_bytes(b"MZ")
+
+    def timeout_runner(tool, target, cwd, timeout):
+        raise subprocess.TimeoutExpired(cmd=str(tool), timeout=timeout)
+
+    made = _track_ocr_tmpdirs(monkeypatch)  # 同一套 mkdtemp 计数，前缀不同而已
+    with pytest.raises(subprocess.TimeoutExpired):
+        pdf_conv.decrypt_via_disguise(encrypted, tool_dir, runner=timeout_runner)
+    assert made and not any(p.exists() for p in made)
+
+
+def test_ocr_page_numbers_follow_original_order(tmp_path: Path, monkeypatch):
+    """空白页只跳过、不重编号：`<!-- page N -->` 必须跟原始页序对得上。"""
+    path = _scanned_pdf(tmp_path, pages=4)
+    _ocr_ready(monkeypatch, "第一页\f\f\f第四页")
+    text = pdf_conv._ocr_text(path, None)
+    assert text is not None
+    assert "<!-- page 1 -->" in text and "<!-- page 4 -->" in text
+    assert "<!-- page 2 -->" not in text and "<!-- page 3 -->" not in text
+
+
+def test_ocr_notice_counts_pages_it_tried(tmp_path: Path, monkeypatch):
+    """提示语报"尝试过的页数"，不是"识别出字的页数"。"""
+    from landoc.config import Config
+
+    path = _scanned_pdf(tmp_path, pages=4)
+    _ocr_ready(monkeypatch, "第一页\f第二页")
+    cfg = Config(name="t", lib_dir=tmp_path, ocr_max_pages=2)
+    text = pdf_conv._ocr_text(path, cfg)
+    assert text is not None
+    assert "只识别了前 2 页，共 4 页" in text
 
 
 def test_decrypt_via_disguise_rejects_tool_that_changed_nothing(
