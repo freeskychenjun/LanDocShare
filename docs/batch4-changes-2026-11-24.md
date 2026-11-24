@@ -337,3 +337,44 @@ Select-String -Path logs\access_log-*.jsonl,logs\access_log.jsonl -Pattern '"cou
 
 - `python -m pytest tests -q` → **576 passed / 17 skipped in 214.36s**（第 3 批后 563 + 本批 13 条，一次通过；期间只修了自己写的两处测试与一条被脱敏用例抓到的注释）。
 - 手测四件（第 11 节）尚未在打包版上跑：托盘退出 / 崩溃 / 名单外访问 / 轮转归档，等下一次发布前连同第 3 批的 dist 一起验。
+
+## 14. 打包版验证记录（2026-11-24 12:24–12:28）
+
+先把 `dist/` 用当前代码重打（第 3 批的 dist 是 09:16 的，不含本批）：
+
+```powershell
+# importlib 载入，避免 from packaging import release 撞 PyPI 的 packaging
+python -c "import importlib.util,sys; spec=importlib.util.spec_from_file_location('lan_release', r'packaging\release.py'); ..."
+# 输出：随包 Tesseract 自检通过：tesseract v5.5.0.20241111 / 完成，用时 69 秒
+# dist = 1125 文件 / 138.6 MB，两个 exe 时间戳 12:24:06
+```
+
+脚本 `%TEMP%\landoc_smoke_b4.py`（真 exe 子进程 + 真 HTTP + 真日志文件，**16 项全过**）：
+
+| # | 验的什么 | 结果（日志原文） |
+|---|---|---|
+| 1 | `--headless` 启动写一行 | `库服务启动：端口 8768，版本 0.2.22` |
+| 2 | Ctrl+C 退出码 | `0` |
+| 3 | 优雅退出留痕 | `库服务停止：命令行退出（本次收录 0 篇）` |
+| 4 | 停止行带收录篇数 | 同上，「本次收录 0 篇」在 |
+| 5 | `taskkill /F` 硬杀**没有**停止行 | 停止行计数 1 → 1 |
+| 6 | 库打不开时进程退出码 | `1` |
+| 7 | 崩溃写进 app.log | `未捕获异常（主线程）：OperationalError: unable to open database file` |
+| 8 | 异常原文也在 | `unable to open database file` |
+| 9 | 名单外请求 | `403`（allow 只有 `10.99.0.0/16`，来源 `127.0.0.1`） |
+| 10 | 被拒写进 app.log | `访问被拒：403 /api/search，来源 127.0.0.1(-)` |
+| 11 | 10 分钟内同类只记一行 | 第二次 403 后仍是 1 行 |
+| 12 | 预填 5.32 MB 触发轮转 | 见 13 |
+| 13 | 归档带时间戳 | `access_log-20261124-122723.jsonl` |
+| 14 | 旧记录搬进归档没被删 | 预填的 `prefill-marker-2026-11-24` 在归档里 |
+| 15 | 不再产生 `.1` | `access_log.jsonl.1` 不存在 |
+| 16 | 新文件从小开始 | `111 B` |
+
+**两处踩坑（对下次验证有用）**：
+
+1. `CREATE_NEW_PROCESS_GROUP` 会**顺手关掉子进程的 Ctrl+C**（Windows 的 documented 行为），`os.kill(pid, CTRL_C_EVENT)` 因此送不到。
+   改法：子进程用 `CREATE_NEW_CONSOLE` 起、给它自己的控制台，父进程 `FreeConsole()` → `AttachConsole(pid)` → `GenerateConsoleCtrlEvent(0, 0)` → `FreeConsole()` → `AttachConsole(ATTACH_PARENT_PROCESS)`。
+   第一版没这么写，报的是「Ctrl+C 退出码 None」，会误判成"优雅退出没实现"。
+2. 预填 4.1 万行只有 3.64 MB（每行约 89 B），够不到 `Audit.MAX_BYTES = 4 MB`；改成 6 万行（5.32 MB）才滚起来。
+
+**没覆盖的**：托盘菜单「退出」那一条（`_quit` → `stop("托盘退出")`）需要真的点一下托盘图标，本次没做；它与 `--headless` 走的是同一个 `App.stop(reason)`，差别只在 reason 字符串，单测 `test_stop_is_logged_with_a_reason` 已覆盖「托盘退出」这个值。
