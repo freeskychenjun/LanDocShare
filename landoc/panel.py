@@ -150,9 +150,14 @@ def _window_size(root) -> tuple[int, int]:
         # 形如 "580x220+670+410"；只要前半截
         size = root.geometry().split("+", 1)[0]
         width_text, height_text = size.split("x")
-        return max(int(width_text), 1), max(int(height_text), 1)
+        width, height = int(width_text), int(height_text)
+        if width > 1 and height > 1:
+            return width, height
     except Exception:  # noqa: BLE001 - 解析不出就按布局要求的大小
-        return max(root.winfo_reqwidth(), 1), max(root.winfo_reqheight(), 1)
+        pass
+    # 从没摆过的 Toplevel，`geometry()` 报的是 "1x1+0+0"：照它居中会把窗口
+    # 顶到屏幕左上角，得用布局算出来的尺寸
+    return max(root.winfo_reqwidth(), 1), max(root.winfo_reqheight(), 1)
 
 
 def center_window(root, size: tuple[int, int] | None = None) -> None:
@@ -710,6 +715,14 @@ class HostedWindow:
             attach_transient(window, root)
             self._build(window)
         self._on_show()
+        # 统一摆到屏幕正中：这几个窗口都是"点了就要看"的浮动窗，不能让它落在
+        # Tk 的默认位置（未设 geometry 时是左上角，设了 size 也还在左上角）。
+        # 先算好位置再 present，用户看到的就是直接出现在中间，不会跳一下。
+        try:
+            window.update_idletasks()
+            center_window(window)
+        except Exception:  # noqa: BLE001 - 居中失败不该让窗口打不开
+            pass
         present(window)
 
     def _close_hosted(self, _root) -> None:

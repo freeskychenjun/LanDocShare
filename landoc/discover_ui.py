@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 from landoc import discover
 from landoc.config import Config
-from landoc.panel import HostedWindow, _icon_path, release_tk
+from landoc.panel import HostedWindow, _icon_path, center_window, release_tk
 
 
 class DiscoverWindow(HostedWindow):
@@ -75,6 +75,7 @@ class DiscoverWindow(HostedWindow):
 
         root = tk.Tk()
         self._build(root)
+        center_window(root)  # 弹在屏幕正中，别落在左上角
         root.mainloop()
         release_tk(self)
 

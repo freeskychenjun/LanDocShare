@@ -19,7 +19,7 @@ from pathlib import Path
 
 from landoc import roster
 from landoc.config import Config
-from landoc.panel import HostedWindow, release_tk
+from landoc.panel import HostedWindow, center_window, release_tk
 
 
 def _icon_path() -> Path | None:
@@ -89,6 +89,7 @@ class RosterWindow(HostedWindow):
 
         root = tk.Tk()
         self._build(root)
+        center_window(root)  # 弹在屏幕正中，别落在左上角
         root.mainloop()
         release_tk(self)
 

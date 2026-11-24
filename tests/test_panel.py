@@ -296,6 +296,16 @@ def test_center_window_accepts_an_explicit_size_for_unmapped_windows(monkeypatch
     assert root.moved == ["800x600+560+220"]
 
 
+def test_center_window_falls_back_to_the_layout_size_when_geometry_is_1x1(monkeypatch):
+    """从没摆过的 Toplevel（授权名单、可访问的资料库）报的是 "1x1+0+0"：
+    照它居中会把窗口顶到左上角，得退回按布局算的尺寸。"""
+    root = _FakeRoot(geometry="1x1")
+    monkeypatch.setattr(panel_module, "work_area", _fixed_area((0, 0, 1920, 1040)))
+    center_window(root)
+    # 580×220（_FakeRoot 的 req 尺寸）居中
+    assert root.moved == ["+670+410"]
+
+
 def test_center_window_falls_back_to_the_tk_screen(monkeypatch):
     """拿不到显示器工作区（非 Windows / 被策略挡）也要能算出位置，不能把窗口开不出来。"""
     root = _FakeRoot(geometry="580x220", screen=(1920, 1080))
