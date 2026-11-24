@@ -74,8 +74,23 @@ def _write_json(path: Path, payload: dict) -> None:
         raise
 
 
+def _check_bundled_tesseract() -> None:
+    """出包前按发布口径验一遍随包的 Tesseract（净化 PATH）。
+
+    开发机上装着 Tesseract，缺 DLL 的随包那份也能跑（借系统里那份），所以"本机能 OCR"
+    证明不了分发出去能用 —— 这条检查是 1.2 的落点：失败就当场停，别等同事那边兜底失效。
+    """
+    from landoc.ocr import verify_bundled_tesseract
+
+    ok, detail = verify_bundled_tesseract()
+    if not ok:
+        raise RuntimeError(f"随包的 Tesseract 跑不起来：{detail}（净 PATH 下要能 --version）")
+    print(f"      随包 Tesseract 自检通过：{detail}")
+
+
 def build_dist() -> None:
     """跑 PyInstaller（spec 里 onedir + 排除重包，约 3-5 分钟）。"""
+    _check_bundled_tesseract()
     print(f"[1/3] 打包：{SPEC.relative_to(ROOT)}")
     started = time.time()
     result = subprocess.run(

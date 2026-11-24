@@ -316,7 +316,7 @@ landoc/
   discover_ui.py   可访问库窗口（tkinter，双击开主页 / 复制地址 / 导出清单）
   updater.py       自动更新：检查 / 下载续传 / 校验解压 / 换目录 / 健康检查与回滚
   tray.py          托盘入口 + 单实例互斥量（也是打包入口）
-  tools/           随包 OCR 工具：ocr_win.ps1 + tesseract 最小 DLL 集 + tessdata fast 模型（共 14.7 MB）
+  tools/           随包 OCR 工具：ocr_win.ps1 + tesseract 完整 DLL 闭包 + tessdata fast 模型（共 31.2 MB）
 
 packaging/
   LanDocShare.spec PyInstaller onedir 打包配置（排掉 torch/cv2 等重包）

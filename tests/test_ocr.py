@@ -100,6 +100,15 @@ def test_bundled_tesseract_ships_with_models():
     assert "eng" in ocr.tesseract_languages()
 
 
+def test_bundled_tesseract_runs_without_the_installed_one():
+    """净化 PATH 之后随包那份还跑得起来：缺 DLL 只在这条路径上暴露（1.2）。"""
+    exe = ocr.tools_dir() / "tesseract" / "tesseract.exe"
+    if not exe.is_file():
+        pytest.skip("源码树里没带 Tesseract（只打包版带）")
+    ok, detail = ocr.verify_bundled_tesseract()
+    assert ok, detail
+
+
 @pytest.mark.slow
 def test_real_ocr_reads_chinese_from_a_rendered_pdf(tmp_path: Path):
     """真机：把一行中文渲染成 PNG，走真实 OCR 路径看能不能认出来。"""

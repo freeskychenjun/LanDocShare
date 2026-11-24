@@ -3,8 +3,10 @@
 为什么两条腿：
 - `Windows.Media.Ocr` 随系统中文语言包提供，识别质量最好、零体积，但不是每台机器都有
   （英文系统只有 en-US；精简版/LTSC 可能把语言包裁掉）；
-- Tesseract 我们打包一份最小集（exe + 6 个 DLL + 中英 fast 模型，共约 15 MB），
-  保证"系统缺中文识别包"的同事机器上，扫描件也能收进库。
+- Tesseract 我们打包一份**完整闭包**（exe + 35 个 DLL + 中英 fast 模型，共约 27 MB），
+  保证"系统缺中文识别包"的同事机器上，扫描件也能收进库。闭包必须自洽：随包那份在
+  净化 PATH 之后要能跑（`verify_bundled_tesseract()`，出包前 `packaging/release.py`
+  会跑一遍）—— 开发机装着 Tesseract 时，缺 DLL 也能被系统里那份顶住，谁都发现不了。
 
 两条路都只在建库机上跑：检索端读的是 md/索引，不需要任何 OCR 组件。
 
@@ -165,6 +167,53 @@ def tesseract_languages() -> tuple[str, ...]:
             continue  # 头一行是 "List of available languages (2):"
         names.append(line)
     return tuple(sorted(names))
+
+
+def verify_bundled_tesseract(timeout: float = 60.0) -> tuple[bool, str]:
+    """按发布口径验一遍随包的 Tesseract：净化 PATH 之后还能不能跑起来。
+
+    开发机上装着 Tesseract 时，随包那份缺 DLL 也照样能跑（系统目录与安装目录里的同名
+    DLL 会被借走，实测 PATH 里带着 `C:\\Program Files\\Tesseract-OCR` 时 rc=0，
+    净掉之后 0xC0000135）。所以这里只给 exe 自己的目录 + 系统目录，出包前跑它，
+    缺依赖当场暴露，而不是等同事的机器上"兜底"失效。
+
+    返回 `(能不能跑, 说明)`：说明里放第一行版本号，或失败原因。
+    """
+    exe = tools_dir() / "tesseract" / "tesseract.exe"
+    if not exe.is_file():
+        return False, "源码树里没有随包的 tesseract.exe"
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    env = {
+        key: os.environ[key]
+        for key in ("SystemRoot", "TEMP", "TMP", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE")
+        if key in os.environ
+    }
+    env.setdefault("SystemRoot", system_root)
+    # 只留 exe 自己的目录：这才是同事机器上的样子
+    env["PATH"] = os.pathsep.join([str(exe.parent), str(Path(system_root) / "System32"), system_root])
+    try:
+        done = subprocess.run(
+            [str(exe), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"跑不起来：{exc}"
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip().splitlines()
+        missing = 0xC0000135  # STATUS_DLL_NOT_FOUND：Windows 上 Python 给的是它的有符号形式
+        hint = "；多半是 DLL 闭包不全（净 PATH 下运行）" if done.returncode in (missing, missing - 0x100000000) else ""
+        return False, f"退出码 {done.returncode}：{detail[0] if detail else '(无输出)'}{hint}"
+    text = f"{done.stdout}\n{done.stderr}"
+    if "tesseract" not in text.lower():
+        return False, f"输出看不懂：{text.strip()[:160]}"
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return True, first
 
 
 def _lang_codes(lang: str) -> tuple[str, ...]:

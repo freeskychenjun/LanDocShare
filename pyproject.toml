@@ -17,6 +17,9 @@ dependencies = [
     "pywin32",
     "pystray",
     "Pillow",
+    # netinfo 用它挑「本机所在网段」当默认允许网段；以前没声明，只因开发机上碰巧装着，
+    # 干净环境里 pip install landoc 后启动会直接 ImportError（3.8）。
+    "psutil",
 ]
 
 [project.optional-dependencies]
