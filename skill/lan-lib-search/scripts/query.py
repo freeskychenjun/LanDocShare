@@ -5,18 +5,20 @@
 用法：
     python query.py libs                       # 列出在线库
     python query.py search 马斯京根             # 对你开放的库一起查
-    python query.py search 马斯京根 --lib 赵六   # 只查某人的库
-    python query.py tables --lib 赵六 --path "2026年项目/xxx.docx.md"
-    python query.py whoami --set 赵六          # 登记自己的名字（可选）
+    python query.py search 马斯京根 --lib 陈鋆   # 只查某人的库
+    python query.py tables --lib 陈鋆 --path "2026年项目/xxx.docx.md"
+    python query.py whoami --set 陈鋆          # 登记自己的名字（可选）
     python query.py search 乐平 --json          # 给程序读
 
 网络约定（设计 §7 / §8）：
 - 名单从登记中心 GET /libraries 拿，并缓存 24 h 备用；带上 identity.txt 的姓名后，
   中心只返回"这个姓名/IP 有权限访问"的库。中心不通时用缓存 + 并发 /api/health 探活。
-- 每库 GET /api/search?q=…&limit=8&name=…，单库超时 2 s，并发 12 路；
+- 每库 GET /api/search?q=…&limit=8&name=…，单库超时按"这个库历来多快"单独定
+  （默认 1.2 s，连上不回的库压到 0.6 s，慢库放宽到 2 s），并发 32 路；
   某个库超时不报错，只在脚注里说"在线 X/Y 个库返回结果"。
 - 合并：score 归一到各库最大值 × 库级权重（默认 1，可在 config.json 里按人调），
-  同一个库内保持原顺序，取前 20。
+  同一个库内保持原顺序；**同一份文档（标题+文件名+类型相同）只留排名最高的一条**，
+  其余位置折成"共 N 处"，取前 20。
 """
 
 from __future__ import annotations
@@ -25,18 +27,25 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-DEFAULT_REGISTRY = "http://172.16.1.197:8767"
+DEFAULT_REGISTRY = "http://10.91.1.197:8767"
 PER_LIB_LIMIT = 8
 TAKE = 20
-TIMEOUT = 2.0
-WORKERS = 12
+TIMEOUT = 1.2  # 单库默认超时：睡着的库最多拖 1.2 s（原来是 2 s）
+TIMEOUT_MIN = 0.6  # 连续超时过的库（多半在睡/离线）用最短预算，不陪它等
+TIMEOUT_MAX = 2.0  # 历史延迟确实高的库才放宽到这里
+PROBE_SECONDS = 600.0  # 连超的库每隔这么久给一次完整预算，探它是否醒了
+# 并发扇出的库数。库多了要抬高（12 并发时 60 个库要跑 5 批，实测 747 ms；
+# 32 并发同样 60 个库 268 ms）。可用环境变量 LANLIB_WORKERS 覆盖，上限 64。
+WORKERS = max(1, min(64, int(os.environ.get("LANLIB_WORKERS") or 32)))
 
 # 中心在 /libraries 里告诉我们"最新版本是多少"，用来提示哪些库该升级
 _LATEST: dict[str, str] = {"version": ""}
@@ -159,41 +168,141 @@ def personal_name() -> str:
         return ""
 
 
-def search_one(lib: dict, query: str, name: str = "", limit: int = PER_LIB_LIMIT) -> dict:
+class LatencyBook:
+    """记住每个库历来多快，据此给每个库单独定超时。
+
+    库多了以后最拖时间的不是"查得慢"，而是"某个同事电脑睡着了"：连上不回，
+    只能等超时。第一次白等一次默认超时，之后把它记成连连超时，预算压到
+    TIMEOUT_MIN，后面的查询就不再陪它等 2 秒。
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or (data_dir() / "latency.json")
+        self.entries: dict[str, dict] = {}
+        self.dirty = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        for url, entry in (raw.get("libs") or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            if now - float(entry.get("seen", 0) or 0) > 30 * 86400:
+                continue
+            self.entries[str(url)] = entry
+
+    def save(self) -> None:
+        if not self.dirty:
+            return
+        payload = {"saved_at": time.time(), "libs": self.entries}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            pass  # 记不下来不影响查询
+        self.dirty = False
+
+    def timeout_for(self, url: str) -> float:
+        entry = self.entries.get(url) or {}
+        strikes = int(entry.get("strikes", 0) or 0)
+        if strikes > 0:
+            # 连着超时的库：预算减半，最低 TIMEOUT_MIN。但每 PROBE_SECONDS 给一次
+            # 完整预算探它是否回来了——否则它永远没机会证明自己已经醒了。
+            last_fail = float(entry.get("last_fail", 0) or 0)
+            if time.time() - last_fail >= PROBE_SECONDS:
+                return TIMEOUT
+            return max(TIMEOUT_MIN, TIMEOUT / (2**strikes))
+        ewma = float(entry.get("ewma_ms", 0) or 0)
+        if ewma > 0:
+            return max(TIMEOUT_MIN, min(TIMEOUT_MAX, ewma * 3 / 1000))
+        return TIMEOUT
+
+    def record(self, url: str, elapsed_ms: float, ok: bool) -> None:
+        entry = self.entries.setdefault(url, {})
+        entry["seen"] = time.time()
+        if ok:
+            previous = float(entry.get("ewma_ms", 0) or 0)
+            entry["ewma_ms"] = elapsed_ms if previous <= 0 else previous * 0.7 + elapsed_ms * 0.3
+            entry["strikes"] = 0
+            entry["last_ok"] = time.time()
+        else:
+            entry["strikes"] = int(entry.get("strikes", 0) or 0) + 1
+            entry["last_fail"] = time.time()
+            entry.setdefault("last_ok", 0)
+        self.dirty = True
+
+
+def search_one(lib: dict, query: str, name: str = "", limit: int = PER_LIB_LIMIT, timeout: float = TIMEOUT) -> dict:
     """查一个库；失败也返回结构、不抛异常（不能让一个库拖垮全院）。"""
     params = {"q": query, "limit": str(limit)}
     if name:
         params["name"] = name
     url = urllib.parse.urljoin(lib["url"], "api/search") + "?" + urllib.parse.urlencode(params)
+    started = time.perf_counter()
     try:
-        payload = _get_json(url, timeout=TIMEOUT)
+        payload = _get_json(url, timeout=timeout)
+        elapsed = (time.perf_counter() - started) * 1000
         return {
             "lib": lib,
             "ok": True,
             "error": "",
             "results": payload.get("results", []),
             "fallback": bool(payload.get("fallback")),
+            "elapsed_ms": round(elapsed, 1),
         }
     except urllib.error.HTTPError as exc:
+        elapsed = (time.perf_counter() - started) * 1000
         detail = ""
         try:
             detail = json.loads(exc.read().decode("utf-8")).get("error", "")
         except Exception:  # noqa: BLE001 - 读不到错误体就只报状态码
             pass
-        return {"lib": lib, "ok": False, "error": detail or f"HTTP {exc.code}", "results": []}
+        return {
+            "lib": lib,
+            "ok": False,
+            "error": detail or f"HTTP {exc.code}",
+            "results": [],
+            "elapsed_ms": round(elapsed, 1),
+        }
     except (OSError, ValueError, urllib.error.URLError) as exc:
-        return {"lib": lib, "ok": False, "error": exc.__class__.__name__, "results": []}
+        elapsed = (time.perf_counter() - started) * 1000
+        return {
+            "lib": lib,
+            "ok": False,
+            "error": exc.__class__.__name__,
+            "results": [],
+            "elapsed_ms": round(elapsed, 1),
+        }
 
 
-def search_all(libraries: list[dict], query: str, name: str = "", per_lib: int = PER_LIB_LIMIT) -> list[dict]:
+def search_all(
+    libraries: list[dict],
+    query: str,
+    name: str = "",
+    per_lib: int = PER_LIB_LIMIT,
+    book: LatencyBook | None = None,
+) -> list[dict]:
     online = [lib for lib in libraries if lib.get("online", True)]
     if not online:
         return []
+    book = book if book is not None else LatencyBook()
     out: list[dict] = []
     with ThreadPoolExecutor(max_workers=min(WORKERS, len(online))) as pool:
-        futures = [pool.submit(search_one, lib, query, name, per_lib) for lib in online]
+        futures = [
+            pool.submit(search_one, lib, query, name, per_lib, book.timeout_for(lib.get("url", "")))
+            for lib in online
+        ]
         for future in as_completed(futures):
-            out.append(future.result())
+            item = future.result()
+            out.append(item)
+            book.record(item["lib"].get("url", ""), float(item.get("elapsed_ms") or 0), item["ok"])
+    book.save()
     return out
 
 
@@ -229,7 +338,44 @@ def merge(found: list[dict], weights: dict | None = None, take: int = TAKE) -> l
                 }
             )
     merged.sort(key=lambda row: (-row["rank"], row["lib_name"], row["order"]))
-    return merged[:take]
+    return _dedupe(merged)[:take]
+
+
+def _norm_text(text: str) -> str:
+    """去空格/标点、统一大小写，用来判断"两份是不是同一份文档"。"""
+    return re.sub(r"[\W_]+", "", str(text or "").lower(), flags=re.UNICODE)
+
+
+def _doc_key(row: dict) -> tuple[str, str, str]:
+    """同一份文档被多个库收录时，标题、类型、文件名通常一模一样。
+
+    故意只认这三样同时相等：宁可漏合并（多显示一条），也不要把标题相近的
+    不同文档并掉——「计算书」「设计报告」这类标题在院里很常见。
+    """
+    return (
+        _norm_text(row.get("title", "")),
+        _norm_text(row.get("ext", "")),
+        _norm_text(Path(str(row.get("path") or "")).name),
+    )
+
+
+def _dedupe(rows: list[dict]) -> list[dict]:
+    """把重复文档折成一条：保留排名最高的，其余位置记进 copies。"""
+    kept: list[dict] = []
+    seen: dict[tuple[str, str, str], dict] = {}
+    for row in rows:
+        key = _doc_key(row)
+        if not any(key):
+            kept.append(row)
+            continue
+        first = seen.get(key)
+        if first is None:
+            row["copies"] = [{"lib_name": row["lib_name"], "path": row["path"]}]
+            seen[key] = row
+            kept.append(row)
+        else:
+            first["copies"].append({"lib_name": row["lib_name"], "path": row["path"]})
+    return kept
 
 
 # ---------------------------------------------------------------- 输出
@@ -281,6 +427,11 @@ def print_results(query: str, merged: list[dict], found: list[dict], libraries: 
             print(f"【{current}】{row['doc_count']} 篇 · {row['lib_url']}")
         print(f"  {index}. {row['title']}  ({row['ext']})")
         print(f"     {row['path']}")
+        copies = row.get("copies") or []
+        if len(copies) > 1:
+            names = sorted({c["lib_name"] or "?" for c in copies})
+            where = "、".join(names) if len(names) > 1 else "同一库内另一处"
+            print(f"     · 同一份文档共 {len(copies)} 处（{where}）")
         print(f"     {_clip(row['snippet'])}")
         index += 1
     print()
@@ -355,13 +506,25 @@ def cmd_tables(args) -> int:
     if not match:
         print(f"没找到叫「{args.lib}」的库。", file=sys.stderr)
         return 3
-    params = {"path": args.path}
-    personal = personal_name()
-    if personal:
-        params["name"] = personal
-    url = urllib.parse.urljoin(match[0]["url"], "api/tables") + "?" + urllib.parse.urlencode(params)
+    path = args.path
+
+    def _fetch(path_arg: str) -> dict:
+        params = {"path": path_arg}
+        personal = personal_name()
+        if personal:
+            params["name"] = personal
+        url = urllib.parse.urljoin(match[0]["url"], "api/tables") + "?" + urllib.parse.urlencode(params)
+        return _get_json(url, timeout=5.0)
+
     try:
-        payload = _get_json(url, timeout=5.0)
+        try:
+            payload = _fetch(path)
+        except urllib.error.HTTPError as exc:
+            # 最常见的手误：--path 漏了 .md 后缀（索引里的路径都带它）。补一次就够，别再让用户重跑。
+            if exc.code != 404 or path.endswith(".md"):
+                raise
+            path += ".md"
+            payload = _fetch(path)
     except urllib.error.HTTPError as exc:
         print(f"取表格失败：HTTP {exc.code}（路径不在这个库的索引里？）", file=sys.stderr)
         return 4
@@ -372,7 +535,7 @@ def cmd_tables(args) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     tables = payload.get("tables", [])
-    print(f"{match[0].get('name')} 的库 · {args.path} · {len(tables)} 张表")
+    print(f"{match[0].get('name')} 的库 · {path} · {len(tables)} 张表")
     for n, table in enumerate(tables, 1):
         context = table.get("context") or ""
         print(f"\n表 {n}：{context}" if context else f"\n表 {n}")

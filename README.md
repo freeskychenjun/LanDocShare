@@ -230,15 +230,24 @@ python -m landoc.cli people --lib-dir D:\MyLib                       # 查看（
 
 ```bash
 python skill/lan-lib-search/scripts/query.py libs                 # 谁在线、各多少篇
-python skill/lan-lib-search/scripts/query.py search 马斯京根        # 并发 12 路，每库超时 2 s
+python skill/lan-lib-search/scripts/query.py search "太湖水库 特征库容"   # 多词要加引号
 python skill/lan-lib-search/scripts/query.py search 玉田水库 --lib 赵六
 python skill/lan-lib-search/scripts/query.py tables --lib 赵六 --path "测试目录/xxx.docx.md"
 ```
 
 - **只用标准库**，Python 3.8+ 直接跑；没有 Python 时按 `SKILL.md` 里的 curl 命令逐库查、AI 合并。
+- 用法固定成**两步**（一次 `search` + 最多一次 `tables`）：实测检索 20 ms、取表 23 ms，慢的从来不是库，
+  是多跑几轮命令。`libs`/`whoami` 只在排障时用。
 - 合并规则：各库 score 先归一到本库最佳，再乘库级权重（`config.json` 的 `weights`），同库保持原序，取前 20。
-- 中心连不上时用 24 h 缓存 + **并发**逐库 `/api/health` 探活（12 路，20 个库 20 秒 → 2 秒）；某个库没响应只记脚注"在线 X/Y 个库返回结果"。
+- **单库超时按库自适应**：默认 1.2 s，连续超时的库减半到 0.6 s（每 10 分钟探一次），历史慢库放宽到 2 s；
+  延迟记在 `%LOCALAPPDATA%\lan-lib-search\latency.json`。30 库（29 快 + 1 个睡着）实测 2023 ms → 625 ms。
+- **跨库去重**：标题、类型、文件名三样都相同才算同一份文档，只留排名最高的一条，其余折成「共 N 处」。
+- 中心连不上时用 24 h 缓存 + **并发**逐库 `/api/health` 探活（32 路，20 个库 20 秒 → 2 秒）；某个库没响应只记脚注"在线 X/Y 个库返回结果"。
 - 输出按库分组，每条都带**库主人 + 相对路径 + 命中片段**；只给片段和表格，不给原文、不给下载。
+- **仓库是唯一源**：改这个 skill 只改 `skill/lan-lib-search/`，然后
+  `python packaging/sync-skill.py --install` 同步到本机 `~\.agents\skills\lan-lib-search`；
+  `--check` 只对比不写（版本不一致时退出码非 0），`--pull` 反向把本机那份收回仓库。
+  `/skill.zip` 是从这里现场打包的，所以同事拿到的永远是仓库这一版。
 
 
 ## 关键机制（都来自实测，别按直觉改）
