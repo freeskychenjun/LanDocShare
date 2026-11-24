@@ -93,7 +93,21 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 
 库端现在有自己的一份运行日志 `<库目录>\logs\app.log`（单文件 1 MB，超了滚成 `app.log.1`，只留一份）：启动那行记端口与版本，每轮扫描失败记一行「扫描失败：…」，登记中心断线/恢复只在**状态翻转**时各记一行（断一晚也只留两行，不会被 60 秒一条的心跳刷满）。状态窗口只看得到最后一条 message，重启就没了，所以让同事"翻 `logs\app.log`"比让他复现一次靠谱。
 
-同目录另有 `access_log.jsonl`（谁查了什么，按 4 MB 轮转，也留一份 `.1`）与 `update.log`（自动更新）。
+除了启动与轮次摘要，`app.log` 还会记这几类（都按事件各一行）：
+
+- **停止**：`库服务停止：托盘退出（本次收录 3 篇）`——"托盘退出 / 安装更新 / 命令行退出"分清；进程被强杀时**没有**这一行，正好用来区分。
+- **崩溃**：`未捕获异常（landoc-worker 线程）：RuntimeError: …` + 栈尾 6 帧。主线程与后台线程都算，不再有"一条线程死了没人知道"。
+- **更新**：发现新版本 / 开始下载 / 下载好等待升级 / 开始安装 / 启动更新器失败。更新细节（sha 校验、回滚）仍在 `%LOCALAPPDATA%\LanDocShare\updates\logs\update.log`。
+- **失败明细**：`失败明细：资料/坏.docx（unreadable）、资料/带口令.docx（password_protected）`，最多 3 条，多出来的写「等 N 篇」。
+- **访问被拒**：`访问被拒：401 /api/search，来源 10.91.1.178（不在名单）`，10 分钟内同类只记一行（扫描器刷不满日志）；状态窗口的「共享范围」行同时显示「最近有 N 次访问被拒」。
+
+同目录另有 `access_log.jsonl`（谁查了什么，按 4 MB 轮转），轮转出来的是带时间戳的归档 `access_log-YYYYMMDD-HHMMSS.jsonl`，**不覆盖、不删除旧记录**（同事的检索史是要留的数据，一年多约 2~3 MB，要清就手工删）。每条带 `ip`/`name`/`api`/`status`/`count`，搜索还带明文 `q`、`dir`（在哪个目录下查的）和 `fallback`（这一查是不是退化成了 `LIKE`）。查"同事搜了但库里没有"的资料缺口：
+
+```powershell
+Select-String -Path logs\access_log-*.jsonl,logs\access_log.jsonl -Pattern '"count": 0'
+```
+
+`update.log` 在库目录里已经是旧版遗留，现行位置是 `%LOCALAPPDATA%\LanDocShare\updates\logs\update.log`。
 
 转换失败的文件记在 `<库目录>\failures.json`，每篇带 `attempts`/`reason`/`mtime`/`size`：同一版本连续失败一次就不再自动重试，累计 3 次也停；装好 Office/Acrobat 后环境指纹变化会自动把 `no_office`/`no_reader` 这类失败放回队列。扫描件没有文字层又没装 OCR 时记 `no_ocr`（同样算环境原因，不白耗 3 次重试）；OCR 后来可用了（装语言包/换成带 Tesseract 的打包版），`no_ocr` 与旧的 `no_text_layer` 会一起放回队列重试。要人工重试某篇，删掉它在 `failures.json` 里的那条（或改一下源文件让 mtime 变化）即可。
 
@@ -172,7 +186,7 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip   # 
 
 **失败怎么办：**
 
-- 新版 25 秒内没起来（没写出健康标记），更新器自动回滚到旧版并把旧版重新启动，日志在 `%LOCALAPPDATA%\LanDocShare\logs\update.log`。
+- 新版 25 秒内没起来（没写出健康标记），更新器自动回滚到旧版并把旧版重新启动，日志在 `%LOCALAPPDATA%\LanDocShare\updates\logs\update.log`。
 - 程序装在 `Program Files` 这类不可写目录、或版本跨度超过 `min_from` 时，只提示"请手动下载重装"，不会硬来。
 - 命令行也行：`LanDocShare.exe update`（查+下）、`update --check`（只查）、`update --install`（装，需先退出托盘）。
 

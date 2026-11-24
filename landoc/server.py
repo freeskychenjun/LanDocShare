@@ -65,12 +65,16 @@ def parse_query(qs: str) -> dict:
 class Audit:
     """JSONL 审计：一行一事件；写失败不阻断服务。"""
 
-    # 超过这个大小就滚到 <name>.1（整体替换）：常年开着服务，access_log 不能无限长
+    # 超过这个大小就滚到一个带时间戳的归档文件：常年开着服务，access_log 不能无限长，
+    # 但也不能覆盖旧记录（同事的检索史是库主人要留的数据）。
     MAX_BYTES = 4 * 1024 * 1024
+    # 被挡在外面的状态码：回调给 App，状态窗口里能看见"有人在试"
+    DENIED_STATUSES = (401, 403, 429)
 
-    def __init__(self, path: Path | None, max_bytes: int = 0):
+    def __init__(self, path: Path | None, max_bytes: int = 0, on_denied=None):
         self.path = Path(path) if path else None
         self.max_bytes = int(max_bytes or self.MAX_BYTES)
+        self.on_denied = on_denied
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -83,11 +87,17 @@ class Audit:
             return 0
 
     def _rotate(self) -> None:
-        rotated = self.path.with_name(self.path.name + ".1")
+        if not self.path:
+            return
+        # 按时间戳命名：同名（同一秒滚两次）就再加序号，绝不覆盖已有归档
+        base = self.path.with_name(f"{self.path.stem}-{time.strftime('%Y%m%d-%H%M%S')}{self.path.suffix}")
+        target = base
+        seq = 2
+        while target.exists():
+            target = base.with_name(f"{base.stem}-{seq}{base.suffix}")
+            seq += 1
         try:
-            if rotated.exists():
-                rotated.unlink()
-            self.path.replace(rotated)
+            self.path.replace(target)
         except OSError:
             pass
         self._size = 0
@@ -106,6 +116,16 @@ class Audit:
                 self._size += len(line.encode("utf-8"))
         except OSError:
             pass
+        if self.on_denied is not None and fields.get("status") in self.DENIED_STATUSES:
+            try:
+                self.on_denied(
+                    ip=fields.get("ip", ""),
+                    name=fields.get("name", ""),
+                    api=fields.get("api", ""),
+                    status=int(fields.get("status") or 0),
+                )
+            except Exception:  # noqa: BLE001 - 回调炸了也不能影响响应
+                pass
 
 
 def _ip_allowed(ip: str, allow_cidrs, deny_cidrs=None) -> bool:
@@ -299,7 +319,12 @@ class Handler(BaseHTTPRequestHandler):
             rows, fell_back = self.index.search(
                 q, params.get("dir") or "", limit_int, include_withdrawn=owner
             )
-            self._record(ip, name, route, 200, count=len(rows), q=q)
+            # q 全量留明文（库主人要的查询记录）；fallback 说明这一查是否退化成了 LIKE，
+            # dir 说明在哪个目录下查的（空 = 全库），事后判断"为什么慢/为什么命中怪"都靠它
+            self._record(
+                ip, name, route, 200, count=len(rows),
+                fallback=fell_back, q=q, dir=params.get("dir") or "",
+            )
             return self._json(
                 {"query": q, "count": len(rows), "fallback": fell_back, "results": rows}
             )
@@ -357,7 +382,9 @@ class Handler(BaseHTTPRequestHandler):
         }
 
 
-def make_server(cfg, index: Index | None = None, port: int | None = None) -> ThreadingHTTPServer:
+def make_server(
+    cfg, index: Index | None = None, port: int | None = None, *, on_denied=None
+) -> ThreadingHTTPServer:
     """构造服务实例（不启动）；port 传 0 可让系统分配空闲端口。"""
     # 配置必须显式传下去：Index 的默认值（48 / db 同级的 md）只是碰巧和默认配置一致，
     # 靠默认值会在用户改了 snippet_tokens 后静默不生效。
@@ -370,7 +397,7 @@ def make_server(cfg, index: Index | None = None, port: int | None = None) -> Thr
     handler.index = index
     handler.config = cfg
     handler.rate = RateLimiter()
-    handler.audit = Audit(Path(cfg.lib_dir) / "logs" / "access_log.jsonl")
+    handler.audit = Audit(Path(cfg.lib_dir) / "logs" / "access_log.jsonl", on_denied=on_denied)
     bind_port = cfg.port if port is None else port
     httpd = ThreadingHTTPServer(("0.0.0.0", bind_port), handler)
     httpd.daemon_threads = True

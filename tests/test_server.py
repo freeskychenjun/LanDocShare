@@ -365,8 +365,8 @@ def test_rate_limiter_is_shared_with_registry():
     assert limiter.allow("10.0.0.1") is True
 
 
-def test_audit_rotates_instead_of_growing_forever(tmp_path):
-    """常年开着服务时 access_log 会一直长；超限后滚成 .1，别把盘写满。"""
+def test_access_log_rotates_without_overwriting(tmp_path):
+    """常年开着服务时 access_log 会一直长；超限后按时间戳归档，旧记录一条都不能丢。"""
     from landoc.server import Audit
 
     path = tmp_path / "logs" / "access_log.jsonl"
@@ -375,10 +375,61 @@ def test_audit_rotates_instead_of_growing_forever(tmp_path):
         audit.log(ip="10.0.0.1", api="/api/search", status=200, q=f"第{i}次")
     assert path.is_file()
     assert path.stat().st_size <= 300
-    rotated = path.with_name(path.name + ".1")
-    assert rotated.is_file() and rotated.stat().st_size > 0
-    # 最近的一行一定在新文件里（滚走的是旧的，不是刚写的）
-    assert "第49次" in path.read_text(encoding="utf-8")
+
+    archives = sorted((tmp_path / "logs").glob("access_log-*.jsonl"))
+    assert archives, "超限后要滚出带时间戳的归档"
+    # 不再有"每次轮转覆盖上一份"的 .1
+    assert not path.with_name(path.name + ".1").exists()
+    # 50 次请求一条不少：轮转只搬走，不删除
+    text = "".join(p.read_text(encoding="utf-8") for p in [*archives, path])
+    for i in range(50):
+        assert f"第{i}次" in text
+
+
+def test_make_server_passes_the_denied_callback(tmp_path):
+    """"访问被拒"要能冒到 App（状态窗口显示），所以回调得挂到 Audit 上。"""
+    cfg = Config(name="测试库", lib_dir=tmp_path, folders=[])
+    cfg.allow_cidrs = ["127.0.0.1"]
+    seen: list[dict] = []
+
+    def on_denied(**fields):
+        seen.append(fields)
+
+    httpd = make_server(cfg, index=server_module.Index(cfg.db_path), port=0, on_denied=on_denied)
+    try:
+        assert httpd.RequestHandlerClass.audit.on_denied is on_denied
+    finally:
+        httpd.server_close()
+
+
+def test_denied_request_notifies_the_app(tmp_path):
+    """401/403/429 才通知；正常 200 不该惊动状态窗口。"""
+    from landoc.server import Audit
+
+    seen: list[dict] = []
+    audit = Audit(tmp_path / "logs" / "access_log.jsonl", on_denied=lambda **kw: seen.append(kw))
+    audit.log(ip="10.91.1.178", name="", api="/api/search", status=401)
+    audit.log(ip="10.0.0.1", name="", api="/api/stats", status=200)
+    audit.log(ip="10.91.1.178", name="张三", api="/api/list", status=403)
+
+    assert seen == [
+        {"ip": "10.91.1.178", "name": "", "api": "/api/search", "status": 401},
+        {"ip": "10.91.1.178", "name": "张三", "api": "/api/list", "status": 403},
+    ]
+
+
+def test_search_record_carries_query_fallback_and_dir(running):
+    """查询记录留明文，另带 fallback 与 dir：事后才知道同事搜了什么、为什么没命中。"""
+    client, cfg, _ = running
+    client.get("/api/search?q=" + urllib.parse.quote("马斯京根") + "&dir=" + urllib.parse.quote("成果"))
+
+    log = Path(cfg.lib_dir) / "logs" / "access_log.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    record = [row for row in rows if row.get("api") == "/api/search"][-1]
+    assert record["q"] == "马斯京根"
+    assert record["dir"] == "成果"
+    assert "fallback" in record
+    assert record["count"] == 1
 
 
 def test_empty_cidrs_denies_all(lib):

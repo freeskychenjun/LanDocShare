@@ -287,7 +287,7 @@ class TrayApp:
         self.panel.close()
         self.roster.close()
         self.libraries.close()
-        self.app.stop()
+        self.app.stop("托盘退出")
         if self.icon is not None:
             self.icon.stop()
 
@@ -459,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             print("\n[停止] 已退出")
         finally:
-            app.stop()
+            app.stop("命令行退出")
         return 0
 
     if args.edit_settings:
@@ -479,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\n[停止] 已退出")
         finally:
             tray_app.panel.close()
-            tray_app.app.stop()
+            tray_app.app.stop("改完建库设置退出")
         return 0
 
     if not acquire_single_instance():

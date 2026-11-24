@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
+import traceback
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +58,50 @@ def log_event(lib_dir, message: str) -> None:
         pass
 
 
+_CRASH_TRACE_LINES = 6  # 栈尾留 6 帧够定位问题，整段最多 2000 字符
+_hooks_installed = False
+
+
+def install_crash_hooks(lib_dir) -> None:
+    """主线程与后台线程的未捕获异常都落 app.log：一条线程死了不能没人知道。
+
+    - 主线程异常：记完照旧交给原来的 hook（该崩还是崩，只是留了痕）；
+    - 后台线程异常：记完不重抛（原行为就是打一行 stderr）。
+
+    用模块级标记保证只包一次：升级失败后会再跑一遍 `App.start()`。
+    """
+    global _hooks_installed
+    if _hooks_installed:
+        return
+    _hooks_installed = True
+
+    original_main = sys.excepthook
+    original_thread = threading.excepthook
+
+    def _detail(exc_type, exc_value, frames) -> str:
+        head = f"{exc_type.__name__}: {exc_value}"
+        try:
+            lines = traceback.format_exception(exc_type, exc_value, frames)
+            tail = [line.rstrip("\n") for line in lines[-_CRASH_TRACE_LINES:] if line.strip()]
+        except Exception:  # noqa: BLE001 - 栈都格式化不出来时至少留个类型
+            tail = []
+        return (head + "\n" + "\n".join(tail))[:2000]
+
+    def main_hook(exc_type, exc_value, frames) -> None:
+        log_event(lib_dir, f"未捕获异常（主线程）：{_detail(exc_type, exc_value, frames)}")
+        original_main(exc_type, exc_value, frames)
+
+    def thread_hook(args) -> None:
+        name = getattr(getattr(args, "thread", None), "name", "") or "后台线程"
+        log_event(
+            lib_dir,
+            f"未捕获异常（{name} 线程）：{_detail(args.exc_type, args.exc_value, args.exc_traceback)}",
+        )
+
+    sys.excepthook = main_hook
+    threading.excepthook = thread_hook
+
+
 @dataclass
 class AppStatus:
     phase: str = "starting"  # starting / serving / converting / paused / error / stopped
@@ -75,6 +121,8 @@ class AppStatus:
     update_version: str = ""  # 中心上的新版本（空 = 没发现）
     update_phase: str = ""  # "" / checking / available / downloading / ready / failed / manual / installing
     update_message: str = ""
+    denied: int = 0  # 本次启动以来被拒的请求数（401/403/429，明细在 logs/app.log）
+    denied_note: str = ""  # 最近一次被拒的来源与时间，形如 "192.0.2.9 09:07"
 
     def summary(self) -> str:
         if self.phase == "converting":
@@ -92,6 +140,9 @@ class AppStatus:
         tail = f" · {self.gone} 篇源已不在" if self.gone else ""
         if self.failed:
             tail += f" · {self.failed} 篇转换失败"
+        if self.denied:
+            # 有人一直在试却被挡在外面：光在日志里记没人看，托盘悬停也要能看见
+            tail += f" · {self.denied} 次访问被拒"
         if self.update_phase == "ready" and self.update_version:
             return f"我的库：{self.doc_count} 篇{tail} · 可升级 v{self.update_version}"
         return f"我的库：{self.doc_count} 篇{tail} · 上次 {self.last_scan or '从未'}"
@@ -124,6 +175,9 @@ class LibraryApp:
 
     依赖都可注入（idle_check / runner / server_factory），测试里换成假的即可。
     """
+
+    _DENIED_LOG_GAP = 600.0  # 「访问被拒」日志的节流窗口（秒）
+    _UPDATE_PING_GAP = 30 * 60.0  # 中心说"有新版"时，心跳触发的检查最多半小时一次
 
     def __init__(
         self,
@@ -166,6 +220,9 @@ class LibraryApp:
         self.last_register: dict | None = None
         self._updates: updater.UpdateChecker | None = None
         self._last_update_ping = 0.0  # 心跳触发更新检查的节流（monotonic 秒）
+        self._last_update_phase = ""  # 更新阶段上一秒还是什么：只记切换，不重复记
+        self._denied_count = 0  # 本次启动以来被拒的请求数
+        self._last_denied_log = 0.0  # 「访问被拒」日志的节流（monotonic 秒）
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -189,6 +246,7 @@ class LibraryApp:
 
         self._stop.clear()
         self._threads.clear()
+        install_crash_hooks(self.cfg.lib_dir)
         self._update(phase="starting", version=__version__)
         if updater.install_supported():
             # 更新器正在等这个标记：新版本一起来就写，等不到它会自动回滚
@@ -200,7 +258,9 @@ class LibraryApp:
         )
         port = pick_port(self.cfg.port) if self._server_factory is None else self.cfg.port
         if self._server_factory is None:
-            self.httpd = make_server(self.cfg, index=self.index, port=port)
+            self.httpd = make_server(
+                self.cfg, index=self.index, port=port, on_denied=self._note_denied
+            )
         else:
             self.httpd = self._server_factory(self.cfg)
         actual = self.httpd.server_address[1]
@@ -233,7 +293,13 @@ class LibraryApp:
         thread.start()
         self._threads.append(thread)
 
-    def stop(self) -> None:
+    def stop(self, reason: str = "") -> None:
+        """停服务。`reason` 只进日志：正常退出与被杀要能分开查。
+
+        幂等：托盘退出会连着调两次，第二次不该再记一行、也不该重复 join。
+        """
+        if self._stop.is_set():
+            return
         self._stop.set()
         self._wake.set()
         if self._updates is not None:
@@ -247,6 +313,10 @@ class LibraryApp:
         for thread in self._threads:
             thread.join(timeout=3)
         self._update(phase="stopped")
+        log_event(
+            self.cfg.lib_dir,
+            f"库服务停止：{reason or '正常退出'}（本次收录 {self.status.converted} 篇）",
+        )
 
     # ---- 托盘动作 ----
     def update_now(self) -> None:
@@ -359,10 +429,36 @@ class LibraryApp:
         mapped = {target: fields[source] for source, target in mapping.items() if source in fields}
         if mapped:
             self._update(**mapped)
+        self._log_update_phase(fields)
         if fields.get("phase") == "ready" and fields.get("version"):
             self._notify_user(
                 f"新版本 v{fields['version']} 已下载好，右键托盘图标可以升级"
             )
+
+    def _log_update_phase(self, fields: dict) -> None:
+        """更新阶段切换落一行 app.log：状态窗口只留最后一句话，重启就没了。
+
+        按 phase 去重（`downloading` 会带进度文案反复来），只记切换那一刻。
+        """
+        phase = str(fields.get("phase") or "")
+        note = {
+            "available": "发现新版本",
+            "downloading": "开始下载新版本",
+            "ready": "新版本已下载好，等待升级",
+            "manual": "版本跨度过大，需手动重装",
+            "failed": "新版本下载失败",
+        }.get(phase)
+        if not note or phase == self._last_update_phase:
+            return
+        self._last_update_phase = phase
+        version = str(fields.get("version") or "").strip()
+        detail = str(fields.get("message") or "").strip()[:200]
+        line = f"更新：{note}"
+        if version:
+            line += f" v{version}"
+        if detail and detail != note:
+            line += f"：{detail}"
+        log_event(self.cfg.lib_dir, line)
 
     def check_updates_async(self, *, announce: bool = False) -> None:
         """托盘"检查更新"用：不阻塞界面，结果通过状态字段显示。
@@ -420,10 +516,12 @@ class LibraryApp:
         if target is None:
             return "找不到程序目录"
         self._update(update_phase="installing", update_message="正在重启升级…")
-        self.stop()
+        log_event(self.cfg.lib_dir, f"更新：开始安装 v{self.status.update_version or '?'}（先停服务）")
+        self.stop("安装更新")
         try:
             updater.spawn_update(staged, target=target)
         except Exception as exc:  # noqa: BLE001 - 起不来就把服务恢复，别让库停了
+            log_event(self.cfg.lib_dir, f"更新：启动更新器失败：{exc}")
             self.start()
             return f"启动更新器失败：{exc}"
         return "ok"
@@ -471,6 +569,19 @@ class LibraryApp:
                 self._notify_user(message)
             self._update(phase="serving", converted=0)
             self._wait(self._poll)
+
+    def _log_failure_details(self, report) -> None:
+        """把失败的篇名与原因记下来（最多 3 条）：只报"N 篇失败"等于没报。
+
+        `RunReport.failed` 里是 `(rel, reason)`，reason 是短码：
+        unreadable / no_office / timeout / password_protected / parse_failed / empty_text / write_failed。
+        """
+        failed = list(getattr(report, "failed", None) or [])
+        if not failed:
+            return
+        shown = "、".join(f"{rel}（{reason}）" for rel, reason in failed[:3])
+        tail = f" 等 {len(failed)} 篇" if len(failed) > 3 else ""
+        log_event(self.cfg.lib_dir, f"失败明细：{shown}{tail}")
 
     def _run_round(self):
         """一轮建库：最多 `batch` 篇「尝试」，最长 `round_seconds` 秒，用户回来就收工。
@@ -536,6 +647,7 @@ class LibraryApp:
                         f"尝试 {report.attempted} 篇、剩余 {report.remaining} 篇，"
                         f"用时 {report.elapsed:.0f} 秒（{report.stop_reason or '-'}）",
                     )
+                self._log_failure_details(report)
                 self._refresh_counts()
                 self._update(
                     phase="converting",
@@ -569,6 +681,25 @@ class LibraryApp:
                 for item in failures.values()
                 if isinstance(item, dict) and not item.get("source_missing")
             ),
+        )
+
+    def _note_denied(self, *, ip: str = "", name: str = "", api: str = "", status: int = 0) -> None:
+        """服务端挡下一个请求时叫一声：面板与日志都要能看见，不然同事问"我怎么搜不了"没法答。
+
+        日志按 `_DENIED_LOG_GAP` 节流：扫描器一秒能试几十次，不节流会把 app.log 刷满。
+        """
+        self._denied_count += 1
+        stamp = time.strftime("%H:%M")
+        self._update(denied=self._denied_count, denied_note=f"{ip} {stamp}".strip())
+        now = time.monotonic()
+        if now - self._last_denied_log < self._DENIED_LOG_GAP:
+            return
+        self._last_denied_log = now
+        hint = "（不在名单）" if status == 401 else ""
+        who = f"{ip}({name})" if name else ip
+        log_event(
+            self.cfg.lib_dir,
+            f"访问被拒：{status} {api or '-'}，来源 {who}{hint}",
         )
 
     def _wait(self, seconds: float) -> None:
@@ -614,8 +745,6 @@ class LibraryApp:
                 self.last_register = None
                 self._update(registry="连不上登记中心")
             self._stop.wait(self._heartbeat_seconds)
-
-    _UPDATE_PING_GAP = 30 * 60.0
 
     def _maybe_start_update_check(self, reply) -> None:
         """中心在心跳回包里说"有新版"就立刻查一次，别等 6 小时那一轮。

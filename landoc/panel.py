@@ -204,6 +204,10 @@ def status_rows(
     if deny:
         # 拒绝网段优先于允许网段：只显示允许范围会让人以为这些地址也能查
         scope += f" · 拒绝 {len(deny)} 段"
+    if status.denied:
+        # 有人在门外试着进来：不写这一行，主人只会在日志里"事后"发现
+        where = f"（{status.denied_note}）" if status.denied_note else ""
+        scope += f" · 最近有 {status.denied} 次访问被拒{where}"
     docs = f"{status.doc_count} 篇"
     if status.failed:
         # 失败常驻可见：不然只有日志里知道"有些文件一直没收进来"

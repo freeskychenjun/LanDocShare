@@ -48,6 +48,16 @@ def test_status_rows_show_deny_count_in_scope(tmp_path):
     assert rows["共享范围"] == "172.16.0.0/16 · 拒绝 2 段"
 
 
+def test_status_rows_show_denied_visits_in_scope(tmp_path):
+    """有人在门外试：状态窗口要看得到，不能只在日志里事后发现。"""
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"], deny_cidrs=["172.16.1.50/32"])
+    status = AppStatus(phase="serving", doc_count=13, denied=3, denied_note="10.91.1.178 09:07")
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
+    assert rows["共享范围"] == (
+        "172.16.0.0/16 · 拒绝 1 段 · 最近有 3 次访问被拒（10.91.1.178 09:07）"
+    )
+
+
 def test_status_rows_surface_failed_conversions(tmp_path):
     """失败篇数要常驻可见，不然只有翻日志才知道有些文件一直没收进来。"""
     cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])

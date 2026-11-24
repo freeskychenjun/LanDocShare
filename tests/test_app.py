@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 
@@ -739,3 +740,200 @@ def test_failed_count_ignores_sources_that_are_gone(tmp_path):
     app._refresh_counts()
 
     assert app.status.failed == 1
+
+# ============ 第 4 批：日志（停止 / 崩溃 / 更新 / 失败明细 / 访问被拒） ============
+
+
+def test_stop_is_logged_with_a_reason(tmp_path):
+    """被杀与正常退出要能分开查：退出这件事本身得留在 app.log 里。"""
+    from landoc.app import app_log_path
+
+    app = make_app(
+        tmp_path, idle_check=lambda: False, server_factory=lambda cfg: FakeServer(port=18090)
+    )
+    app.start()
+    app.stop("托盘退出")
+
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "库服务停止：托盘退出（本次收录 0 篇）" in text
+
+
+def test_stop_twice_logs_one_line(tmp_path):
+    """托盘退出会连着调两次 stop：第二次不该再记一行。"""
+    from landoc.app import app_log_path
+
+    app = make_app(
+        tmp_path, idle_check=lambda: False, server_factory=lambda cfg: FakeServer(port=18090)
+    )
+    app.start()
+    app.stop("托盘退出")
+    app.stop("托盘退出")
+
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if "库服务停止" in line]
+    assert len(rows) == 1
+
+
+def test_crash_in_main_thread_is_logged(tmp_path, monkeypatch):
+    """主线程里没人接的异常原来直接打到 stderr，托盘程序根本没有 stderr。"""
+    from landoc import app as app_module
+
+    monkeypatch.setattr(app_module, "_hooks_installed", False)
+    saved_main, saved_thread = sys.excepthook, threading.excepthook
+    try:
+        app_module.install_crash_hooks(tmp_path)
+
+        def boom():
+            raise RuntimeError("主线程炸了")
+
+        try:
+            boom()
+        except RuntimeError:
+            app_module.sys.excepthook(*sys.exc_info())
+
+        text = app_module.app_log_path(tmp_path).read_text(encoding="utf-8")
+        assert "未捕获异常（主线程）：RuntimeError: 主线程炸了" in text
+    finally:
+        sys.excepthook, threading.excepthook = saved_main, saved_thread
+
+
+def test_crash_in_a_worker_thread_is_logged(tmp_path, monkeypatch):
+    """转换线程崩了原来是静默的：库不转了，界面还显示"正在建库"。"""
+    from landoc import app as app_module
+
+    monkeypatch.setattr(app_module, "_hooks_installed", False)
+    saved_thread = threading.excepthook
+    try:
+        app_module.install_crash_hooks(tmp_path)
+
+        def boom():
+            raise ValueError("干活线程炸了")
+
+        worker = threading.Thread(target=boom, name="landoc-worker")
+        worker.start()
+        worker.join(3)
+
+        log = app_module.app_log_path(tmp_path)
+        assert wait_for(
+            lambda: "未捕获异常（landoc-worker 线程）：ValueError: 干活线程炸了"
+            in log.read_text(encoding="utf-8")
+        )
+    finally:
+        threading.excepthook = saved_thread
+
+
+def test_update_phase_changes_are_logged_once_each(tmp_path):
+    """状态窗口只留最后一句话：更新走到哪一步要看得到历史。"""
+    from landoc.app import app_log_path
+
+    app = make_app(tmp_path, idle_check=lambda: False)
+    app._on_update_change({"phase": "available", "version": "0.3.0"})
+    app._on_update_change({"phase": "downloading", "version": "0.3.0", "message": "已下载 10%"})
+    app._on_update_change({"phase": "downloading", "version": "0.3.0", "message": "已下载 50%"})
+
+    lines = app_log_path(tmp_path).read_text(encoding="utf-8").splitlines()
+    assert "更新：发现新版本 v0.3.0" in "\n".join(lines)
+    assert "更新：开始下载新版本 v0.3.0：已下载 10%" in "\n".join(lines)
+    # downloading 带进度会来很多次，只记切换那一刻
+    assert len([line for line in lines if "开始下载新版本" in line]) == 1
+
+
+def test_install_is_logged_before_the_service_stops(tmp_path, monkeypatch):
+    """升级会先停服务再拉起更新器：万一更新器起不来，日志里要能看出停在哪一步。"""
+    from landoc import updater as updater_module
+    from landoc.app import app_log_path
+
+    app = make_app(
+        tmp_path, idle_check=lambda: False, server_factory=lambda cfg: FakeServer(port=18091)
+    )
+
+    class FakeChecker:
+        staged = updater.StagedUpdate(version="0.3.0", app_dir=tmp_path / "app")
+
+        def stop(self):
+            return None
+
+    app._updates = FakeChecker()
+    app._update(update_phase="ready", update_version="0.3.0")
+
+    def refuse(staged, target=None):
+        raise OSError("起不来")
+
+    monkeypatch.setattr(updater_module, "install_supported", lambda: True)
+    monkeypatch.setattr(updater_module, "current_install_dir", lambda: tmp_path / "app")
+    monkeypatch.setattr(updater_module, "write_applied_marker", lambda version: None)
+    monkeypatch.setattr(updater_module, "spawn_update", refuse)
+
+    try:
+        assert app.install_update() == "启动更新器失败：起不来"
+        text = app_log_path(tmp_path).read_text(encoding="utf-8")
+        assert "更新：开始安装 v0.3.0（先停服务）" in text
+        assert "库服务停止：安装更新" in text
+        assert "更新：启动更新器失败：起不来" in text
+    finally:
+        app.stop()
+
+
+def test_failure_details_are_logged(tmp_path):
+    """「失败 2 篇」不如「哪两篇、为什么」：远程排障全靠这一行。"""
+    from landoc.app import app_log_path
+
+    report = RunReport(
+        attempted=2,
+        failed=[("资料/坏.docx", "unreadable"), ("资料/口令.docx", "password_protected")],
+    )
+    rounds = [report]
+
+    def runner():
+        # 第二轮空转：_drain 要跑到"没活干"才收工，否则会一直重跑同一份报告
+        return rounds.pop(0) if rounds else RunReport()
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: True)
+    assert app._drain() == (0, 2)
+
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "失败明细：资料/坏.docx（unreadable）、资料/口令.docx（password_protected）" in text
+
+
+def test_failure_details_stop_at_three(tmp_path):
+    """失败一大片时别把 app.log 刷满：只列前 3 篇，末尾报总数。"""
+    from landoc.app import app_log_path
+
+    failed = [(f"资料/第{i}篇.docx", "timeout") for i in range(1, 5)]
+    rounds = [RunReport(attempted=4, failed=failed)]
+
+    def runner():
+        return rounds.pop(0) if rounds else RunReport()
+
+    app = make_app(tmp_path, runner=runner, idle_check=lambda: True)
+    app._drain()
+
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if "失败明细" in line]
+    assert len(rows) == 1
+    assert "资料/第3篇.docx（timeout）" in rows[0]
+    assert "第4篇" not in rows[0]
+    assert rows[0].endswith("等 4 篇")
+
+
+def test_denied_visits_are_logged_once_per_window(tmp_path):
+    """有人被挡在门外要记一笔，但扫描器每 10 分钟只留一行，别把日志刷满。"""
+    from landoc.app import app_log_path
+
+    app = make_app(tmp_path, idle_check=lambda: False)
+    app._note_denied(ip="10.91.1.178", api="/api/search", status=401)
+    app._note_denied(ip="10.91.1.178", api="/api/search", status=401)
+
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    rows = [line for line in text.splitlines() if "访问被拒" in line]
+    assert len(rows) == 1
+    assert "访问被拒：401 /api/search，来源 10.91.1.178（不在名单）" in rows[0]
+    # 计数与"最近一次"照常累加，状态窗口据此显示
+    assert app.status.denied == 2
+    assert "10.91.1.178" in app.status.denied_note
+    assert "2 次访问被拒" in app.status.summary()
+
+    app._last_denied_log = 0.0  # 10 分钟窗口过去了
+    app._note_denied(ip="10.91.1.178", api="/api/search", status=401)
+    text = app_log_path(tmp_path).read_text(encoding="utf-8")
+    assert len([line for line in text.splitlines() if "访问被拒" in line]) == 2
