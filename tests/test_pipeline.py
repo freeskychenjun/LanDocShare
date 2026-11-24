@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -418,6 +420,83 @@ def test_prune_gone_is_the_only_way_to_slim_the_library(cfg, docs_dir, flat_opc,
     assert pipeline.missing_count(cfg) == 0
 
 
+def test_prune_gone_refuses_while_a_round_is_in_flight(cfg, docs_dir, flat_opc, monkeypatch):
+    """建库那一轮占着库锁：清理不许插进去，只能明确报忙（库一个字都不动）。
+
+    回归点：早些时候清理跑在窗口线程里，它改的 state 会被轮次收尾整份写回去，
+    于是"清理成功"之后 gone 又变回原样。
+    """
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    monkeypatch.setattr(pipeline, "PRUNE_LOCK_TIMEOUT", 0.05)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    (docs_dir / "plain.docx").unlink()
+    pipeline.run(cfg, index=index)
+    assert pipeline.missing_count(cfg) == 1
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold_the_round() -> None:  # 另一条线程 = 正在建库的那一轮
+        with pipeline.LIBRARY_LOCK:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=hold_the_round, daemon=True)
+    worker.start()
+    try:
+        assert held.wait(2)
+        with pytest.raises(pipeline.PruneBusy):
+            pipeline.prune_gone(cfg, index=index)
+    finally:
+        release.set()
+        worker.join(3)
+
+    # 抢不到锁就什么都没动
+    assert pipeline.missing_count(cfg) == 1
+    assert (Path(cfg.md_dir) / "成果" / "plain.docx.md").is_file()
+    assert pipeline.prune_gone(cfg, index=index) == 1
+
+
+def test_prune_gone_keeps_the_state_when_the_index_is_locked(cfg, docs_dir, flat_opc, monkeypatch):
+    """索引删不掉（库文件被锁着）就必须抛出来，state 记录不能丢。
+
+    早年这里吞掉 `database is locked` 照样删 state：索引行成了孤儿、state 记录又没了，
+    这条文档以后谁也清不掉。
+    """
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    (docs_dir / "plain.docx").unlink()
+    pipeline.run(cfg, index=index)
+
+    class LockedIndex(StubIndex):
+        def delete(self, rel_path):
+            raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        pipeline.prune_gone(cfg, index=LockedIndex())
+
+    assert pipeline.missing_count(cfg) == 1
+    assert (Path(cfg.md_dir) / "成果" / "plain.docx.md").is_file()
+    assert pipeline.prune_gone(cfg, index=index) == 1
+
+
+def test_a_round_after_the_prune_does_not_bring_entries_back(cfg, docs_dir, flat_opc, monkeypatch):
+    """清理之后紧接着再跑一轮，不能把删掉的记录又写回来（state 每轮重读）。"""
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
+    index = StubIndex()
+    pipeline.run(cfg, index=index)
+    (docs_dir / "plain.docx").unlink()
+    pipeline.run(cfg, index=index)
+    assert pipeline.prune_gone(cfg, index=index) == 1
+    rows_after_prune = list(index.rows)
+
+    report = pipeline.run(cfg, index=index)
+    assert pipeline.missing_count(cfg) == 0
+    assert index.rows == rows_after_prune
+    assert report.skipped.get("source_missing") is None
+
+
 def test_missing_marker_clears_when_the_source_comes_back(cfg, docs_dir, flat_opc, monkeypatch):
     """移动硬盘重新插上：记号要撤掉，别再报"源已不在"。"""
     monkeypatch.setattr(office_bridge, "extract_wordopenxml", lambda *a, **k: flat_opc)
@@ -613,6 +692,44 @@ def test_same_failing_version_is_skipped_before_hitting_the_cap(one_bad_doc, mon
     report = pipeline.run(cfg, index=StubIndex())
     assert report.skipped.get("known_failure") == 1
     assert report.failed == []
+
+
+def test_missing_failed_source_is_flagged_and_pruned(one_bad_doc, monkeypatch):
+    """3.4: 源文件删了就没法重试 —— 失败记录打上 source_missing，由清理一并清掉。"""
+
+    def always_timeout(*args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    cfg, target = one_bad_doc
+    pipeline.run(cfg, index=StubIndex())
+    assert "成果/坏文件.docx" in pipeline._read_state(cfg)["failures"]
+
+    target.unlink()
+    pipeline.run(cfg, index=StubIndex())
+    failures = pipeline._read_state(cfg)["failures"]
+    assert failures["成果/坏文件.docx"]["source_missing"] is True
+    assert failures["成果/坏文件.docx"]["missing_since"]
+
+    # 库里本来就没有它的副本：清理只是把这条死记录忘掉，不算"删了几篇"
+    assert pipeline.prune_gone(cfg, index=StubIndex()) == 0
+    assert pipeline._read_state(cfg)["failures"] == {}
+
+
+def test_withdrawing_the_folder_forgets_its_failure_records(one_bad_doc, monkeypatch):
+    """3.4: 文件夹整个撤出共享列表，它的失败记录直接删（没有重试对象了）。"""
+
+    def always_timeout(*args, **kwargs):
+        raise office_bridge.OfficeTimeout("boom")
+
+    monkeypatch.setattr(office_bridge, "extract_wordopenxml", always_timeout)
+    cfg, _target = one_bad_doc
+    pipeline.run(cfg, index=StubIndex())
+    assert "成果/坏文件.docx" in pipeline._read_state(cfg)["failures"]
+
+    cfg.folders = []
+    pipeline.run(cfg, index=StubIndex())
+    assert pipeline._read_state(cfg)["failures"] == {}
 
 
 def test_installing_office_clears_no_office_failures(one_bad_doc, monkeypatch, flat_opc):

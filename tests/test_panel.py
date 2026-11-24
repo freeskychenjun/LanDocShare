@@ -395,3 +395,15 @@ def test_transient_skips_a_master_that_cannot_answer():
     dialog = _FakeDialog()
     panel_module.attach_transient(dialog, _Broken())  # 不该抛
     assert dialog.transients == []
+
+
+def test_prune_button_is_disabled_while_building():
+    """建库那一轮把 state/索引攥在手里：清理按钮必须置灰，点了也只会被覆盖。"""
+    idle = AppStatus(phase="serving", doc_count=13, gone=2)
+    assert panel_module.prune_button_state(idle) == ("清理 2 篇", True)
+
+    building = AppStatus(phase="converting", doc_count=13, gone=2)
+    assert panel_module.prune_button_state(building) == ("清理 2 篇", False)
+
+    nothing_gone = AppStatus(phase="serving", doc_count=13, gone=0)
+    assert panel_module.prune_button_state(nothing_gone) == ("清理…", False)

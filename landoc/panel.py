@@ -62,6 +62,17 @@ def update_button_text(status: AppStatus) -> str:
     return "停止建库" if status.phase == "converting" else "立即更新"
 
 
+def prune_button_state(status: AppStatus) -> tuple[str, bool]:
+    """「清理…」按钮的文字与是否可点，返回 `(文字, 能不能点)`。
+
+    建库那一轮整轮把 state 与索引攥在手里（收尾整份写回），清理插进去会被覆盖、
+    还会撞上索引的 5 秒忙等，所以 `converting` 期间一律置灰。纯函数，便于单测。
+    """
+    if not status.gone:
+        return "清理…", False
+    return f"清理 {status.gone} 篇", status.phase != "converting"
+
+
 def center_position(width: int, height: int, area: tuple[int, int, int, int]) -> tuple[int, int]:
     """把 `width×height` 的窗口摆到 `area=(left, top, right, bottom)` 的正中间。
 
@@ -525,12 +536,9 @@ class StatusPanel:
                 button.configure(text=label)
             prune_button = getattr(self, "_prune_button", None)
             if prune_button is not None:
-                if status.gone:
-                    prune_button.configure(text=f"清理 {status.gone} 篇")
-                    prune_button.state(["!disabled"])
-                else:
-                    prune_button.configure(text="清理…")
-                    prune_button.state(["disabled"])
+                text, enabled = prune_button_state(status)
+                prune_button.configure(text=text)
+                prune_button.state(["!disabled"] if enabled else ["disabled"])
         except Exception:  # noqa: BLE001 - 窗口刚销毁时 configure 会抛
             pass
 
@@ -613,7 +621,13 @@ class StatusPanel:
         try:
             removed = self.on_prune()
         except Exception as exc:  # noqa: BLE001 - 删库失败必须让人看见
-            messagebox.showerror("清理库", f"清理失败：{exc}", parent=self._root)
+            from landoc.pipeline import PruneBusy
+
+            if isinstance(exc, PruneBusy):
+                # 建库正在跑：不是错误，是"这次没轮到"，说清楚就好
+                messagebox.showinfo("清理库", str(exc), parent=self._root)
+            else:
+                messagebox.showerror("清理库", f"清理失败：{exc}", parent=self._root)
             return
         self._refresh()
         messagebox.showinfo("清理库", f"已清理 {removed} 篇。", parent=self._root)

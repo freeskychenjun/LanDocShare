@@ -720,3 +720,22 @@ def test_abort_before_a_round_converts_nothing(tmp_path):
     assert app._drain() == (0, 0)  # 已经喊停，一篇都不该再转
     assert calls == []
     assert app._abort.is_set() is False  # 收工要把标记清干净，别影响下一轮
+
+
+def test_failed_count_ignores_sources_that_are_gone(tmp_path):
+    """3.4: 源文件已不在的失败记录不算"等着重试的失败"，状态窗别再挂着它。"""
+    cfg = Config(name="测试库", lib_dir=tmp_path, folders=[tmp_path])
+    state = {
+        "last_scan_ts": "2026-11-24 07:00:00",
+        "files": {},
+        "failures": {
+            "成果/还在的.docx": {"reason": "timeout", "attempts": 1},
+            "成果/删掉的.docx": {"reason": "timeout", "attempts": 1, "source_missing": True},
+        },
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+    app = LibraryApp(cfg, index=FakeIndex(), idle_check=lambda: False)
+    app._refresh_counts()
+
+    assert app.status.failed == 1

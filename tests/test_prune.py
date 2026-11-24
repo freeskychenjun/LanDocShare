@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+
+import pytest
 
 from landoc import cli
 from landoc.config import Config
 from landoc.index import Index
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mutex(monkeypatch):
+    """`prune --gone` 现在要先拿单实例互斥量：测试里别去碰系统范围的那个名字。"""
+    from landoc import tray
+
+    monkeypatch.setattr(tray, "acquire_single_instance", lambda *a, **k: True)
+    monkeypatch.setattr(tray, "release_single_instance", lambda: None)
 
 
 def make_lib(tmp_path: Path, *, missing: bool = True) -> tuple[Config, Index]:
@@ -88,3 +100,44 @@ def test_prune_keeps_failures_of_docs_it_does_not_touch(tmp_path):
 
     after = json.loads((cfg.lib_dir / "state.json").read_text(encoding="utf-8"))
     assert list(after["failures"]) == ["成果/a.docx"]
+
+
+def test_prune_gone_refuses_while_the_tray_is_running(tmp_path, capsys, monkeypatch):
+    """托盘在跑时命令行不许删库：两处同时改 state/索引会把账算乱。"""
+    from landoc import tray
+
+    cfg, _index = make_lib(tmp_path)
+    monkeypatch.setattr(tray, "acquire_single_instance", lambda *a, **k: False)
+
+    assert cli.main(["prune", "--lib-dir", str(cfg.lib_dir), "--gone"]) == 2
+    assert "正在运行" in capsys.readouterr().err
+    # 拒绝了就一篇都不许动
+    assert (Path(cfg.md_dir) / "成果" / "a.docx.md").is_file()
+
+
+def test_prune_gone_reports_busy_without_touching_the_library(tmp_path, capsys, monkeypatch):
+    """建库那一轮正占着库锁：说清楚"这次没轮到"，库里一个字都不动。"""
+    from landoc import pipeline
+
+    cfg, index = make_lib(tmp_path)
+    monkeypatch.setattr(pipeline, "PRUNE_LOCK_TIMEOUT", 0.05)
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold_the_round() -> None:  # 另一条线程 = 正在建库的那一轮
+        with pipeline.LIBRARY_LOCK:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=hold_the_round, daemon=True)
+    worker.start()
+    try:
+        assert held.wait(2)
+        assert cli.main(["prune", "--lib-dir", str(cfg.lib_dir), "--gone"]) == 2
+    finally:
+        release.set()
+        worker.join(3)
+
+    assert "建库正在进行" in capsys.readouterr().err
+    assert (Path(cfg.md_dir) / "成果" / "a.docx.md").is_file()
+    assert index.stats()["total"] == 1

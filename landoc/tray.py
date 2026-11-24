@@ -45,6 +45,18 @@ def acquire_single_instance(name: str = MUTEX_NAME) -> bool:
     return True
 
 
+def release_single_instance() -> None:
+    """放掉本进程的命名互斥量。
+
+    命令行的 `prune` 用完就放：同一个进程里连着调两次（测试、脚本）时，第一次留下的
+    句柄会让第二次的 `CreateMutexW` 报 `ERROR_ALREADY_EXISTS`，误判成"托盘正在跑"。
+    """
+    global _mutex_handle
+    if _mutex_handle:
+        _kernel32.CloseHandle(ctypes.c_void_p(_mutex_handle))
+        _mutex_handle = None
+
+
 def make_icon_image(size: int = 64) -> Image.Image:
     """托盘图标：一页纸 + 绿色共享点（自己画，省一个资源文件）。"""
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))

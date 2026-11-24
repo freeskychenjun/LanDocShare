@@ -562,7 +562,13 @@ class LibraryApp:
             doc_count=stats.get("total", 0),
             last_scan=state.get("last_scan_ts", ""),
             gone=pipeline.missing_count(self.cfg),
-            failed=sum(1 for item in failures.values() if isinstance(item, dict)),
+            # 源文件已经不在的失败记录不算"等着重试"：它既不会重试，也没法自动清掉，
+            # 只会在状态窗里永远挂着"失败 N 篇"（由「清理…」连它一起清）。
+            failed=sum(
+                1
+                for item in failures.values()
+                if isinstance(item, dict) and not item.get("source_missing")
+            ),
         )
 
     def _wait(self, seconds: float) -> None:

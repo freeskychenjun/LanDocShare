@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -49,6 +50,11 @@ ENV_REASONS = frozenset({"no_office", "no_reader", "no_ocr"})
 # 中断时 finally 会补一次全量落盘；中断最多白转"上一次落盘之后"那几篇。
 COMMIT_EVERY = 20
 STATE_SECONDS = 60.0
+# 一轮转换与一次清理不能同时干：`run` 整轮把 state 攥在内存里（收尾时整份写回去，
+# 清理落在轮次中间会被复活），索引也是攒够 20 篇才提交（两个线程各拿一条连接会撞上
+# 5 秒忙等超时，然后 index.delete 静默失败）。所以两者共用一把锁，清理抢不到就报错。
+LIBRARY_LOCK = threading.RLock()
+PRUNE_LOCK_TIMEOUT = 2.0  # 清理等这把锁的上限：等不到就明说，别让界面僵在那儿
 RATE_EWMA = 0.5  # 秒/篇速率的滑动平均权重：让 ETA 不因一篇超时而跳变
 # 规划阶段的 stat 是纯 I/O：7,468 篇串行 471 ms、4 条线程 220 ms（G:\ 实测）。
 # 文件太少就不开线程池——起线程与排队的成本会把它吃回去。
@@ -89,6 +95,10 @@ class RunReport:
     @property
     def eta_seconds(self) -> float:
         return self.remaining * self.rate if self.rate else 0.0
+
+
+class PruneBusy(RuntimeError):
+    """清理没排上：建库那一轮正占着库锁（库一个字都没动，等这一轮结束再来）。"""
 
 
 def _top_name(folder: Path) -> str:
@@ -393,7 +403,30 @@ def run(
     - `should_stop()`：返回真就停（库端用它实现"用户一回来就收工"）。
     停在哪由 `report.stop_reason` 说明，进度每隔 `COMMIT_EVERY` 篇/`STATE_SECONDS` 秒
     落一次盘，并通过 `on_progress(report)` 通知调用方（状态窗口据此显示剩余与 ETA）。
+
+    整轮都在 `LIBRARY_LOCK` 里跑：清理（`prune_gone`）只在轮次之外动手，否则它改的
+    state 会被这一轮的收尾整份写回去。
     """
+    with LIBRARY_LOCK:
+        return _run(
+            cfg,
+            index=index,
+            limit=limit,
+            budget=budget,
+            should_stop=should_stop,
+            on_progress=on_progress,
+        )
+
+
+def _run(
+    cfg,
+    index=None,
+    limit: int | None = None,
+    budget: float | None = None,
+    should_stop=None,
+    on_progress=None,
+):
+    """`run` 的实体（调用方必须先持有 `LIBRARY_LOCK`）。"""
     if index is None:  # 延迟导入：Task 6 先于 Task 7 落地
         from landoc.index import Index
 
@@ -717,6 +750,21 @@ def run(
                     mark(_md_rel(rel), True)
             # 计数照旧每轮都记：状态窗口那句"跳过 N 篇"报的是当前处于撤回状态的篇数。
             report.skip("withdrawn")
+        # 失败记录跟文件走同一套规则：源文件删了/改名了/移走了，这条失败既没法重试、
+        # 也不会被「清理…」数到，只会在状态窗口里永远挂着"失败 N 篇"。文件夹还在共享
+        # 列表里就记一笔 source_missing（`_refresh_counts` 不再把它算成失败，`prune_gone`
+        # 连它一起清掉）；文件夹整个撤回了就直接删掉这条记录。
+        for rel in list(failures):
+            if rel in current:
+                continue
+            top = rel.split("/", 1)[0]
+            if top not in configured:
+                failures.pop(rel, None)
+                continue
+            item = failures.get(rel)
+            if isinstance(item, dict) and not item.get("source_missing"):
+                item["source_missing"] = True
+                item["missing_since"] = time.strftime("%Y-%m-%d %H:%M:%S")
         if not report.stop_reason:
             report.stop_reason = "done"
     finally:
@@ -757,11 +805,27 @@ def prune_gone(cfg, index=None) -> int:
 
     这是删库的唯一出口。扫描器自己不再删东西 —— 库要能拷到另一台机器上、不拷源文档
     照样用，所以"瘦身"得是有人明确点头的动作（`landoc prune --gone`）。
+
+    两点硬约束（早先都没有，实测会丢账）：
+    - 与 `run` 共用 `LIBRARY_LOCK`：建库那一轮正跑着就抛 `PruneBusy`，库一个字都不动，
+      而不是插进去改 state、再被轮次收尾整份写回复活；
+    - 索引删不掉直接抛：以前吞掉异常照样删 state，索引行成了孤儿、state 记录又没了，
+      以后谁都清不掉它。
     """
     if index is None:
         from landoc.index import Index
 
         index = Index(cfg.db_path, md_root=cfg.md_dir)
+    if not LIBRARY_LOCK.acquire(timeout=PRUNE_LOCK_TIMEOUT):
+        raise PruneBusy("建库正在进行，这一轮结束再清理（库没有改动）")
+    try:
+        return _prune_gone_locked(cfg, index)
+    finally:
+        LIBRARY_LOCK.release()
+
+
+def _prune_gone_locked(cfg, index) -> int:
+    """`prune_gone` 的实体（调用方必须先持有 `LIBRARY_LOCK`）。"""
     state = _read_state(cfg)
     files = state.get("files") or {}
     failures = state.get("failures")
@@ -770,26 +834,35 @@ def prune_gone(cfg, index=None) -> int:
         for rel, item in list(files.items())
         if isinstance(item, dict) and item.get("source_missing")
     ]
+    # 源文件不在了、当初也没转成功：库里本来就没有它的副本，只需把这条死记录忘掉
+    stale = [
+        rel
+        for rel, item in (failures or {}).items()
+        if isinstance(item, dict) and item.get("source_missing")
+    ]
+    removed: list[str] = []
     for rel in gone:
+        # 先删索引行：删不掉就抛出去（state 里这条还留着，下次还能清），
+        # 反过来"先删 state"会把这条记录永久弄丢。
+        index.delete(_md_rel(rel))
         try:
             (Path(cfg.md_dir) / _md_rel(rel)).unlink()
-        except OSError:
+        except FileNotFoundError:
             pass
-        try:
-            index.delete(_md_rel(rel))
-        except Exception:  # noqa: BLE001 - 替身 index 可能没有 delete
-            pass
-        files.pop(rel, None)
-        # 转换失败记录跟着走：库都删了，这条失败没有重试的对象，
-        # 留着只会让"失败 N 篇"永远清不掉。
-        if isinstance(failures, dict):
+        removed.append(rel)
+    if removed:
+        index.commit()
+        for rel in removed:
+            files.pop(rel, None)
+            # 转换失败记录跟着走：库都删了，这条失败没有重试的对象，
+            # 留着只会让"失败 N 篇"永远清不掉。
+            if isinstance(failures, dict):
+                failures.pop(rel, None)
+    if isinstance(failures, dict):
+        for rel in stale:
             failures.pop(rel, None)
-    if gone:
-        try:
-            index.commit()
-        except Exception:  # noqa: BLE001
-            pass
+    if removed or stale:
         _write_state(cfg, state)
         if isinstance(failures, dict):
             _write_failures(cfg, failures)
-    return len(gone)
+    return len(removed)

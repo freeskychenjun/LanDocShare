@@ -265,7 +265,24 @@ def _cmd_prune(args) -> int:
         print(f"[提示] 有 {gone} 篇源文件已不在（内容仍在库中，照常可检索）")
         print("       要真删掉它们的 md 副本与索引行，加 --gone")
         return 0
-    removed = pipeline.prune_gone(cfg)
+    # 托盘在跑的时候清理会和建库那一轮抢同一份 state 与索引（谁也不知道对方改了什么），
+    # 所以命令行这条路径先要互斥量：托盘在跑就拒绝，让人从托盘退出再来。
+    from landoc.tray import acquire_single_instance, release_single_instance
+
+    if not acquire_single_instance():
+        print(
+            "[错误] LanDocShare 正在运行：先从托盘退出，再执行 prune --gone"
+            "（托盘同时在建库或清理会把库账算乱）",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        removed = pipeline.prune_gone(cfg)
+    except pipeline.PruneBusy as exc:
+        print(f"[错误] {exc}", file=sys.stderr)
+        return 2
+    finally:
+        release_single_instance()
     print(f"[OK] 已清理 {removed} 篇源文件已不在的文档")
     return 0
 
