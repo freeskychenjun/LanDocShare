@@ -377,4 +377,7 @@ python -c "import importlib.util,sys; spec=importlib.util.spec_from_file_locatio
    第一版没这么写，报的是「Ctrl+C 退出码 None」，会误判成"优雅退出没实现"。
 2. 预填 4.1 万行只有 3.64 MB（每行约 89 B），够不到 `Audit.MAX_BYTES = 4 MB`；改成 6 万行（5.32 MB）才滚起来。
 
+3. `--headless --lib-dir <临时库>` 也会把 `%LOCALAPPDATA%\LanDocShare\last_lib.txt` 改成那个临时库（`tray.main` 里 `_remember_lib(cfg.lib_dir)` 与是否 headless 无关）。
+   验证完我把临时库删了，接着起托盘就指到一个不存在的库、进程干躺着不写日志。**验完必须把 `last_lib.txt` 写回真库**（这次写回 `D:\MyLib`），或者用 `--lib-dir` 起托盘。
+
 **没覆盖的**：托盘菜单「退出」那一条（`_quit` → `stop("托盘退出")`）需要真的点一下托盘图标，本次没做；它与 `--headless` 走的是同一个 `App.stop(reason)`，差别只在 reason 字符串，单测 `test_stop_is_logged_with_a_reason` 已覆盖「托盘退出」这个值。
