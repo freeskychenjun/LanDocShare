@@ -5,9 +5,18 @@
 产物：dist/LanDocShare/LanDocShare.exe（无控制台）+ LanDocShare-debug.exe（有控制台，排错用）。
 """
 
+import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).parent  # noqa: F821 - PyInstaller 注入
+
+# tcl86t.dll 的导入表里有 zlib1.dll。PyInstaller 不一定会去 Python 自带的 DLLs 目录
+# 捡它：0.2.23 就是这么漏的 —— 出包机的 PATH 上有 Tesseract 的 zlib1.dll，打包时借到
+# 了一次，换到别人机器上就是 `ImportError: DLL load failed while importing _tkinter`，
+# 托盘右键「显示状态窗口」点了毫无反应（日志里只有一条线程崩溃）。这里显式声明。
+_ZLIB = Path(sys.base_prefix) / "DLLs" / "zlib1.dll"
+if not _ZLIB.is_file():
+    raise SystemExit(f"打包机缺 {_ZLIB}：tcl/tk 起不来，状态窗口会打不开")
 
 datas = [
     (str(ROOT / "landoc" / "web" / "index.html"), "landoc/web"),
@@ -84,7 +93,7 @@ EXCLUDES = [
 a = Analysis(  # noqa: F821
     [str(ROOT / "landoc" / "tray.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=[(str(_ZLIB), ".")],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

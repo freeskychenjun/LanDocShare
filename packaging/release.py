@@ -88,8 +88,41 @@ def _check_bundled_tesseract() -> None:
     print(f"      随包 Tesseract 自检通过：{detail}")
 
 
+def _check_tk(dist_dir: Path = DEFAULT_DIST) -> None:
+    """出包后验一遍包里的 _tkinter 能不能加载。
+
+    它是状态窗口与「可访问的资料库」两个窗口的命根子：缺 tcl/tk 的任何依赖（最常漏的
+    是 tcl86t.dll 要的 zlib1.dll），打包一切正常、程序照跑，但右键菜单点了**毫无反应**，
+    日志里只留一条线程崩溃 —— 0.2.23 就这么发出去的。这里用子进程复现冻结版的加载
+    路径（_internal 当 DLL 目录），失败就当场停，别等同事那边发现窗口打不开。
+    """
+    internal = dist_dir / "_internal"
+    pyd = internal / "_tkinter.pyd"
+    if not pyd.is_file():
+        raise RuntimeError(f"包里没有 _tkinter.pyd：{pyd}")
+    code = (
+        "import ctypes, os, sys\n"
+        "os.add_dll_directory(sys.argv[1])\n"
+        "ctypes.WinDLL(sys.argv[2])\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(internal), str(pyd)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        detail = lines[-1] if lines else "未知错误"
+        raise RuntimeError(f"打包后的 _tkinter 加载不了（状态窗口会打不开）：{detail}")
+    print("      _tkinter 自检通过（tcl/tk 依赖齐全）")
+
+
 def build_dist() -> None:
-    """跑 PyInstaller（spec 里 onedir + 排除重包，约 3-5 分钟）。"""
+    """跑 PyInstaller（spec 里 onedir + 排除重包，约 3-5 分钟）。
+
+    重建前先退出托盘和登记中心：它们直接从 `dist/LanDocShare/` 里跑，`_internal` 下的
+    pyd 被占着时 `--noconfirm` 清目录会炸（`PermissionError: etree.cp314-win_amd64.pyd`）。
+    """
     _check_bundled_tesseract()
     print(f"[1/3] 打包：{SPEC.relative_to(ROOT)}")
     started = time.time()
@@ -99,6 +132,7 @@ def build_dist() -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(f"PyInstaller 失败（退出码 {result.returncode}）")
+    _check_tk()
     print(f"      完成，用时 {time.time() - started:.0f} 秒")
 
 
