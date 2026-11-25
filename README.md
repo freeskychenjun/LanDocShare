@@ -167,6 +167,7 @@ LanDocShare.exe registry --port 8767 --package-zip D:\share\LanDocShare.zip
 python packaging/release.py --notes "修了检索偶发 500" --notes "新增 xx"
 # 做了代码改动就会先跑 PyInstaller（3-5 分钟），再压 zip、算 sha256、写 latest.json
 # 只改说明、不想重新打包：加 --skip-build
+# 发布成功后顺手删掉更早版本的 zip（只留这一版 + LanDocShare.zip）：加 --prune-old
 ```
 
 产物在 `distribution/`：`LanDocShare-<版本>.zip`（版本化包）、`LanDocShare.zip`（给第一次装的人）、`latest.json`（版本真源）。
@@ -284,7 +285,7 @@ python skill/lan-lib-search/scripts/query.py tables --lib 赵六 --path "测试�
 | 多网卡/VPN 机器不想让某条链路改名单 | 在 `registry.json` 的 config 里显式写 `roster_admin_ips`（支持单 IP 或 CIDR），默认清单就不再自动取全部网卡地址 | `registry._roster_admin_ips` |
 | 配置文件将来改了字段含义怎么办 | `config.json` 带 `config_version`（现为 1）；`from_dict` 只按 dataclass 字段加载、未知键静默忽略，新旧版本互读都不炸 | `config.CONFIG_VERSION` |
 | `landoc registry` 的参数为什么不再列举 | 参数**原样透传**给登记中心自己的 argparse（`landoc registry --help` 就是中心的帮助）；以前逐条搬 13 个参数，中心加参数就得两边同步，`--roster` 漏过一次 | `cli.main` |
-| 打包产物越堆越多 | `python packaging/release.py --prune`（只打印）／`--prune --apply`（真删）：只留最新版 zip、固定下载名 `LanDocShare.zip`、`latest.json`、当前说明与 `dist/LanDocShare`；**清单缺失时一个 zip 都不删**。本机已实际清理 9 项 / 951.3 MB（dist 579→174 MB、distribution 727→182 MB，仓库 1.44 GB→492 MB） | `packaging/release.py` |
+| 打包产物越堆越多 | 发布时加 `--prune-old`（只留最新版 zip + 固定下载名 `LanDocShare.zip`）；事后单独清：`python packaging/release.py --prune`（只打印）／`--prune --apply`（真删），同样只留最新版、当前说明与 `dist/LanDocShare`；**清单缺失时一个 zip 都不删**。本机已实际清理 9 项 / 951.3 MB（dist 579→174 MB、distribution 727→182 MB，仓库 1.44 GB→492 MB） | `packaging/release.py` |
 
 ## 实测基准（本机，Python 3.14 / WPS + Office 2019）
 
@@ -343,7 +344,7 @@ landoc/
 
 packaging/
   LanDocShare.spec PyInstaller onedir 打包配置（排掉 torch/cv2 等重包）
-  release.py       发布新版本：PyInstaller → 版本化 zip → sha256 → latest.json；`--prune [--apply]` 清旧包
+  release.py       发布新版本：PyInstaller → 版本化 zip → sha256 → latest.json；`--prune-old` 发布时清旧包，`--prune [--apply]` 事后清
 
 skill/lan-lib-search/
   SKILL.md             给 AI 助手的用法说明（触发词、流程、无 Python 时的 curl 降级）

@@ -175,6 +175,7 @@ def release(
     mandatory: bool = False,
     skip_build: bool = False,
     force: bool = False,
+    prune_old: bool = False,
 ) -> dict:
     parsed = parse_version(version)
     if parsed is None:
@@ -226,6 +227,11 @@ def release(
     print("      同事侧 1 分钟内自动发现（心跳回包带来 upgrade），或右键托盘 →「检查更新」。")
     if old_version:
         print(f"      上一版：v{old_version}")
+    if prune_old:
+        print("[4/4] 清理旧包：只留当前版本")
+        pruned = prune(out_dir, Path(dist_dir).parent, apply=True)
+        freed = sum(size for _path, size in pruned)
+        print(f"      回收 {len(pruned)} 项、{freed / 1024 / 1024:.1f} MB")
     return manifest
 
 
@@ -296,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="允许同版本/降级覆盖（慎用）")
     parser.add_argument("--prune", action="store_true", help="清掉旧版本的 zip 与历史构建产物（只打印，不动手）")
     parser.add_argument("--apply", action="store_true", help="配 --prune 用：真的删")
+    parser.add_argument(
+        "--prune-old",
+        action="store_true",
+        help="发布成功后顺手删掉更早版本的 zip（只留最新版 + LanDocShare.zip；默认关）",
+    )
     args = parser.parse_args(argv)
 
     if args.prune:
@@ -323,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             mandatory=args.mandatory,
             skip_build=args.skip_build,
             force=args.force,
+            prune_old=args.prune_old,
         )
     except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         print(f"[错误] {exc}", file=sys.stderr)

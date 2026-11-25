@@ -98,3 +98,51 @@ def test_prune_without_manifest_keeps_every_zip(tmp_path):
     assert doomed == []
     assert (out / "LanDocShare-0.2.1.zip").exists()
     assert (out / "LanDocShare-0.2.6.zip").exists()
+
+
+def _fake_release_inputs(tmp_path):
+    """造一份「已发过 0.2.1」的现场：旧 zip + 旧清单 + 一个假的 dist。"""
+    out = tmp_path / "distribution"
+    out.mkdir()
+    (out / "LanDocShare-0.2.1.zip").write_bytes(b"x" * 10)
+    release._write_json(out / release._DEFAULT_MANIFEST, {"version": "0.2.1"})
+    dist = tmp_path / "dist" / "LanDocShare"
+    dist.mkdir(parents=True)
+    (dist / "LanDocShare.exe").write_bytes(b"exe")
+    return out, dist
+
+
+def test_release_prunes_old_packages_when_asked(tmp_path):
+    """带 prune_old=True 发布：只留当前版本，旧包当场回收。"""
+    out, dist = _fake_release_inputs(tmp_path)
+
+    manifest = release.release(
+        release.__version__,
+        dist_dir=dist,
+        out_dir=out,
+        notes=["顺手清旧包"],
+        skip_build=True,
+        prune_old=True,
+    )
+
+    assert manifest["version"] == release.__version__
+    assert (out / f"LanDocShare-{release.__version__}.zip").is_file()
+    assert (out / "LanDocShare.zip").is_file()
+    assert (out / release._DEFAULT_MANIFEST).is_file()
+    assert not (out / "LanDocShare-0.2.1.zip").exists()
+
+
+def test_release_keeps_old_packages_by_default(tmp_path):
+    """默认不清：没给 prune_old 时旧包必须还在（免得有人还指着它回滚）。"""
+    out, dist = _fake_release_inputs(tmp_path)
+
+    release.release(
+        release.__version__,
+        dist_dir=dist,
+        out_dir=out,
+        notes=["默认不清"],
+        skip_build=True,
+    )
+
+    assert (out / "LanDocShare-0.2.1.zip").exists()
+    assert (out / f"LanDocShare-{release.__version__}.zip").is_file()
