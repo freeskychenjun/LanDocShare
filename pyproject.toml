@@ -1,6 +1,6 @@
 [project]
 name = "landoc"
-version = "0.2.28"
+version = "0.2.29"
 description = "局域网个人资料库共享：加密/明文办公文档转 Markdown、FTS5 索引、只读检索服务"
 license = "MIT"
 license-files = ["LICENSE"]
