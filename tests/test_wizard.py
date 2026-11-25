@@ -398,3 +398,71 @@ def test_apply_config_copies_departments(tmp_path):
     target = wizard.Config(name="旧", lib_dir=tmp_path / "old")
     wizard.apply_config(target, source)
     assert target.people_departments == {"赵六": "规划一所"}
+
+
+def test_parse_registry_url_accepts_and_normalises():
+    """登记中心地址：留空 = 不登记；裸 host:port 自动补 http://；末尾斜杠去掉。"""
+    assert wizard.parse_registry_url("") == ("", None)
+    assert wizard.parse_registry_url("   ") == ("", None)
+    assert wizard.parse_registry_url("http://192.0.2.5:8767") == ("http://192.0.2.5:8767", None)
+    assert wizard.parse_registry_url(" http://192.0.2.5:8767/ ") == ("http://192.0.2.5:8767", None)
+    assert wizard.parse_registry_url("192.0.2.5:8767") == ("http://192.0.2.5:8767", None)
+    assert wizard.parse_registry_url("https://libraries.example.cn") == (
+        "https://libraries.example.cn",
+        None,
+    )
+
+
+def test_parse_registry_url_rejects_junk():
+    for bad in (
+        "ftp://192.0.2.5:8767",  # 只收 http/https
+        "http://",  # 没有主机名
+        "http://192.0.2.5:端 口",  # 端口不是数字
+        "http://192.0.2.5:8767?x=1",  # 带查询串
+        "http://192.0.2.5:8767#top",
+    ):
+        value, error = wizard.parse_registry_url(bad)
+        assert value == "", bad
+        assert error, bad
+
+
+def test_build_config_carries_registry_url(tmp_path):
+    cfg = wizard.build_config(
+        "库",
+        [tmp_path],
+        wizard.SCOPE_LAN,
+        tmp_path / "lib",
+        registry_url="http://192.0.2.5:8767",
+    )
+    assert cfg.registry_url == "http://192.0.2.5:8767"
+    assert wizard.build_config("库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib").registry_url == ""
+
+
+def test_apply_config_copies_registry_url(tmp_path):
+    """改建库设置时改了登记中心，要真的回写进正在运行的 Config。"""
+    target = wizard.build_config("旧库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib")
+    source = wizard.build_config(
+        "旧库",
+        [tmp_path],
+        wizard.SCOPE_LAN,
+        tmp_path / "lib",
+        registry_url="http://192.0.2.9:8767",
+    )
+
+    wizard.apply_config(target, source)
+
+    assert target.registry_url == "http://192.0.2.9:8767"
+
+
+def test_wizard_prefills_registry_url_from_the_shipped_default(tmp_path, monkeypatch):
+    """打包版里 site_defaults.json 写好了中心地址：首次建库的向导一打开就该是填好的。"""
+    from landoc import ship
+
+    monkeypatch.setattr(ship, "shipped_registry_url", lambda: "http://192.0.2.5:8767")
+    assert wizard.default_registry_url(None) == "http://192.0.2.5:8767"
+
+    # 改建库设置时不能被随包默认值冲掉：用配置里已有的地址
+    existing = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", registry_url="http://192.0.2.9:8767"
+    )
+    assert wizard.default_registry_url(existing) == "http://192.0.2.9:8767"

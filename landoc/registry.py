@@ -1144,7 +1144,7 @@ footer{{color:var(--muted);font-size:13px;margin-top:22px}}
 <ol>
 <li>下载库软件并解压：{package_block}</li>
 <li>双击 <code>LanDocShare.exe</code>，跟着向导选一个文件夹、确认共享范围。</li>
-<li>登记中心地址已写死在软件里：<code>{html.escape(base)}</code>。启动后 60 秒内会出现在下表。</li>
+<li>向导里的「登记中心」已经填好 <code>{html.escape(base)}</code>，直接点「建库」即可；用自己编译的版本才需要手填（也可以在库目录的 <code>config.json</code> 里改 <code>registry_url</code>）。启动后 60 秒内会出现在下表。</li>
 </ol></div>
 
 {release_block}

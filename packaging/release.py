@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from landoc import __version__  # noqa: E402 - 要在改完 sys.path 之后导入
+from landoc import ship  # noqa: E402
 from landoc.registry import MANIFEST_NAME as _DEFAULT_MANIFEST  # noqa: E402
 from landoc.updater import is_newer, parse_version  # noqa: E402
 
@@ -117,18 +119,24 @@ def _check_tk(dist_dir: Path = DEFAULT_DIST) -> None:
     print("      _tkinter 自检通过（tcl/tk 依赖齐全）")
 
 
-def build_dist() -> None:
+def build_dist(site_defaults: Path | None = None) -> None:
     """跑 PyInstaller（spec 里 onedir + 排除重包，约 3-5 分钟）。
 
     重建前先退出托盘和登记中心：它们直接从 `dist/LanDocShare/` 里跑，`_internal` 下的
     pyd 被占着时 `--noconfirm` 清目录会炸（`PermissionError: etree.cp314-win_amd64.pyd`）。
+
+    `site_defaults` 是随包的登记中心地址文件（见 landoc/ship.py），交给 spec 收进包。
     """
     _check_bundled_tesseract()
     print(f"[1/3] 打包：{SPEC.relative_to(ROOT)}")
     started = time.time()
+    env = dict(os.environ)
+    if site_defaults is not None:
+        env["LANDOC_SITE_DEFAULTS"] = str(site_defaults)
     result = subprocess.run(
         [sys.executable, "-m", "PyInstaller", str(SPEC), "--noconfirm", "--clean"],
         cwd=ROOT,
+        env=env,
     )
     if result.returncode != 0:
         raise RuntimeError(f"PyInstaller 失败（退出码 {result.returncode}）")
@@ -176,6 +184,7 @@ def release(
     skip_build: bool = False,
     force: bool = False,
     prune_old: bool = False,
+    registry_url: str | None = None,
 ) -> dict:
     parsed = parse_version(version)
     if parsed is None:
@@ -196,9 +205,19 @@ def release(
         )
 
     if not skip_build:
-        build_dist()
+        site_defaults: Path | None = None
+        if registry_url is not None:
+            # 随包登记中心地址：源码里不留真实内网地址，打包时生成成数据文件，
+            # 由 spec 通过 LANDOC_SITE_DEFAULTS 收进包；新同事解压建库就自动登记。
+            site_defaults = ship.write_site_defaults(
+                out_dir / ship.SITE_FILE, registry_url=registry_url
+            )
+            print(f"[0/3] 随包登记中心：{registry_url.strip() or '（空，不登记）'} → {site_defaults}")
+        build_dist(site_defaults=site_defaults)
     else:
         print("[1/3] 跳过打包，用现有 dist/")
+        if registry_url is not None:
+            print("      注意：跳过打包时 site_defaults.json 不会进现有 dist/")
 
     print(f"[2/3] 压缩：{dist_dir} → {out_dir}")
     zip_name = f"LanDocShare-{version}.zip"
@@ -307,6 +326,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="发布成功后顺手删掉更早版本的 zip（只留最新版 + LanDocShare.zip；默认关）",
     )
+    parser.add_argument(
+        "--registry-url",
+        default=None,
+        help="写进安装包的登记中心地址（新同事建库即自动登记）；不给则沿用上一次生成的默认值",
+    )
     args = parser.parse_args(argv)
 
     if args.prune:
@@ -335,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_build=args.skip_build,
             force=args.force,
             prune_old=args.prune_old,
+            registry_url=args.registry_url,
         )
     except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         print(f"[错误] {exc}", file=sys.stderr)

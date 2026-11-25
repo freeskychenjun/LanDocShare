@@ -168,6 +168,9 @@ python packaging/release.py --notes "修了检索偶发 500" --notes "新增 xx"
 # 做了代码改动就会先跑 PyInstaller（3-5 分钟），再压 zip、算 sha256、写 latest.json
 # 只改说明、不想重新打包：加 --skip-build
 # 发布成功后顺手删掉更早版本的 zip（只留这一版 + LanDocShare.zip）：加 --prune-old
+# 让新同事建库就自动登记到你的中心：加 --registry-url http://<中心地址>:8767
+#   （地址写进包里的 landoc/site_defaults.json 与 distribution/site_defaults.json；
+#    源码里不写内网地址，所以只有打包时能注入）
 ```
 
 产物在 `distribution/`：`LanDocShare-<版本>.zip`（版本化包）、`LanDocShare.zip`（给第一次装的人）、`latest.json`（版本真源）。

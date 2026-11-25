@@ -27,3 +27,6 @@ distribution/
 build_new_*/
 dist_new_*/
 
+# 打包时生成的"随包默认值"（里面是单位内网地址，源码与仓库都不留）
+landoc/site_defaults.json
+

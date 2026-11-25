@@ -502,3 +502,38 @@ def test_registry_command_with_no_flags_still_works(monkeypatch):
     monkeypatch.setattr(registry, "main", lambda argv: seen.setdefault("argv", argv) or 0)
     assert cli.main(["registry"]) == 0
     assert seen["argv"] == []
+
+
+def test_init_registers_with_the_shipped_center_by_default(tmp_path: Path, monkeypatch):
+    """打包版把中心地址写在 site_defaults.json 里：init 不给 --registry-url 也要用上。
+
+    以前新同事装完的库 registry_url 是空串，在中心列表里根本看不见。
+    """
+    from landoc import ship
+
+    monkeypatch.setattr(ship, "shipped_registry_url", lambda: "http://192.0.2.5:8767")
+    lib = tmp_path / "lib"
+    assert cli.main(["init", "--lib-dir", str(lib), "--name", "库"]) == 0
+    assert Config.load(lib).registry_url == "http://192.0.2.5:8767"
+
+
+def test_init_explicit_registry_url_wins_over_the_shipped_default(tmp_path: Path, monkeypatch):
+    from landoc import ship
+
+    monkeypatch.setattr(ship, "shipped_registry_url", lambda: "http://192.0.2.5:8767")
+    lib = tmp_path / "lib"
+    assert cli.main(
+        ["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://192.0.2.9:8767"]
+    ) == 0
+    assert Config.load(lib).registry_url == "http://192.0.2.9:8767"
+
+
+def test_init_leaves_an_existing_libraries_registry_alone(tmp_path: Path, monkeypatch):
+    """已经在用的库可能连的是另一个中心：init 改名字不能把地址冲成随包默认值。"""
+    from landoc import ship
+
+    lib = tmp_path / "lib"
+    cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--registry-url", "http://192.0.2.9:8767"])
+    monkeypatch.setattr(ship, "shipped_registry_url", lambda: "http://192.0.2.5:8767")
+    assert cli.main(["init", "--lib-dir", str(lib), "--name", "新名"]) == 0
+    assert Config.load(lib).registry_url == "http://192.0.2.9:8767"

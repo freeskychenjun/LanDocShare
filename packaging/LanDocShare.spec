@@ -5,6 +5,7 @@
 产物：dist/LanDocShare/LanDocShare.exe（无控制台）+ LanDocShare-debug.exe（有控制台，排错用）。
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,6 +32,13 @@ datas = [
     (str(ROOT / "landoc" / "tools" / "tesseract"), "landoc/tools/tesseract"),
     (str(ROOT / "landoc" / "tools" / "tessdata"), "landoc/tools/tessdata"),
 ]
+
+# 打包时写出来的「随包默认值」（登记中心地址）：源码里不留真实内网地址，
+# 由 `packaging/release.py --registry-url …` 生成到仓库外，再用环境变量指过来。
+# 没给就按源码运行的口径（空 = 不登记）。
+_site_defaults = os.environ.get("LANDOC_SITE_DEFAULTS", "")
+if _site_defaults and Path(_site_defaults).is_file():
+    datas.append((_site_defaults, "landoc"))
 
 hiddenimports = [
     "win32com.client",

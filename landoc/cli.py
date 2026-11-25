@@ -171,6 +171,13 @@ def _cmd_init(args) -> int:
         cfg.deny_cidrs = deny
     if args.registry_url is not None:
         cfg.registry_url = args.registry_url.strip()
+    elif not (cfg.registry_url or "").strip():
+        # 打包版把中心地址写在随包的 site_defaults.json 里：新同事解压建库就自动登记，
+        # 不用再手改 config.json（以前这步没人知道，装完的库在中心列表里看不见）。
+        # 已经在用的库不动——人家可能连的是另一个中心。
+        from landoc import ship
+
+        cfg.registry_url = ship.shipped_registry_url()
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")

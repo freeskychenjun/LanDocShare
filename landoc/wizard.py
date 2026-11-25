@@ -11,10 +11,11 @@ import ipaddress
 import os
 import queue
 import threading
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
-from landoc import index, netinfo, probe
+from landoc import index, netinfo, probe, ship
 from landoc.config import CONFIG_NAME, Config
 from landoc.roster import MAX_DEPARTMENT_CHARS
 
@@ -315,6 +316,45 @@ def parse_deny_cidrs(text: str) -> tuple[list[str], str | None]:
     return _parse_networks(text)
 
 
+def parse_registry_url(text: str) -> tuple[str, str | None]:
+    """解析「登记中心地址」：留空 = 不登记（只在本机/内网用）。
+
+    允许两种写法：`http://10.1.2.3:8767`（推荐）和裸的 `10.1.2.3:8767`
+    （自动补 http://）。末尾的斜杠会去掉——中心所有路由都是绝对路径，
+    带不带斜杠拼出来都一样，但配置里留着斜杠容易和别人的写法不一致。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "", None
+    value = raw if "://" in raw else f"http://{raw}"
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in ("http", "https"):
+        return "", "地址要以 http:// 或 https:// 开头（示例：http://10.1.2.3:8767）"
+    if not parsed.hostname:
+        return "", "地址里没有主机名（示例：http://10.1.2.3:8767）"
+    try:
+        port = parsed.port
+    except ValueError:
+        return "", "端口不是数字（示例：http://10.1.2.3:8767）"
+    if port is not None and not 1 <= port <= 65535:
+        return "", "端口要在 1~65535 之间"
+    if parsed.query or parsed.fragment:
+        return "", "登记中心地址后面不要带 ? 或 #"
+    clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    return clean, None
+
+
+def default_registry_url(current: Config | None) -> str:
+    """向导里「登记中心」输入框的初值。
+
+    改建库设置：用配置里已有的值（别把人家的地址冲掉）；
+    首次建库：用随包的默认值（`site_defaults.json`，源码运行时是空串 = 不登记）。
+    """
+    if current is not None:
+        return str(current.registry_url or "").strip()
+    return ship.shipped_registry_url()
+
+
 def build_config(
     name: str,
     folders: list[Path],
@@ -326,6 +366,7 @@ def build_config(
     departments: dict[str, str] | None = None,
     cidrs: list[str] | None = None,
     deny_cidrs: list[str] | None = None,
+    registry_url: str = "",
 ) -> Config:
     """把向导里的选择拼成 Config（纯函数，方便测试）。"""
     clean_name = (name or "").strip() or "我的资料库"
@@ -354,6 +395,7 @@ def build_config(
         people_departments=people_departments,
         # Config 声明的是 Path|None：这里统一成 Path，别塞一个 "" 进去
         acrobat_tool_dir=Path(acrobat_tool_dir) if acrobat_tool_dir else None,
+        registry_url=(registry_url or "").strip(),
     )
 
 
@@ -370,6 +412,9 @@ def apply_config(target: Config, source: Config) -> Config:
     target.allow_people = dict(source.allow_people)
     target.people_departments = dict(source.people_departments)
     target.acrobat_tool_dir = source.acrobat_tool_dir
+    # 登记中心地址改了要立刻生效：心跳每条消息都现读 cfg.registry_url，
+    # 下一跳就会登记到新地址（自动升级那条要等重启，它只在启动时建一次）
+    target.registry_url = str(source.registry_url or "").strip()
     return target
 
 
@@ -478,6 +523,27 @@ def run_wizard(
         # 改建库设置时不搬库：位置一变，配置/索引/md 全得跟着搬，不在这里冒险
         lib_entry.configure(state="disabled")
         lib_button.configure(state="disabled")
+
+    # 登记中心：以前这一项只存在于 config.json 里，没人知道该填什么，
+    # 结果装完的库不出现在中心的列表里、也收不到新版本。
+    # 打包时会把地址写进 site_defaults.json（源码里不留真实内网地址），
+    # 所以新同事解压双击、直接点「建库」就已经登记好了。
+    shipped_registry = default_registry_url(current)
+    ttk.Label(lib_box, text="登记中心", width=10, anchor="w").grid(
+        row=2, column=0, sticky="w", pady=3
+    )
+    registry_var = tk.StringVar(master=root, value=str(shipped_registry or ""))
+    ttk.Entry(lib_box, textvariable=registry_var).grid(
+        row=2, column=1, columnspan=2, sticky="we", pady=3
+    )
+    ttk.Label(
+        lib_box,
+        text="填了就登记到中心（同事在「可访问的资料库…」里能看到你的库、有新版本会提示升级）；"
+        "留空 = 只在本机/内网直接用。",
+        foreground="#666",
+        wraplength=430,
+        justify="left",
+    ).grid(row=3, column=1, columnspan=2, sticky="w")
 
     folders_panel = ttk.LabelFrame(frame, text="共享哪些文件夹", padding=(12, 8))
     folders_panel.grid(row=1, column=0, sticky="we", pady=(10, 0))
@@ -675,6 +741,10 @@ def run_wizard(
             people = dict(current.allow_people)
             departments = dict(current.people_departments)
         tool = _find_acrobat_tool_dir()
+        registry, registry_error = parse_registry_url(registry_var.get())
+        if registry_error:
+            messagebox.showwarning("登记中心地址填得不对", registry_error)
+            return
         cidrs = None
         deny: list[str] = []
         if scope_var.get() != SCOPE_LOCAL:
@@ -696,6 +766,7 @@ def run_wizard(
             departments=departments,
             cidrs=cidrs,
             deny_cidrs=deny,
+            registry_url=registry,
         )
         root.destroy()
 
