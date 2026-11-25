@@ -50,6 +50,10 @@
     .tag.warn { color:#f0c46a; border-color:#6b5424; background:#3a2f16; }
   }
   .meta { color:var(--muted); font-size:13px; margin:0 0 10px; }
+.folder { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 14px; margin:0 0 8px; border:1px solid var(--line); border-radius:10px; background:var(--bg); cursor:pointer; }
+.folder:hover, .folder:focus { border-color:var(--accent); outline:none; }
+.folder .fname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.folder .fcount { color:var(--muted); font-size:12px; flex:none; }
   .empty { color:var(--muted); padding:28px 0; text-align:center; }
   dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); max-width:920px; width:calc(100% - 40px); padding:0; }
   dialog::backdrop { background:rgba(0,0,0,.45); }
@@ -177,7 +181,9 @@ async function loadTree(dir) {
   for (const node of data.children || []) {
     const li = el(`<li><button type="button"><span>${esc(node.name)}</span><span class="count">${esc(node.count)}</span></button></li>`);
     const child = dir ? dir + '/' + node.name : node.name;
-    li.querySelector('button').onclick = () => (node.dir ? goDir(child) : showFiles(child));
+    // tree 只统计"还有下一层"的节点，所以每个节点都是目录：点它要连左侧树一起换层，
+    // 不能只换右侧列表（否则子目录不会被展开，一眼看上去像空的）
+    li.querySelector('button').onclick = () => goDir(child);
     ul.appendChild(li);
   }
   if (!ul.children.length) ul.appendChild(el('<li class="meta">（空）</li>'));
@@ -257,8 +263,24 @@ async function showFiles(dir) {
     return;
   }
   panel.innerHTML = '';
-  panel.appendChild(el(`<p class="meta">${esc(dir)} · ${esc(data.count)} 篇</p>`));
-  if (!data.files.length) { panel.appendChild(el('<div class="empty">这个目录下没有文档。</div>')); return; }
+  const dirs = data.dirs || [];
+  const bits = [`${data.count} 篇`];
+  if (dirs.length) bits.push(`${dirs.length} 个子目录`);
+  panel.appendChild(el(`<p class="meta">${esc(dir)} · ${esc(bits.join('、'))}</p>`));
+  // 先列子目录（每个点进去还能继续往下），再列直接归档在这个目录里的文件。
+  // 有的目录（比如"2011年项目"）文档全在子目录里，直接子文件是 0 —— 不能因此显示成空目录。
+  for (const d of dirs) {
+    const row = el(`<div class="folder" role="button" tabindex="0">
+      <span class="fname">📁 ${esc(d.name)}</span><span class="fcount">${esc(d.count)} 篇</span>
+    </div>`);
+    row.onclick = () => goDir(d.path);
+    row.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); goDir(d.path); } };
+    panel.appendChild(row);
+  }
+  if (!data.files.length) {
+    if (!dirs.length) panel.appendChild(el('<div class="empty">这个目录下没有文档。</div>'));
+    return;
+  }
   for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path, f.withdrawn));
 }
 

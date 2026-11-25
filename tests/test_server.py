@@ -187,6 +187,36 @@ def test_withdrawn_docs_are_hidden_from_remote_clients(lib, monkeypatch):
         thread.join(timeout=3)
 
 
+def test_list_dir_returns_subdirectories_for_deep_folders(lib):
+    """2011年项目这类"文档全在子目录里"的目录：直接子文件是 0，但子目录必须给出来。
+
+    否则检索页点进去只有一句"这个目录下没有文档"，看着像 150 篇丢了。
+    """
+    cfg, index = lib
+    index.upsert("2011年项目/报告编写/潦河意见.md", "潦河意见", "docx", "/secret/c.docx", 10, 1.0, "潦河")
+    index.upsert("2011年项目/报告编写/锦江意见.md", "锦江意见", "docx", "/secret/d.docx", 10, 1.0, "锦江")
+    index.commit()
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    client = Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+    try:
+        payload = client.json("/api/list?path=" + urllib.parse.quote("2011年项目"))
+        assert payload["count"] == 0
+        assert payload["files"] == []
+        assert payload["dirs"] == [
+            {"name": "报告编写", "count": 2, "path": "2011年项目/报告编写"}
+        ]
+        # 进到子目录才看得到文件
+        deeper = client.json("/api/list?path=" + urllib.parse.quote("2011年项目/报告编写"))
+        assert deeper["count"] == 2
+        assert deeper["dirs"] == []
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=3)
+
+
 def test_search_returns_snippets(running):
     client, _, _ = running
     status, body = client.get("/api/search?q=" + urllib.parse.quote("马斯京根"))

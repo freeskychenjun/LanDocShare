@@ -336,8 +336,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/list":
             path = params.get("path") or ""
             rows = self.index.list_dir(path, include_withdrawn=owner)
+            # 子目录也要给出来：一个目录底下可能全是子目录（那些文档的 path 层级更深），
+            # 只回直接子文件的话，点进去就是"0 篇、这个目录下没有文档"，看着像丢了。
+            dirs = self.index.tree(path, include_withdrawn=owner)
             self._record(ip, name, route, 200, count=len(rows))
-            return self._json({"path": path, "count": len(rows), "files": rows})
+            return self._json(
+                {"path": path, "count": len(rows), "files": rows, "dirs": dirs}
+            )
         if route == "/api/recent":
             limit = params.get("limit") or "50"
             try:
@@ -375,7 +380,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/stats": "库统计",
                 "/api/search": "q=查询词 & dir=可选目录前缀 & limit=1~30",
                 "/api/tree": "path=可选目录，返回子目录聚合",
-                "/api/list": "path=目录，返回文件列表（≤500）",
+                "/api/list": "path=目录，返回该目录下的子目录（带递归篇数）与直接归档的文件（≤500）",
                 "/api/recent": "limit=1~100，返回最近收录的文档",
                 "/api/tables": "path=文档路径，返回该文档内的表格",
             },
