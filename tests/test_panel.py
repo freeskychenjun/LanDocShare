@@ -66,6 +66,18 @@ def test_status_rows_surface_failed_conversions(tmp_path):
     assert rows["文档"] == "13 篇 · 3 篇转换失败"
 
 
+def test_status_rows_surface_withdrawn_shares(tmp_path):
+    """撤回共享的篇数要写出来：不然主人只看到"文档怎么少了"，不知道是自己撤的。"""
+    cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])
+    status = AppStatus(phase="serving", doc_count=1115, withdrawn=24, port=8768)
+    rows = {row.label: row.value for row in status_rows(cfg, status, lan_ip="172.16.1.197")}
+    assert rows["撤回共享"] == "24 篇（同事看不到，你仍可检索；文件夹加回共享即恢复）"
+
+    # 没有撤回文档时不该多出这一行
+    plain = {row.label for row in status_rows(cfg, AppStatus(phase="serving", port=8768), lan_ip="172.16.1.197")}
+    assert "撤回共享" not in plain
+
+
 def test_status_rows_mark_paused_and_empty_scan(tmp_path):
     cfg = _cfg(tmp_path, allow_cidrs=["172.16.0.0/16"])
     status = AppStatus(phase="paused", paused=True, doc_count=0, port=8768)

@@ -31,8 +31,9 @@ class FakeServer:
 
 
 class FakeIndex:
-    def __init__(self, total: int = 3) -> None:
+    def __init__(self, total: int = 3, withdrawn: int = 0) -> None:
         self.total = total
+        self.withdrawn = withdrawn
         self.meta: dict[str, str] = {}
 
     def set_meta(self, key: str, value: str) -> None:
@@ -41,8 +42,9 @@ class FakeIndex:
     def get_meta(self, key: str, default: str = "") -> str:
         return self.meta.get(key, default)
 
-    def stats(self) -> dict:
-        return {"total": self.total}
+    def stats(self, *, include_withdrawn: bool = True) -> dict:
+        total = self.total if include_withdrawn else self.total - self.withdrawn
+        return {"total": total}
 
 
 def wait_for(predicate, timeout: float = 3.0) -> bool:
@@ -740,6 +742,23 @@ def test_failed_count_ignores_sources_that_are_gone(tmp_path):
     app._refresh_counts()
 
     assert app.status.failed == 1
+
+
+def test_withdrawn_count_is_visible_to_the_owner(tmp_path):
+    """撤回共享的篇数：主人这边要看得见（同事那边本来就被滤掉了）。"""
+    cfg = Config(name="测试库", lib_dir=tmp_path, folders=[tmp_path])
+    (tmp_path / "state.json").write_text(json.dumps({"files": {}, "failures": {}}), encoding="utf-8")
+
+    app = LibraryApp(cfg, index=FakeIndex(total=1115, withdrawn=24), idle_check=lambda: False)
+    app._refresh_counts()
+
+    assert app.status.doc_count == 1115
+    assert app.status.withdrawn == 24
+
+    # 撤掉的共享加回来之后，这一项要归零，不能一直挂着旧数
+    app.index = FakeIndex(total=1115, withdrawn=0)
+    app._refresh_counts()
+    assert app.status.withdrawn == 0
 
 # ============ 第 4 批：日志（停止 / 崩溃 / 更新 / 失败明细 / 访问被拒） ============
 

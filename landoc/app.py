@@ -115,6 +115,7 @@ class AppStatus:
     eta_seconds: int = 0  # 按实测速度估的剩余秒数（0 = 还没测出速度）
     gone: int = 0  # 源文件已不在、内容仍留在库里的篇数（库只增不减，见 pipeline.run）
     failed: int = 0  # 转换失败、还等着重试的篇数（state.json 的 failures）
+    withdrawn: int = 0  # 主人把所在文件夹移出共享的篇数（同事看不到，自己还能搜到）
     ocr: str = ""  # 扫描件 OCR 用哪条路（空 = 不显示，见 ocr.describe）
     registry: str = ""  # 登记中心的状态文字（空 = 没配中心）
     version: str = __version__  # 本机程序版本
@@ -666,6 +667,9 @@ class LibraryApp:
     def _refresh_counts(self) -> None:
         try:
             stats = self.index.stats() if self.index is not None else {"total": 0}
+            # 撤回共享的篇数只对主人有意义：取"全部"与"同事可见"两个总数相减，
+            # 比另外维护一份计数稳（索引是唯一真源，标位/撤标记都改在 documents.withdrawn）。
+            visible = self.index.stats(include_withdrawn=False) if self.index is not None else {"total": 0}
             state = pipeline._read_state(self.cfg)
         except Exception:  # noqa: BLE001
             return
@@ -674,6 +678,7 @@ class LibraryApp:
             doc_count=stats.get("total", 0),
             last_scan=state.get("last_scan_ts", ""),
             gone=pipeline.missing_count(self.cfg),
+            withdrawn=max(0, int(stats.get("total", 0)) - int(visible.get("total", 0))),
             # 源文件已经不在的失败记录不算"等着重试"：它既不会重试，也没法自动清掉，
             # 只会在状态窗里永远挂着"失败 N 篇"（由「清理…」连它一起清）。
             failed=sum(

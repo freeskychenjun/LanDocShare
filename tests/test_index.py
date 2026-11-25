@@ -189,8 +189,15 @@ def test_withdrawn_docs_are_owner_only(idx: Index, tmp_path: Path):
     assert idx.tables("成果/乐平.md", include_withdrawn=False) is None
     assert idx.tables("成果/乐平.md") is not None
 
+    # 主人这边每一行都带 withdrawn 标记：页面据此打「已撤回共享」，免得主人以为文档丢了
+    assert idx.search("乐平")[0][0]["withdrawn"] is True
+    assert [r["withdrawn"] for r in idx.list_dir("成果")] == [True, False]
+    assert [r["withdrawn"] for r in idx.recent()] == [False, True]  # 最近入库的在前
+    assert idx.search("溪霞", include_withdrawn=False)[0][0]["withdrawn"] is False
+
     idx.mark_withdrawn("成果/乐平.md", False)
     assert idx.stats(include_withdrawn=False)["total"] == 2
+    assert [r["withdrawn"] for r in idx.list_dir("成果")] == [False, False]
 
 
 def test_tables_from_disk_markdown(idx: Index, tmp_path: Path):

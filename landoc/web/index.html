@@ -44,6 +44,11 @@
   mark { background:var(--mark); color:var(--mark-ink); padding:0 2px; border-radius:3px; }
   .row { display:flex; gap:8px; align-items:center; }
   .tag { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 8px; }
+  .tag.warn { color:#8a5a00; border-color:#d9b26a; background:#fdf3df; }
+
+  @media (prefers-color-scheme: dark) {
+    .tag.warn { color:#f0c46a; border-color:#6b5424; background:#3a2f16; }
+  }
   .meta { color:var(--muted); font-size:13px; margin:0 0 10px; }
   .empty { color:var(--muted); padding:28px 0; text-align:center; }
   dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); max-width:920px; width:calc(100% - 40px); padding:0; }
@@ -141,9 +146,11 @@ function setBusy(on) {
   if (btn) { btn.disabled = on; btn.textContent = on ? '搜索中…' : '搜索'; }
 }
 
-function hitCard(title, ext, path) {
+function hitCard(title, ext, path, withdrawn) {
+  // withdrawn 只在主人这边可能为真（同事的查询根本查不到这些文档）
+  const tag = withdrawn ? '<span class="tag warn" title="所在文件夹已移出共享：同事搜不到，你仍可检索">已撤回共享</span>' : '';
   const card = el(`<div class="hit">
-    <div class="row"><h3>${esc(title)}</h3><span class="tag">${esc(ext || '')}</span></div>
+    <div class="row"><h3>${esc(title)}</h3><span class="tag">${esc(ext || '')}</span>${tag}</div>
     <div class="path">${esc(path)}</div>
     <div class="row" style="margin-top:8px"><button class="ghost" type="button">查看表格</button></div>
   </div>`);
@@ -209,7 +216,7 @@ async function search(q, dir) {
   panel.appendChild(head);
   if (!data.results.length) { panel.appendChild(el('<div class="empty">没有命中。换个词，或试试 2 字关键词。</div>')); return; }
   for (const r of data.results) {
-    const hit = hitCard(r.title, r.ext, r.path);
+    const hit = hitCard(r.title, r.ext, r.path, r.withdrawn);
     hit.insertBefore(el(`<p>${snippetHtml(r.snippet)}</p>`), hit.querySelector('.row:last-child'));
     panel.appendChild(hit);
   }
@@ -233,7 +240,7 @@ async function showRecent() {
     return;
   }
   panel.appendChild(el(`<p class="meta">最近收录 · ${esc(data.count)} 篇</p>`));
-  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path));
+  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path, f.withdrawn));
 }
 
 async function showFiles(dir) {
@@ -252,7 +259,7 @@ async function showFiles(dir) {
   panel.innerHTML = '';
   panel.appendChild(el(`<p class="meta">${esc(dir)} · ${esc(data.count)} 篇</p>`));
   if (!data.files.length) { panel.appendChild(el('<div class="empty">这个目录下没有文档。</div>')); return; }
-  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path));
+  for (const f of data.files) panel.appendChild(hitCard(f.title, f.ext, f.path, f.withdrawn));
 }
 
 async function goDir(dir) {

@@ -384,7 +384,8 @@ class Index:
         sql = f"""
             SELECT documents.rel_path, documents.title, documents.ext,
                    bm25(documents_fts, 10.0, 1.0) AS score,
-                   documents.content AS raw
+                   documents.content AS raw,
+                   documents.withdrawn
             FROM documents_fts
             JOIN documents ON documents.rowid = documents_fts.rowid
             WHERE {where}
@@ -400,6 +401,9 @@ class Index:
                 "ext": r[2],
                 "score": round(r[3], 2),
                 "snippet": _make_snippet(r[4] or "", match, self.snippet_tokens),
+                # 只有主人会看到 withdrawn 的行（同事那边被 WHERE 滤掉了），
+                # 页面靠这个标一句"已撤回共享"，免得主人以为文档丢了。
+                "withdrawn": bool(r[5]),
             }
             for r in rows
         ]
@@ -420,7 +424,8 @@ class Index:
             where += " AND documents.withdrawn = 0"
         sql = f"""
             SELECT documents.rel_path, documents.title, documents.ext, 0.0 AS score,
-                   documents.content AS raw
+                   documents.content AS raw,
+                   documents.withdrawn
             FROM documents
             WHERE {where}
             ORDER BY (instr(documents.title, ?) > 0) DESC, length(documents.content)
@@ -436,6 +441,7 @@ class Index:
                 "ext": r[2],
                 "score": round(r[3], 2),
                 "snippet": _make_snippet(r[4] or "", build_match_query(q), self.snippet_tokens),
+                "withdrawn": bool(r[5]),
             }
             for r in rows
         ]
@@ -468,14 +474,21 @@ class Index:
         if not include_withdrawn:
             condition += " AND withdrawn = 0"
         rows = self.conn.execute(
-            f"""SELECT rel_path, title, ext, src_size FROM documents
+            f"""SELECT rel_path, title, ext, src_size, withdrawn FROM documents
                WHERE rowid IN (SELECT rowid FROM documents
                                WHERE {condition})
                ORDER BY title LIMIT ?""",
             (needle, len(prefix) + 2 if prefix else 1, limit),
         ).fetchall()
         return [
-            {"path": r[0], "title": r[1], "ext": r[2] or "", "size": r[3]} for r in rows
+            {
+                "path": r[0],
+                "title": r[1],
+                "ext": r[2] or "",
+                "size": r[3],
+                "withdrawn": bool(r[4]),
+            }
+            for r in rows
         ]
 
     def recent(self, limit: int = 50, *, include_withdrawn: bool = True) -> list[dict]:
@@ -487,13 +500,20 @@ class Index:
         limit = max(1, min(int(limit), MAX_LIST))
         condition = "1=1" if include_withdrawn else "withdrawn = 0"
         rows = self.conn.execute(
-            f"""SELECT rel_path, title, ext, src_size FROM documents
+            f"""SELECT rel_path, title, ext, src_size, withdrawn FROM documents
                WHERE {condition}
                ORDER BY COALESCE(indexed_at, '') DESC, rowid DESC LIMIT ?""",
             (limit,),
         ).fetchall()
         return [
-            {"path": r[0], "title": r[1], "ext": r[2] or "", "size": r[3]} for r in rows
+            {
+                "path": r[0],
+                "title": r[1],
+                "ext": r[2] or "",
+                "size": r[3],
+                "withdrawn": bool(r[4]),
+            }
+            for r in rows
         ]
 
     def tables(self, rel_path: str, max_bytes: int = 300_000, *, include_withdrawn: bool = True) -> list[dict] | None:
