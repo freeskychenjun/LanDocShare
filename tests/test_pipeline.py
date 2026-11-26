@@ -975,6 +975,36 @@ def test_index_committed_every_n_docs(cfg, flat_opc, monkeypatch):
     assert 1 in seen  # 转完第一篇就报过一次进度
 
 
+def test_index_committed_on_a_timer_for_slow_docs(cfg, flat_opc, monkeypatch):
+    """一篇扫描件可能要几十秒：只看篇数会让进度攒到 20 篇，慢文档得按时间落。"""
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    monkeypatch.setattr(pipeline, "COMMIT_EVERY", 20)
+    monkeypatch.setattr(pipeline, "COMMIT_SECONDS", 0.0)
+    index = CountingIndex()
+
+    report = pipeline.run(cfg, index=index)
+
+    assert report.converted == 2
+    assert index.commits >= 3  # 两篇各提交一次 + 收尾一次
+
+
+def test_index_does_not_commit_per_doc_by_default(cfg, flat_opc, monkeypatch):
+    """默认 2 秒内的连续几篇不逐篇提交：每次提交都要 fsync 一次 WAL。"""
+    monkeypatch.setattr(
+        office_bridge, "extract_wordopenxml", lambda path, timeout=120.0, **kw: flat_opc
+    )
+    monkeypatch.setattr(pipeline, "COMMIT_EVERY", 20)
+    monkeypatch.setattr(pipeline, "COMMIT_SECONDS", 3600.0)
+    index = CountingIndex()
+
+    report = pipeline.run(cfg, index=index)
+
+    assert report.converted == 2
+    assert index.commits == 1  # 只有收尾那一次
+
+
 def test_state_written_during_round(cfg, flat_opc, monkeypatch):
     """state.json 中途就要有这篇，不能只在 finally 写（中断/关机就白转）。"""
     monkeypatch.setattr(

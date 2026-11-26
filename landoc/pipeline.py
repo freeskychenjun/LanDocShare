@@ -45,10 +45,13 @@ PDF_SESSION_MAX_DOCS = 500
 # no_ocr 是"扫描件需要 OCR、但这台机器既没有系统中文识别包也没装 Tesseract"。
 ENV_REASONS = frozenset({"no_office", "no_reader", "no_ocr"})
 
-# 一轮里"转了多少篇就落一次盘"：索引提交便宜（20 篇一次实测比整轮单事务只多 15%），
-# 但 state.json 是整份重写（5 万篇时 ≈6 MB），所以它按时间落（60 秒），索引按篇数落。
-# 中断时 finally 会补一次全量落盘；中断最多白转"上一次落盘之后"那几篇。
+# 一轮里"转了多少篇就落一次盘"：索引提交便宜（实测每篇 2.2 ms、批量时 0.06 ms），
+# 但每篇都提交等于每篇 fsync 一次 WAL，所以它按篇数**或时间**落——一篇扫描件 OCR
+# 可能要几十秒，只看篇数会让进度攒到 20 篇才落一次。
+# state.json 是整份重写（1115 篇 137 KB、1 万篇 1.2 MB），每篇写一遍就是平方级开销，
+# 所以它只按时间落（60 秒）。中断时 finally 会补一次全量落盘。
 COMMIT_EVERY = 20
+COMMIT_SECONDS = 2.0
 STATE_SECONDS = 60.0
 # 一轮转换与一次清理不能同时干：`run` 整轮把 state 攥在内存里（收尾时整份写回去，
 # 清理落在轮次中间会被复活），索引也是攒够 20 篇才提交（两个线程各拿一条连接会撞上
@@ -401,8 +404,9 @@ def run(
       那样一批全是带口令的坏文件时单次 run 会跑十几个小时；
     - `budget`：最多用多少秒（每篇开始前看一眼表，单篇自身仍受 120 秒超时约束）；
     - `should_stop()`：返回真就停（库端用它实现"用户一回来就收工"）。
-    停在哪由 `report.stop_reason` 说明，进度每隔 `COMMIT_EVERY` 篇/`STATE_SECONDS` 秒
-    落一次盘，并通过 `on_progress(report)` 通知调用方（状态窗口据此显示剩余与 ETA）。
+    停在哪由 `report.stop_reason` 说明，索引每隔 `COMMIT_EVERY` 篇或 `COMMIT_SECONDS`
+    秒落一次，state 每隔 `COMMIT_EVERY` 篇/`STATE_SECONDS` 秒落一次，并通过
+    `on_progress(report)` 通知调用方（状态窗口据此显示剩余与 ETA）。
 
     整轮都在 `LIBRARY_LOCK` 里跑：清理（`prune_gone`）只在轮次之外动手，否则它改的
     state 会被这一轮的收尾整份写回去。
@@ -449,6 +453,7 @@ def _run(
         shutil.rmtree(Path(cfg.md_dir), ignore_errors=True)
     started = time.monotonic()
     last_state = started
+    last_commit = started
     docs = _iter_docs(cfg.folders)
 
     def _drop_session(kind: str) -> None:
@@ -466,10 +471,16 @@ def _run(
                 ppt_session.close()
             ppt_session = None
 
-    def _flush(force: bool = False) -> None:
-        """落盘：索引每 20 篇提交一次；state/failures 按时间（整份重写，别太勤）。"""
-        nonlocal last_state
+    def _commit_index() -> None:
+        """索引提交：每篇交一次要 fsync 一次 WAL（本机 2.2 ms），所以攒着按篇数/时间落。"""
+        nonlocal last_commit
         index.commit()
+        last_commit = time.monotonic()
+
+    def _flush(force: bool = False) -> None:
+        """落盘：索引按篇数/时间提交；state/failures 按时间（整份重写，别太勤）。"""
+        nonlocal last_state
+        _commit_index()
         now = time.monotonic()
         if force or now - last_state >= STATE_SECONDS:
             stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -566,9 +577,13 @@ def _run(
     try:
         for path, rel, ext, stat in pending:
             _settle_doc()
-            if since_flush >= COMMIT_EVERY or time.monotonic() - last_state >= STATE_SECONDS:
+            now = time.monotonic()
+            if since_flush >= COMMIT_EVERY or now - last_state >= STATE_SECONDS:
                 _flush()
                 since_flush = 0
+            elif now - last_commit >= COMMIT_SECONDS:
+                # 慢文档的兜底：篇数还没攒够，但已经过了 COMMIT_SECONDS，先把索引落了。
+                _commit_index()
             if should_stop is not None and should_stop():
                 report.stop_reason = "stop"
                 break
