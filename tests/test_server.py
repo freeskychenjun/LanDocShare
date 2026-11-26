@@ -260,7 +260,15 @@ def test_tables_unknown_path_is_404(running):
     assert status == 404
 
 
-def test_cidr_not_allowed_is_403(lib):
+def test_cidr_not_allowed_is_403(lib, monkeypatch):
+    """网段不在白名单里就 403。
+
+    本机自己那台走的是"主人永远进得来"，所以这里把本机 IP 清单清空，
+    模拟一个真正的外来源地址（127.0.0.1 于是退化成普通来源）。
+    """
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: set())
     cfg, index = lib
     cfg.allow_cidrs = ["192.0.2.0/24"]  # 不含 127.0.0.1
     httpd = make_server(cfg, index=index, port=0)
@@ -479,8 +487,15 @@ def test_search_record_carries_query_fallback_and_dir(running):
     assert record["count"] == 1
 
 
-def test_empty_cidrs_denies_all(lib):
-    """I5: 清空 allow_cidrs = 暂停共享，绝不能变成"全网放行"。"""
+def test_empty_cidrs_denies_all(lib, monkeypatch):
+    """I5: 清空 allow_cidrs = 暂停共享，对**别人**绝不能变成"全网放行"。
+
+    本机自己那台不在此列（状态窗口写的是「本机之外都访问不到」），所以这里把
+    "本机网卡 IP" 清空，让 127.0.0.1 走普通来源那条判定。
+    """
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: set())
     cfg, index = lib
     cfg.allow_cidrs = []
     httpd = make_server(cfg, index=index, port=0)
@@ -490,6 +505,47 @@ def test_empty_cidrs_denies_all(lib):
     try:
         client = Client(f"http://127.0.0.1:{port}")
         assert client.get("/api/search?q=x")[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_owner_still_gets_in_when_every_subnet_is_closed(lib, monkeypatch):
+    """暂停共享/白名单写窄了也不该把主人关在门外：状态窗口写的是「本机之外都访问不到」。"""
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: {"127.0.0.1"})
+    cfg, index = lib
+    cfg.allow_cidrs = []  # 暂停共享
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        status, _ = client.get("/api/meta")
+        assert status == 200
+        assert client.json("/api/meta")["port"] == port
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_an_explicit_deny_still_blocks_the_owner(lib, monkeypatch):
+    """deny_cidrs 是主人明确写下的"这段别来"，本机也不例外。"""
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: {"127.0.0.1"})
+    cfg, index = lib
+    cfg.allow_cidrs = ["127.0.0.0/8"]
+    cfg.deny_cidrs = ["127.0.0.1/32"]
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        assert client.get("/api/meta")[0] == 403
     finally:
         httpd.shutdown()
         httpd.server_close()

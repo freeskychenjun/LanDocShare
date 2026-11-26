@@ -128,11 +128,16 @@ class Audit:
                 pass
 
 
-def _ip_allowed(ip: str, allow_cidrs, deny_cidrs=None) -> bool:
+def _ip_allowed(ip: str, allow_cidrs, deny_cidrs=None, *, local: bool = False) -> bool:
     # 黑名单优先：即使来源在 allow_cidrs 里，命中 deny_cidrs 也一律拒绝。
     # 空 allow 仍是"暂停共享 = 拒绝所有来源"，绝不能反过来变成"全网放行"。
     if cidr_blocked(ip, deny_cidrs):
         return False
+    if local:
+        # 主人自己的机器不受 allow 白名单限制：状态窗口那句「已暂停（本机之外都
+        # 访问不到）」、以及「仅本机」这一档，说的都是"本机照样能用"。
+        # deny 仍然算数——那是主人明确写下的"这段别来"。
+        return True
     return cidr_allowed(ip, allow_cidrs)
 
 
@@ -238,16 +243,18 @@ class Handler(BaseHTTPRequestHandler):
             self._record(ip, params.get("name"), route, 429)
             return self._error(429, "rate limit exceeded")
 
+        owner = self._is_owner(ip)
         if not _ip_allowed(
             ip,
             getattr(self.config, "allow_cidrs", None),
             getattr(self.config, "deny_cidrs", None),
+            local=owner,
         ):
             self._record(ip, params.get("name"), route, 403)
             return self._error(403, "cidr not allowed")
 
         people = getattr(self.config, "allow_people", None) or {}
-        name, denial = authorize_person(people, ip, params.get("name"), local=self._is_owner(ip))
+        name, denial = authorize_person(people, ip, params.get("name"), local=owner)
         if denial:
             self._record(ip, name, route, 401)
             return self._error(401, denial)
