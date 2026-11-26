@@ -178,6 +178,47 @@ def _cmd_init(args) -> int:
         from landoc import ship
 
         cfg.registry_url = ship.shipped_registry_url()
+    # 共享范围：命令行默认仍是 lan（脚本化建库没有交互填名单的地方，
+    # 静默生成一个空名单库等于"放开"，反而比 lan 更松）；
+    # 图形向导里新建库的默认档才是 people。
+    scope = getattr(args, "scope", None)
+    people_args = list(getattr(args, "person", None) or [])
+    if scope is not None or people_args:
+        from landoc.wizard import SCOPE_CIDRS, SCOPE_LOCAL, SCOPE_PEOPLE, person_row_error
+
+        people = dict(cfg.allow_people)
+        for raw in people_args:
+            person, sep, address = str(raw).partition("=")
+            if not sep:
+                print(
+                    "[错误] --person 的格式是 姓名=IP，例如 --person 张三=192.168.1.23",
+                    file=sys.stderr,
+                )
+                return 2
+            reason = person_row_error(person, address, people, cfg.allow_cidrs)
+            if reason:
+                print(f"[错误] {reason}", file=sys.stderr)
+                return 2
+            people[person.strip()] = address.strip()
+        if scope is None:
+            # 只给了人：按名单式处理，否则加了人名却不生效
+            scope = SCOPE_PEOPLE
+        if scope == SCOPE_PEOPLE:
+            if not people:
+                print(
+                    "[错误] 仅指定名单至少要一个人：--person 姓名=IP（也可以用 --scope lan）",
+                    file=sys.stderr,
+                )
+                return 2
+            cfg.allow_people = people
+        elif scope == SCOPE_LOCAL:
+            cfg.allow_people = {}
+            cfg.allow_cidrs = list(SCOPE_CIDRS[SCOPE_LOCAL])
+            cfg.deny_cidrs = []
+        else:
+            if people:
+                print("[提示] --scope lan 不启用名单，--person 被忽略", file=sys.stderr)
+            cfg.allow_people = {}
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")
@@ -185,6 +226,9 @@ def _cmd_init(args) -> int:
     print(f"     允许网段：{', '.join(cfg.allow_cidrs)}")
     if cfg.deny_cidrs:
         print(f"     拒绝网段：{', '.join(cfg.deny_cidrs)}")
+    if cfg.allow_people:
+        names = "、".join(f"{person}={address}" for person, address in cfg.allow_people.items())
+        print(f"     名单（只按 IP 放行）：{names}")
     print(f"     存储策略：{_storage_policy(cfg)}")
     if cfg.registry_url:
         print(f"     登记中心：{cfg.registry_url}")
@@ -538,6 +582,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="URL",
         help="登记中心地址（如 http://172.16.1.197:8767）；给了才会每 60 s 心跳登记，不给则保持原值",
+    )
+    init.add_argument(
+        "--scope",
+        choices=("lan", "people", "local"),
+        default=None,
+        help="共享范围：lan=本机所在网段（命令行默认）；people=仅指定名单，需配 --person；"
+        "local=仅本机。不给则沿用现有配置（新库为 lan；图形向导里新库默认 people）",
+    )
+    init.add_argument(
+        "--person",
+        action="append",
+        default=None,
+        metavar="姓名=IP",
+        help="名单里的人，可重复指定（如 --person 张三=192.168.1.23）；与 --scope people 配合",
     )
     init.set_defaults(func=_cmd_init)
 

@@ -106,6 +106,63 @@ def test_init_accepts_allow_cidrs(tmp_path: Path):
     assert Config.load(lib).allow_cidrs == ["172.16.1.0/24"]
 
 
+def test_init_scope_people_needs_at_least_one_person(tmp_path: Path, capsys):
+    """名单档至少要一个人：空名单在服务端等于放开，不能静默落盘。"""
+    lib = tmp_path / "lib"
+    code = cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--scope", "people"])
+    assert code == 2
+    assert "至少要一个人" in capsys.readouterr().err
+    assert not (lib / "config.json").exists()
+
+
+def test_init_scope_people_records_the_roster(tmp_path: Path):
+    lib = tmp_path / "lib"
+    code = cli.main(
+        [
+            "init", "--lib-dir", str(lib), "--name", "库", "--scope", "people",
+            "--person", "张三=10.91.1.23", "--person", "李四=10.91.1.24",
+            "--allow-cidrs", "10.91.0.0/16",
+        ]
+    )
+    assert code == 0
+    cfg = Config.load(lib)
+    assert cfg.allow_people == {"张三": "10.91.1.23", "李四": "10.91.1.24"}
+    assert cfg.allow_cidrs == ["10.91.0.0/16"]
+
+
+def test_init_scope_people_rejects_a_bad_person(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    code = cli.main(
+        ["init", "--lib-dir", str(lib), "--name", "库", "--scope", "people", "--person", "张三"]
+    )
+    assert code == 2
+    assert "姓名=IP" in capsys.readouterr().err
+
+
+def test_init_scope_local_closes_everything_but_this_machine(tmp_path: Path):
+    lib = tmp_path / "lib"
+    assert (
+        cli.main(
+            ["init", "--lib-dir", str(lib), "--name", "库", "--scope", "local",
+             "--allow-cidrs", "10.91.0.0/16"]
+        )
+        == 0
+    )
+    cfg = Config.load(lib)
+    assert cfg.allow_cidrs == ["127.0.0.1"]
+    assert cfg.allow_people == {}
+
+
+def test_init_scope_lan_ignores_the_roster(tmp_path: Path, capsys):
+    lib = tmp_path / "lib"
+    code = cli.main(
+        ["init", "--lib-dir", str(lib), "--name", "库", "--scope", "lan", "--person", "张三=10.91.1.23"]
+    )
+    assert code == 0
+    assert Config.load(lib).allow_people == {}
+    assert "--person 被忽略" in capsys.readouterr().err
+
+
 def test_init_rejects_bad_allow_cidrs(tmp_path: Path, capsys):
     lib = tmp_path / "lib"
     assert cli.main(["init", "--lib-dir", str(lib), "--name", "库", "--allow-cidrs", "172.16.1.0/99"]) == 2

@@ -355,6 +355,46 @@ def default_registry_url(current: Config | None) -> str:
     return ship.shipped_registry_url()
 
 
+def default_scope(current: Config | None) -> str:
+    """新建库默认「仅指定名单」；改已有库时照它现在的设置选。
+
+    默认对全内网开放太松（同网段谁都能查）；名单式至少知道是谁在查，
+    而且换人只需改名单。改已有库时不替人做主，避免"点一下保存就悄悄收紧了"。
+    """
+    if current is None:
+        return SCOPE_PEOPLE
+    if current.allow_people:
+        return SCOPE_PEOPLE
+    if list(current.allow_cidrs) == SCOPE_CIDRS[SCOPE_LOCAL]:
+        return SCOPE_LOCAL
+    return SCOPE_LAN
+
+
+def person_row_error(
+    name: str, ip: str, taken: dict[str, str] | None = None, cidrs: list[str] | None = None
+) -> str | None:
+    """向导「加入名单」一行的校验：姓名、重复、IP 合法性、是否落在允许网段。"""
+    # 网段还没填/填坏时不做网段这一层（0.0.0.0/0 等于不过滤），
+    # 别让"网段框还空着"变成"这个人加不进去"。
+    reason = validate_person(name, ip, list(cidrs or ["0.0.0.0/0"]))
+    if reason:
+        return reason
+    clean = (name or "").strip()
+    if clean in {(key or "").strip() for key in (taken or {})}:
+        return f"名单里已经有「{clean}」了；IP 变了就先删掉再加"
+    return None
+
+
+def people_from_rows(rows) -> dict[str, str]:
+    """把名单行（姓名, IP）收成 `allow_people`；同名以先出现的为准。"""
+    collected: dict[str, str] = {}
+    for raw_name, raw_ip in rows:
+        name = str(raw_name).strip()
+        if name and name not in collected:
+            collected[name] = str(raw_ip).strip()
+    return collected
+
+
 def build_config(
     name: str,
     folders: list[Path],
@@ -626,13 +666,8 @@ def run_wizard(
     scope_panel.grid(row=2, column=0, sticky="we", pady=(10, 0))
     scope_panel.columnconfigure(1, weight=1)
 
-    default_scope = SCOPE_LAN
-    if current is not None:
-        if current.allow_people:
-            default_scope = SCOPE_PEOPLE
-        elif list(current.allow_cidrs) == SCOPE_CIDRS[SCOPE_LOCAL]:
-            default_scope = SCOPE_LOCAL
-    scope_var = tk.StringVar(master=root, value=default_scope)
+    # 新建库默认「仅指定名单」：全内网开放太松，名单式至少知道谁在查。
+    scope_var = tk.StringVar(master=root, value=default_scope(current))
     radios = [
         ttk.Radiobutton(
             scope_panel, text="公司内网（网段见下一行）", variable=scope_var, value=SCOPE_LAN
@@ -673,8 +708,80 @@ def run_wizard(
         foreground="#666",
     ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(4, 0))
 
+    # 名单直接在这里编：以前"仅指定名单"只能建完库再去托盘「授权名单…」加人，
+    # 向导里选它会被劝回去，所以它永远不可能是默认档。
+    people_box = ttk.Frame(scope_panel)
+    people_box.grid(row=6, column=0, columnspan=3, sticky="we", pady=(8, 0))
+    people_box.columnconfigure(0, weight=1)
+    people_tree = ttk.Treeview(
+        people_box, columns=("name", "ip"), show="headings", height=4, selectmode="extended"
+    )
+    people_tree.heading("name", text="姓名（只作备注）")
+    people_tree.heading("ip", text="对方 IP")
+    people_tree.column("name", width=200, anchor="w")
+    people_tree.column("ip", width=150, anchor="w")
+    people_tree.grid(row=0, column=0, columnspan=2, sticky="we")
+
+    person_name_var = tk.StringVar(master=root)
+    person_ip_var = tk.StringVar(master=root)
+    person_row = ttk.Frame(people_box)
+    person_row.grid(row=1, column=0, columnspan=2, sticky="we", pady=(6, 0))
+    ttk.Label(person_row, text="姓名").grid(row=0, column=0, sticky="w")
+    ttk.Entry(person_row, textvariable=person_name_var, width=14).grid(
+        row=0, column=1, sticky="w", padx=(4, 10)
+    )
+    ttk.Label(person_row, text="IP").grid(row=0, column=2, sticky="w")
+    ttk.Entry(person_row, textvariable=person_ip_var, width=16).grid(
+        row=0, column=3, sticky="w", padx=(4, 10)
+    )
+
+    def people_now() -> dict[str, str]:
+        return people_from_rows(
+            people_tree.item(item, "values") for item in people_tree.get_children()
+        )
+
+    def add_person() -> None:
+        try:
+            cidrs_now, _error = parse_cidrs(cidr_var.get())
+        except Exception:  # noqa: BLE001 - 网段先填错时不挡着加人
+            cidrs_now = []
+        reason = person_row_error(
+            person_name_var.get(), person_ip_var.get(), people_now(), cidrs_now
+        )
+        if reason:
+            messagebox.showwarning("这个人加不进去", reason)
+            return
+        people_tree.insert(
+            "", "end", values=(person_name_var.get().strip(), person_ip_var.get().strip())
+        )
+        person_name_var.set("")
+        person_ip_var.set("")
+
+    def remove_person() -> None:
+        for item in people_tree.selection():
+            people_tree.delete(item)
+
+    people_actions = ttk.Frame(people_box)
+    people_actions.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    ttk.Button(people_actions, text="加入名单", width=10, command=add_person).grid(row=0, column=0)
+    ttk.Button(people_actions, text="删掉选中", width=10, command=remove_person).grid(
+        row=0, column=1, padx=(8, 0)
+    )
+    ttk.Label(
+        people_box,
+        text="对方的 IP：让他在自己电脑上打开状态窗口，「服务地址」那一行"
+        "（http://192.168.x.x:8768/）里的就是他这台机器的地址。",
+        foreground="#666",
+        wraplength=520,
+        justify="left",
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    if current is not None:
+        for person, address in (current.allow_people or {}).items():
+            people_tree.insert("", "end", values=(person, address))
+
     scope_hint = ttk.Label(scope_panel, text="", foreground="#666", wraplength=430, justify="left")
-    scope_hint.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    scope_hint.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def sync_scope_state() -> None:
         scope = scope_var.get()
@@ -682,24 +789,23 @@ def run_wizard(
         cidr_entry.configure(state=state)
         deny_entry.configure(state=state)
         if scope == SCOPE_PEOPLE:
-            if current is None:
+            people_box.grid()
+            count = len(people_now())
+            if count:
                 text = (
-                    "首次建库先选「公司内网」或「仅本机」。\n"
-                    "建好后在「授权名单…」窗口添加，再回来改「仅指定名单」。"
-                )
-            elif current.allow_people:
-                text = (
-                    f"名单：已登记 {len(current.allow_people)} 人。\n"
-                    "在「授权名单…」窗口维护，这里不重复编辑。"
+                    f"名单：{count} 人，只按 IP 放行（姓名只作备注）。\n"
+                    "名单以外的人，即使在内网也查不到；名单里的人换了网段也进不来。"
                 )
             else:
                 text = (
-                    "名单：还没有登记任何人。\n"
-                    "先在「授权名单…」窗口添加，再回来选「仅指定名单」。"
+                    "名单还是空的：这样除了你自己谁都查不到。\n"
+                    "在上面加一个人（姓名 + 对方 IP）再点「建库」。"
                 )
         elif scope == SCOPE_LOCAL:
+            people_box.grid_remove()
             text = "仅本机：只有这台电脑能查；同事打不开。"
         else:
+            people_box.grid_remove()
             text = "公司内网：网段内、且不在拒绝网段里的机器都能查；不启用姓名名单。"
         scope_hint.configure(text=text)
 
@@ -731,15 +837,19 @@ def run_wizard(
         people: dict[str, str] = {}
         departments: dict[str, str] = {}
         if scope_var.get() == SCOPE_PEOPLE:
-            if current is None or not current.allow_people:
+            people = people_now()
+            if not people:
                 messagebox.showwarning(
                     "名单还是空的",
-                    "「仅指定名单」需要先在库软件窗口或托盘菜单「授权名单…」里添加人员。\n\n"
-                    "首次建库请先选「公司内网」或「仅本机」，建好后再去添加。",
+                    "「仅指定名单」至少要加一个人（姓名 + 对方 IP），"
+                    "否则除了你自己谁都查不到。\n\n"
+                    "对方的 IP 让他在自己电脑上打开状态窗口，"
+                    "「服务地址」那一行（http://192.168.x.x:8768/）里的就是。",
                 )
                 return
-            people = dict(current.allow_people)
-            departments = dict(current.people_departments)
+            if current is not None:
+                # 部门/备注只用来分组查看，这里不编辑，原样带过去
+                departments = dict(current.people_departments)
         tool = _find_acrobat_tool_dir()
         registry, registry_error = parse_registry_url(registry_var.get())
         if registry_error:

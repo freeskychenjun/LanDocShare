@@ -466,3 +466,47 @@ def test_wizard_prefills_registry_url_from_the_shipped_default(tmp_path, monkeyp
         "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", registry_url="http://192.0.2.9:8767"
     )
     assert wizard.default_registry_url(existing) == "http://192.0.2.9:8767"
+
+
+def test_new_libraries_default_to_the_roster(tmp_path):
+    """新建库默认「仅指定名单」：全内网开放太松，不知道谁在查。"""
+    assert wizard.default_scope(None) == wizard.SCOPE_PEOPLE
+
+
+def test_existing_library_keeps_its_own_scope():
+    """改已有库的设置时不能替人做主：按它现在是什么档就选什么档。"""
+    lan = wizard.build_config("库", [], wizard.SCOPE_LAN, Path("lib"), cidrs=["10.91.0.0/16"])
+    assert wizard.default_scope(lan) == wizard.SCOPE_LAN
+    only_me = wizard.build_config("库", [], wizard.SCOPE_LOCAL, Path("lib"))
+    assert wizard.default_scope(only_me) == wizard.SCOPE_LOCAL
+    roster = wizard.build_config(
+        "库", [], wizard.SCOPE_PEOPLE, Path("lib"), people={"张三": "10.91.1.23"}
+    )
+    assert wizard.default_scope(roster) == wizard.SCOPE_PEOPLE
+
+
+def test_person_row_error_catches_the_usual_mistakes():
+    assert wizard.person_row_error("张三", "10.91.1.23", {}, ["10.91.0.0/16"]) is None
+    # 重名：改名或先删掉旧的
+    assert "已经有" in (wizard.person_row_error("张三", "10.91.1.99", {"张三": "10.91.1.23"}) or "")
+    # 不合法的 IP
+    assert wizard.person_row_error("张三", "10.91.1", {}, ["10.91.0.0/16"])
+    # 落在允许网段之外
+    assert wizard.person_row_error("张三", "192.0.2.9", {}, ["10.91.0.0/16"])
+
+
+def test_people_from_rows_keeps_the_first_and_skips_blanks():
+    rows = [("张三", "10.91.1.23"), ("", "10.91.1.9"), ("张三", "10.91.1.99"), ("李四", "10.91.1.24")]
+    assert wizard.people_from_rows(rows) == {"张三": "10.91.1.23", "李四": "10.91.1.24"}
+
+
+def test_build_config_keeps_the_roster_only_for_the_people_scope(tmp_path):
+    people = {"张三": "10.91.1.23"}
+    kept = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_PEOPLE, tmp_path / "lib", people=people, cidrs=["10.91.0.0/16"]
+    )
+    assert kept.allow_people == people
+    dropped = wizard.build_config(
+        "库", [tmp_path], wizard.SCOPE_LAN, tmp_path / "lib", people=people, cidrs=["10.91.0.0/16"]
+    )
+    assert dropped.allow_people == {}
