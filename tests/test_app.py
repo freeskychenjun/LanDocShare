@@ -956,3 +956,38 @@ def test_denied_visits_are_logged_once_per_window(tmp_path):
     app._note_denied(ip="10.91.1.178", api="/api/search", status=401)
     text = app_log_path(tmp_path).read_text(encoding="utf-8")
     assert len([line for line in text.splitlines() if "访问被拒" in line]) == 2
+
+
+def test_progress_refreshes_the_document_count_mid_round(tmp_path):
+    """建库途中「文档」行要跟着跳：不然 1000 篇的库一直显示旧数字，像卡住了。
+
+    进度回调每 20 篇来一次（`pipeline.COMMIT_EVERY`），那正好是索引提交的时刻。
+    """
+    from landoc.pipeline import RunReport
+
+    app = make_app(tmp_path, index=FakeIndex(total=0), idle_check=lambda: False)
+    app.index.total = 40  # 这一批的 40 篇已经提交进索引了
+
+    app._on_round_progress(RunReport(converted=20, pending=80, attempted=20))
+
+    assert app.status.doc_count == 40
+    assert app.status.phase == "converting"
+    assert app.status.converted == 20  # 已转换/剩余两组数字不受影响
+    assert app.status.pending == 60  # 80 - 20 尝试，pending 存的是"还差多少"
+
+
+def test_progress_survives_a_broken_stats_call(tmp_path):
+    """刷数字失败（索引刚好在重建/锁住）不该把这一轮带崩。"""
+    from landoc.pipeline import RunReport
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+
+    app = make_app(tmp_path, index=FakeIndex(total=7), idle_check=lambda: False)
+    app._update(doc_count=7)  # 界面上现有 7 篇
+    app.index.stats = boom  # type: ignore[method-assign]
+
+    app._on_round_progress(RunReport(converted=3, pending=5, attempted=3))
+
+    assert app.status.doc_count == 7  # 保留旧值，不抛
+    assert app.status.converted == 3

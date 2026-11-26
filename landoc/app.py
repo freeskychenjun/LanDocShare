@@ -611,12 +611,29 @@ class LibraryApp:
 
     def _on_round_progress(self, report) -> None:
         """转换途中刷状态：已转换按"本轮之前 + 本次"算，另报剩余篇数与 ETA。"""
+        self._refresh_doc_count()
         self._update(
             phase="converting",
             converted=self._round_base + report.converted,
             pending=report.remaining,
             eta_seconds=int(report.eta_seconds),
         )
+
+    def _refresh_doc_count(self) -> None:
+        """转换途中只刷「文档」那一行：每 20 篇提交一次索引，数字得跟着动。
+
+        早先只在每轮结束才刷，1000 篇的库从开工到收工，「文档」行一直停在旧数字，
+        看着像卡死了（实测 120 篇时是 0 → 100 → 120，中间十几秒没有变化）。
+        这里只查一次 `stats()`（千篇库约 1 ms）；`state.json` 那 249 KB 的解析
+        留给每轮结束的 `_refresh_counts`，别在热路径上反复做。
+        """
+        if self.index is None:
+            return
+        try:
+            total = int(self.index.stats().get("total", 0))
+        except Exception:  # noqa: BLE001 - 刷个数字失败不该影响建库
+            return
+        self._update(doc_count=total)
 
     def _drain(self) -> tuple[int, int]:
         """连着跑轮次，直到没活干；返回 (本次共收录篇数, 本次失败篇数)。
