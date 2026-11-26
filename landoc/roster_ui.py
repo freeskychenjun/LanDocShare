@@ -57,6 +57,7 @@ class RosterWindow(HostedWindow):
         self._dirty = False
         self._busy = False
         self._is_admin = False
+        self._seeding = False
 
     # ---------------------------------------------------------- 任意线程可调
     def show(self) -> None:
@@ -95,6 +96,7 @@ class RosterWindow(HostedWindow):
 
     def _on_show(self) -> None:
         self._reload()
+        self._seed_from_center()
 
     def _build(self, root) -> None:
         """在给定容器里搭界面并起队列泵；不 mainloop，关窗才返回。"""
@@ -208,6 +210,10 @@ class RosterWindow(HostedWindow):
                     return
                 elif command == "pulled":
                     self._on_pulled(payload)
+                elif command == "seeded":
+                    self._on_seeded(payload)
+                elif command == "seed_failed":
+                    self._on_seed_failed(payload)
                 elif command == "published":
                     self._set_busy(False)
                     self._say(f"已发布到中心：{payload.get('count', '?')} 人（{payload.get('server_time', '')}）")
@@ -227,7 +233,10 @@ class RosterWindow(HostedWindow):
         self._dirty = False
         self._render()
         if not self._roster:
-            self._say("名单为空：现在按允许的网段放行")
+            if getattr(self.cfg, "roster_only", False):
+                self._say("名单为空：按现在的设置，除了你自己谁都查不到")
+            else:
+                self._say("名单为空：现在按允许的网段放行")
             return
         depts = len({*self._roster.departments.values()})
         extra = f"，{depts} 个部门" if depts else ""
@@ -457,6 +466,47 @@ class RosterWindow(HostedWindow):
                 self._queue.put(("error", str(exc)))
 
         threading.Thread(target=work, name="landoc-roster-pull", daemon=True).start()
+
+    def _seed_from_center(self) -> None:
+        """名单还空着时，先用中心那份填进来当默认值（不覆盖，也不直接落盘）。"""
+        registry = str(getattr(self.cfg, "registry_url", "") or "").strip()
+        if self._seeding or not roster.needs_seed(self._roster, registry):
+            return
+        self._seeding = True
+        self._set_busy(True)
+        self._say("名单还空着，先从登记中心取一份全院名单…")
+
+        def work() -> None:
+            try:
+                _text, incoming = roster.fetch_roster(registry)
+                self._queue.put(("seeded", incoming))
+            except roster.RosterError as exc:
+                self._queue.put(("seed_failed", str(exc)))
+            except Exception as exc:  # noqa: BLE001 - 取不到不该让窗口报错
+                self._queue.put(("seed_failed", str(exc)))
+
+        threading.Thread(target=work, name="landoc-roster-seed", daemon=True).start()
+
+    def _on_seeded(self, payload) -> None:
+        self._seeding = False
+        self._set_busy(False)
+        try:
+            seeded, note, changed = roster.seed_roster(self._roster, payload)
+        except roster.RosterError as exc:
+            self._say(str(exc))
+            return
+        if not changed:
+            self._say(f"{note}；要同步就点「从中心拉取…」")
+            return
+        self._roster = seeded
+        self._dirty = True
+        self._render()
+        self._say(f"{note}（还没保存：确认没问题后点「保存并使生效」）")
+
+    def _on_seed_failed(self, payload) -> None:
+        self._seeding = False
+        self._set_busy(False)
+        self._say(f"没能从登记中心取到名单（{payload}）；可以手动添加，或稍后点「从中心拉取…」")
 
     def _on_pulled(self, payload) -> None:
         self._set_busy(False)

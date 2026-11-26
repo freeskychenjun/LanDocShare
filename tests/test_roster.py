@@ -210,3 +210,39 @@ def test_landing_page_lists_published_roster_with_departments(center):
         csv_text = resp.read().decode("utf-8-sig")
     assert "赵六" in csv_text
     assert "规划一所" in csv_text
+
+def test_needs_seed_only_when_local_is_empty_and_center_is_configured():
+    assert roster.needs_seed(roster.Roster(), "http://172.16.1.197:8767") is True
+    assert roster.needs_seed(roster.Roster({"老王": ""}), "http://172.16.1.197:8767") is False
+    assert roster.needs_seed(roster.Roster(), "   ") is False
+
+
+def test_seed_roster_adopts_the_center_list_for_an_empty_library():
+    center = roster.Roster({"赵六": "172.16.1.197"}, {"赵六": "规划一所"})
+
+    seeded, note, changed = roster.seed_roster(roster.Roster(), center)
+
+    assert changed is True
+    assert seeded.people == {"赵六": "172.16.1.197"}
+    assert seeded.departments == {"赵六": "规划一所"}
+    assert "载入 1 人" in note
+    assert "1 个部门" in note
+
+
+def test_seed_roster_never_overwrites_a_list_that_already_has_people():
+    mine = roster.Roster({"老王": "172.16.1.5"})
+    center = roster.Roster({"赵六": "172.16.1.197"})
+
+    seeded, note, changed = roster.seed_roster(mine, center)
+
+    assert changed is False
+    assert seeded.people == {"老王": "172.16.1.5"}
+    assert "没有覆盖" in note
+
+
+def test_seed_roster_copes_with_an_empty_center_list():
+    seeded, note, changed = roster.seed_roster(roster.Roster(), roster.Roster())
+
+    assert changed is False
+    assert not seeded
+    assert "也是空的" in note

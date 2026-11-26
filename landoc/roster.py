@@ -212,6 +212,27 @@ def apply_pull(
     return Roster(merged_people, merged_depts), f"{prefix}：{len(incoming)} 人{dept_note}（{'；'.join(notes)}）"
 
 
+def needs_seed(local: Roster, registry_url: str) -> bool:
+    """名单窗口打开时要不要先去中心取一份：本机名单还空着、且配了登记中心。"""
+    return not local and bool((registry_url or "").strip())
+
+
+def seed_roster(local: Roster, incoming: Roster) -> tuple[Roster, str, bool]:
+    """把中心那份名单当"默认值"填进空名单。
+
+    本地已经有名单时一律不动：同事可能在窗口关着的这段时间里手加过人，
+    自动"补全"等于把人删掉。返回 (名单, 给用户看的说明, 是否改动了名单)。
+    """
+    if not incoming:
+        return local, "登记中心上的名单也是空的", False
+    if local:
+        return local, f"登记中心有 {len(incoming)} 人；本地已有 {len(local)} 人，没有覆盖", False
+    merged, _note = apply_pull(local, incoming, replace=True)
+    dept_count = len({*merged.departments.values()})
+    extra = f"，{dept_count} 个部门" if dept_count else ""
+    return merged, f"已从登记中心载入 {len(merged)} 人{extra}", True
+
+
 def _open(url: str, *, data: bytes | None = None, timeout: float = 3.0, content_type: str = "text/csv"):
     request = urllib.request.Request(
         url,
