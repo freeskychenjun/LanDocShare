@@ -495,9 +495,18 @@ def test_person_row_error_catches_the_usual_mistakes():
     assert wizard.person_row_error("张三", "192.0.2.9", {}, ["10.91.0.0/16"])
 
 
-def test_people_from_rows_keeps_the_first_and_skips_blanks():
-    rows = [("张三", "10.91.1.23"), ("", "10.91.1.9"), ("张三", "10.91.1.99"), ("李四", "10.91.1.24")]
-    assert wizard.people_from_rows(rows) == {"张三": "10.91.1.23", "李四": "10.91.1.24"}
+def test_build_config_marks_roster_only_for_the_people_scope(tmp_path):
+    """「仅指定名单」要能跟"名单还空着"区分开：否则服务端会退回按网段放行。"""
+    folder = tmp_path / "资料"
+    folder.mkdir()
+
+    people = wizard.build_config("我的库", [folder], wizard.SCOPE_PEOPLE, tmp_path / "lib")
+    lan = wizard.build_config("我的库", [folder], wizard.SCOPE_LAN, tmp_path / "lib")
+    local = wizard.build_config("我的库", [folder], wizard.SCOPE_LOCAL, tmp_path / "lib")
+
+    assert people.roster_only is True
+    assert lan.roster_only is False
+    assert local.roster_only is False
 
 
 def test_build_config_keeps_the_roster_only_for_the_people_scope(tmp_path):

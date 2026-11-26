@@ -531,6 +531,47 @@ def test_the_owner_still_gets_in_when_every_subnet_is_closed(lib, monkeypatch):
         httpd.server_close()
 
 
+def test_roster_only_with_nobody_added_lets_nobody_in(lib, monkeypatch):
+    """「仅指定名单」还没加人时不能悄悄退回按网段放行：同事一律 403，主人照旧进得来。"""
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: set())
+    cfg, index = lib
+    cfg.roster_only = True
+    cfg.allow_people = {}
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        status, body = client.get("/api/stats")
+        assert status == 403
+        assert "roster empty" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_owner_gets_in_even_when_the_roster_is_empty(lib, monkeypatch):
+    from landoc import server as server_module
+
+    monkeypatch.setattr(server_module, "cached_local_ips", lambda: {"127.0.0.1"})
+    cfg, index = lib
+    cfg.roster_only = True
+    cfg.allow_people = {}
+    httpd = make_server(cfg, index=index, port=0)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    _, port = httpd.server_address[:2]
+    try:
+        client = Client(f"http://127.0.0.1:{port}")
+        assert client.get("/api/stats")[0] == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_an_explicit_deny_still_blocks_the_owner(lib, monkeypatch):
     """deny_cidrs 是主人明确写下的"这段别来"，本机也不例外。"""
     from landoc import server as server_module

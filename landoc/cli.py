@@ -211,14 +211,18 @@ def _cmd_init(args) -> int:
                 )
                 return 2
             cfg.allow_people = people
+            # 只认名单：空名单 = 谁都查不到（服务端按这个开关判，不退回网段放行）
+            cfg.roster_only = True
         elif scope == SCOPE_LOCAL:
             cfg.allow_people = {}
+            cfg.roster_only = False
             cfg.allow_cidrs = list(SCOPE_CIDRS[SCOPE_LOCAL])
             cfg.deny_cidrs = []
         else:
             if people:
                 print("[提示] --scope lan 不启用名单，--person 被忽略", file=sys.stderr)
             cfg.allow_people = {}
+            cfg.roster_only = False
     cfg.save()
     Index(cfg.db_path, md_root=cfg.md_dir).commit()
     print(f"[OK] 已建库：{cfg.name} → {lib_dir}")

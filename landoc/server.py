@@ -254,6 +254,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "cidr not allowed")
 
         people = getattr(self.config, "allow_people", None) or {}
+        if not owner and not people and getattr(self.config, "roster_only", False):
+            # 「仅指定名单」还没在「授权名单…」里加人：谁都查不到。
+            # 这里不能落到下面的"名单为空 = 不设限"，那等于悄悄放开。
+            self._record(ip, params.get("name"), route, 403)
+            return self._error(403, "roster empty")
         name, denial = authorize_person(people, ip, params.get("name"), local=owner)
         if denial:
             self._record(ip, name, route, 401)

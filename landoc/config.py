@@ -57,6 +57,9 @@ class Config:
     deny_cidrs: list[str] = field(default_factory=list)
     allow_people: dict[str, str] = field(default_factory=dict)
     people_departments: dict[str, str] = field(default_factory=dict)
+    # 只有名单里的人能查（名单在托盘「授权名单…」里维护）。名单还空着时 =
+    # 谁都查不到，不能悄悄退回"按网段放行"。
+    roster_only: bool = False
     port: int = 8766
     registry_url: str = ""
     check_updates: bool = True
