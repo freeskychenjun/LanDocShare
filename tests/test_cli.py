@@ -83,7 +83,8 @@ def test_pick_port_skips_busy_port():
         busy.bind(("0.0.0.0", 0))
         busy.listen(1)
         taken = busy.getsockname()[1]
-        assert cli.pick_port(taken) == taken + 1
+        # 只断言"往上找一个能用的"：紧挨着的那号也可能被本机别的程序占着
+        assert cli.pick_port(taken) > taken
 
 
 def test_pick_port_skips_registry_port(monkeypatch):
