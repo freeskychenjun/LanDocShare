@@ -382,53 +382,6 @@ def test_bind_host_requires_a_thread_to_queue_on(tmp_path):
 
 
 # ------------------------------------------------- 对话框不把状态窗口带出来
-class _FakeMaster:
-    """冒充面板根窗口：记下有没有被挂 transient。"""
-
-    def __init__(self, viewable: bool) -> None:
-        self.viewable = viewable
-        self.transients: list = []
-
-    def winfo_viewable(self) -> bool:
-        return self.viewable
-
-    def winfo_toplevel(self):
-        return self
-
-    def transient(self, other) -> None:
-        self.transients.append(other)
-
-
-class _FakeDialog:
-    def __init__(self) -> None:
-        self.transients: list = []
-
-    def transient(self, master) -> None:
-        self.transients.append(master)
-
-
-def test_transient_is_attached_only_when_the_panel_is_open():
-    """面板开着时对话框挂在它上面（关面板一起关）；面板收着就别挂，
-    否则 Windows 上子窗口跟着不显示，用户看到的是"点了没反应"。"""
-    dialog = _FakeDialog()
-    panel_module.attach_transient(dialog, _FakeMaster(viewable=False))
-    assert dialog.transients == []
-
-    master = _FakeMaster(viewable=True)
-    panel_module.attach_transient(dialog, master)
-    assert dialog.transients == [master]
-
-
-def test_transient_skips_a_master_that_cannot_answer():
-    class _Broken:
-        def winfo_viewable(self):
-            raise RuntimeError("解释器没了")
-
-    dialog = _FakeDialog()
-    panel_module.attach_transient(dialog, _Broken())  # 不该抛
-    assert dialog.transients == []
-
-
 def test_prune_button_is_disabled_while_building():
     """建库那一轮把 state/索引攥在手里：清理按钮必须置灰，点了也只会被覆盖。"""
     idle = AppStatus(phase="serving", doc_count=13, gone=2)

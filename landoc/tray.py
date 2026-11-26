@@ -113,6 +113,9 @@ class TrayApp:
         )
         self.roster = RosterWindow(cfg, on_saved=self._roster_saved, host=self.panel)
         self.libraries = DiscoverWindow(cfg, host=self.panel)
+        # 向导不再抢 grab（要能最小化），代价是可能被连着点开两个：
+        # 两个窗口各改一份配置，保存顺序说了算，用户看到的是"改了又变回去"。
+        self._wizard_open = False
 
     # ---- pystray 回调 ----
     def _on_status(self, status: AppStatus) -> None:
@@ -261,10 +264,19 @@ class TrayApp:
         """
         from landoc.wizard import apply_config, run_wizard
 
+        # 测试里用 __new__ 拼的 TrayApp 没走 __init__，这里不能假设属性已存在
+        if getattr(self, "_wizard_open", False):
+            self._on_notify("「修改建库设置」窗口已经开着")
+            return
+
         def ask(master):
             return run_wizard(self.cfg.lib_dir, master, save=False, current=self.cfg)
 
-        chosen = self.panel.run_modal(ask)
+        self._wizard_open = True
+        try:
+            chosen = self.panel.run_modal(ask)
+        finally:
+            self._wizard_open = False
         if chosen is None:
             return
         apply_config(self.cfg, chosen)

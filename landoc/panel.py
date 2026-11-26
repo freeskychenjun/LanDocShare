@@ -292,20 +292,6 @@ def release_tk(window: object) -> None:
     gc.collect()
 
 
-def attach_transient(window, master) -> None:
-    """把 `window` 挂成 `master` 的 transient（父窗口关了它也跟着关）。
-
-    注意 Windows 上 Tk 的行为：父窗口如果正收着（withdraw），子窗口也会跟着
-    不显示——看起来就是"点了没反应"。所以父窗口不可见时干脆不挂，让它当独立
-    窗口自己显示。
-    """
-    try:
-        if master is not None and master.winfo_viewable():
-            window.transient(master.winfo_toplevel())
-    except Exception:  # noqa: BLE001 - 挂不上就算了，不影响显示
-        pass
-
-
 def present(window) -> None:
     """把窗口摆到最前面一次（不长期置顶）。"""
     try:
@@ -720,7 +706,8 @@ class HostedWindow:
         if window is None:
             window = tk.Toplevel(root)
             self._window = window
-            attach_transient(window, root)
+            # 不挂 transient：挂了 Tk 就不许最小化（用户点标题栏的最小化没反应），
+            # 这几个窗口都有自己的任务栏按钮，独立摆着更顺手。
             self._build(window)
         self._on_show()
         # 统一摆到屏幕正中：这几个窗口都是"点了就要看"的浮动窗，不能让它落在

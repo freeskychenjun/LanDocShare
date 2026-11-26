@@ -136,7 +136,9 @@ def _ip_allowed(ip: str, allow_cidrs, deny_cidrs=None) -> bool:
     return cidr_allowed(ip, allow_cidrs)
 
 
-def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | None, str | None]:
+def authorize_person(
+    people: dict, ip: str, name: str | None, *, local: bool = False
+) -> tuple[str | None, str | None]:
     """名单授权：只按 IP 放行，姓名不授予权限（仅审计/一致性校验）。
 
     名单非空时：
@@ -144,6 +146,8 @@ def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | Non
     - 报了姓名且该姓名登记了 IP：IP 必须一致（防冒名），否则 401；
     - 报了姓名但该姓名没登记 IP：拒绝（空 IP 条目不授权，知道姓名也进不来）。
     - 不报姓名：只按 IP 匹配；不在名单里则 401。
+    - 本机（回环，或本机自己的网卡 IP，`local=True`）永远放行：主人用
+      `http://10.x.x.x:8768/` 打开自己的库也该进得去，否则一开名单就把自己关在门外。
 
     返回 (审计用姓名, 拒绝原因)；拒绝原因非空表示不通过。
     """
@@ -151,9 +155,9 @@ def authorize_person(people: dict, ip: str, name: str | None) -> tuple[str | Non
     asked = (name or "").strip()
     if not roster:
         return asked or None, None
-    # 本机回环永远放行：主人自己用 127.0.0.1 调试、状态窗口自检都走这里，
-    # 否则开了名单后本机反而进不去（客户机的来源 IP 是真实网卡地址，不受影响）。
-    if ip in _LOOPBACK_IPS:
+    # 本机永远放行：主人自己用 127.0.0.1 调试、状态窗口自检都走这里；用本机网卡
+    # 地址（http://10.x.x.x:8768/）打开自己的库也一样——否则开了名单先把自己关在门外。
+    if ip in _LOOPBACK_IPS or local:
         return asked or "本机", None
 
     if asked:
@@ -243,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "cidr not allowed")
 
         people = getattr(self.config, "allow_people", None) or {}
-        name, denial = authorize_person(people, ip, params.get("name"))
+        name, denial = authorize_person(people, ip, params.get("name"), local=self._is_owner(ip))
         if denial:
             self._record(ip, name, route, 401)
             return self._error(401, denial)

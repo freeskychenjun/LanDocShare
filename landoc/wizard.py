@@ -509,12 +509,12 @@ def run_wizard(
     # "点了保存，程序就消失了"）。所以有 parent 就挂在它上面开 Toplevel，
     # 没有 parent（首次建库、命令行 --wizard）才自己当根窗口。
     if parent is not None:
-        from landoc.panel import attach_transient, present
+        from landoc.panel import present
 
         root = tk.Toplevel(parent)
-        # 父窗口收着的时候别挂 transient：Windows 上子窗口会跟着不显示，
-        # 用户看到的就是"点了没反应"。父窗口开着才挂（关父窗口时一起关）。
-        attach_transient(root, parent)
+        # 不挂 transient：Tk 禁止最小化 transient 窗口（`can't iconify
+        # ".!toplevel": it is a transient`），标题栏那个最小化按钮就成了
+        # "点了没反应"。这是独立的设置窗，给它自己的任务栏按钮也该这样。
     else:
         root = tk.Tk()
     root.title("LanDocShare · 建库向导" if current is None else "LanDocShare · 修改建库设置")
@@ -912,10 +912,8 @@ def run_wizard(
     else:
         # 挂在状态窗口上时不能自己 mainloop（那条线程已经有一个了），
         # 用 grab + wait_window 做成模态：窗口关掉才返回。
-        try:
-            root.grab_set()
-        except Exception:  # noqa: BLE001 - 抢占失败也只是不模态
-            pass
+        # 不抢 grab：窗口要能最小化到任务栏，用户还能去状态窗口里抄一下对方的 IP
+        # 再回来看。等它关掉才返回靠的是 wait_window，跟 grab 无关。
         # 父窗口可能正收着，对话框得自己摆到前面来
         present(root)
         parent.wait_window(root)

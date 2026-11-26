@@ -301,6 +301,22 @@ def test_authorize_person_lets_loopback_through_and_empty_roster_is_open():
     assert authorize_person({"赵六": "172.16.1.197"}, "::1", None) == ("本机", None)
     # 名单为空 = 只靠网段把关，报不报姓名都无所谓
     assert authorize_person({}, "172.16.1.197", None) == (None, None)
+
+
+def test_authorize_person_lets_the_owner_in_through_the_lan_address():
+    """主人用本机网卡地址（http://10.x.x.x:8768/）打开自己的库也得进得去。
+
+    否则一开「仅指定名单」就把自己关在门外：名单里通常只有同事的 IP，
+    而浏览器访问本机服务时来源地址是自己的网卡 IP，不是 127.0.0.1。
+    """
+    from landoc.server import authorize_person
+
+    roster = {"赵六": "172.16.1.197"}
+    # 不是本机：照旧按名单拒
+    assert authorize_person(roster, "172.16.1.99", None) == (None, "ip not registered")
+    # 是本机：放行，审计记「本机」
+    assert authorize_person(roster, "172.16.1.99", None, local=True) == ("本机", None)
+    assert authorize_person(roster, "172.16.1.99", "张三", local=True) == ("张三", None)
     assert authorize_person({}, "172.16.1.197", "赵六") == ("赵六", None)
 
 
