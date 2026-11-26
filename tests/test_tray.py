@@ -315,3 +315,45 @@ def test_panel_cleanup_button_calls_back_into_the_app():
 
     assert tray.TrayApp._prune_library(owner) == 2
     assert calls == ["prune"]
+
+
+class _FakePanel:
+    """只记下"要在窗口线程里跑什么"，不真开 Tk。"""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def call(self, fn) -> None:
+        self.calls.append(fn)
+
+
+def _tray_without_tk(*, show_panel_on_start: bool = True) -> tray.TrayApp:
+    app = tray.TrayApp.__new__(tray.TrayApp)  # 绕开 __init__：不碰 Tk、不碰注册表
+    app.show_panel_on_start = show_panel_on_start
+    app.panel = _FakePanel()
+    return app
+
+
+def test_autostart_question_waits_until_a_normal_run(monkeypatch):
+    """开机自启那一路不弹窗（开机时没人坐在电脑前），把机会留给下次交互。"""
+    monkeypatch.setattr(tray.autostart, "is_enabled", lambda: False)
+    app = _tray_without_tk(show_panel_on_start=False)
+
+    assert app._ask_autostart(3) is False
+    assert app.panel.calls == []
+
+
+def test_autostart_question_is_asked_once_a_normal_run_lands(monkeypatch):
+    monkeypatch.setattr(tray.autostart, "is_enabled", lambda: False)
+    app = _tray_without_tk()
+
+    assert app._ask_autostart(3) is True
+    assert len(app.panel.calls) == 1
+
+
+def test_autostart_question_is_skipped_when_already_enabled(monkeypatch):
+    monkeypatch.setattr(tray.autostart, "is_enabled", lambda: True)
+    app = _tray_without_tk()
+
+    assert app._ask_autostart(3) is True  # 处理完了，只是不用问
+    assert app.panel.calls == []

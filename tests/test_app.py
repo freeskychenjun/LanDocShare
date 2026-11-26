@@ -991,3 +991,68 @@ def test_progress_survives_a_broken_stats_call(tmp_path):
 
     assert app.status.doc_count == 7  # 保留旧值，不抛
     assert app.status.converted == 3
+
+
+def test_first_batch_asks_about_autostart_once(tmp_path):
+    """首批收录完问一次开机自启；答过之后（换一次启动也一样）不再问。"""
+    asked: list[int] = []
+
+    def ask(docs: int) -> bool:
+        asked.append(docs)
+        return True
+
+    index = FakeIndex(total=3)
+    app = make_app(tmp_path, index=index, on_first_batch=ask)
+
+    app._maybe_ask_autostart(3)
+    app._maybe_ask_autostart(5)  # 同一进程的第二轮
+
+    assert asked == [3]
+    assert index.get_meta("autostart_asked", "") == "1"
+
+    again = make_app(tmp_path, index=index, on_first_batch=ask)  # 相当于重启一次
+    again._maybe_ask_autostart(2)
+    assert asked == [3]  # 标记存在索引里，重启也不问第二遍
+
+
+def test_no_autostart_prompt_before_anything_is_indexed(tmp_path):
+    """空库不问：还没一篇能搜的时候问，用户没法判断这东西值不值得开机跑。"""
+    asked: list[int] = []
+    app = make_app(
+        tmp_path, index=FakeIndex(total=0), on_first_batch=lambda n: asked.append(n) or True
+    )
+
+    app._maybe_ask_autostart(0)
+
+    assert asked == []
+
+
+def test_autostart_prompt_is_retried_when_the_ui_cannot_ask_yet(tmp_path):
+    """托盘那边说"现在没法问"（例如开机自启那一路不弹窗）时不写标记，下次再问。"""
+    asked: list[int] = []
+    app = make_app(
+        tmp_path, index=FakeIndex(total=1), on_first_batch=lambda n: asked.append(n) or False
+    )
+
+    app._maybe_ask_autostart(1)
+    app._maybe_ask_autostart(1)
+
+    assert asked == [1, 1]
+    assert app.index.get_meta("autostart_asked", "") == ""
+
+
+def test_autostart_prompt_survives_a_broken_index(tmp_path):
+    """索引读不到标记就这一轮先不问，但绝不能抛出来把建库带崩。"""
+
+    class BrokenIndex(FakeIndex):
+        def get_meta(self, key: str, default: str = "") -> str:
+            raise RuntimeError("database is locked")
+
+    asked: list[int] = []
+    app = make_app(
+        tmp_path, index=BrokenIndex(total=1), on_first_batch=lambda n: asked.append(n) or True
+    )
+
+    app._maybe_ask_autostart(1)
+
+    assert asked == []

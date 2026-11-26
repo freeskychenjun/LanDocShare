@@ -85,7 +85,7 @@ python -m PyInstaller packaging\LanDocShare.spec --noconfirm --clean
 - **托盘图标怎么才画得出来**（`landoc/notifyicon.py`）：pystray 0.19.5 发 `NOTIFYICONDATAW` 时传的是 `hID=`，而字段名是 `uID`，ctypes 不校验关键字 → **uID 永远是 0**，外壳只会留个空槽（没图标、右键点不出菜单）。程序启动时给 `Shell_NotifyIcon` 包了一层：uID 补成非零；`NIM_ADD` 失败（外壳残留上一条记录时常见）就删掉重加，还不行就补一条带 `NIF_ICON` 的 `NIM_MODIFY`，并在后台再试几次。排障可设 `LANDOC_TRAY_DEBUG=1`，日志在 `%LOCALAPPDATA%\LanDocShare\logs\tray.log`。
 
 - **单实例**：命名互斥量 `Local\LanDocShare-single-instance`。
-- **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。
+- **开机自启**：菜单里勾选，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，不需要管理员。**默认不勾**；首次建库收录进第一批文档后会弹一次「要不要让它随开机自动启动」，答过就不再问（标记存索引 meta 的 `autostart_asked`，换台机器重建库会再问一次；`--autostart` 模式不弹窗，把这个机会留给下次手动打开时）。
 - **记忆库目录**：上次打开的库记在 `%LOCALAPPDATA%\LanDocShare\last_lib.txt`；没有记录就开向导，库位置默认填 `<我的文档>\LanDocShare\<用户名>的资料库`（没有"文档"目录时退 `%LOCALAPPDATA%\LanDocShare\library`），可当场改成别的文件夹。
 - **包体**：约 184 MB（onedir；其中 `landoc/tools` 的 OCR 工具与模型占 14.7 MB，zip 约 92 MB）。开发机上装着一堆无关重型包（torch/cv2/scipy），`packaging/LanDocShare.spec` 里显式排掉了——不排会膨胀到 1.2 GB。换机器打包若报缺模块，看 `LanDocShare-debug.exe` 的控制台输出再补 `hiddenimports`。
 

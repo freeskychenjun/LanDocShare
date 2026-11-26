@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import webbrowser
+from tkinter import messagebox
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -93,7 +94,10 @@ class TrayApp:
         self.icon = None
         self.show_panel_on_start = show_panel_on_start
         self.app = LibraryApp(
-            cfg, on_status=self._on_status, on_notify=self._on_notify
+            cfg,
+            on_status=self._on_status,
+            on_notify=self._on_notify,
+            on_first_batch=self._ask_autostart,
         )
         self.panel = StatusPanel(
             cfg,
@@ -125,6 +129,35 @@ class TrayApp:
                 self.icon.notify(message, "LanDocShare")
             except Exception:  # noqa: BLE001
                 pass
+
+    def _ask_autostart(self, docs: int) -> bool:
+        """首批文档收录完：问一次要不要开机自启。返回"这件事处理完了没有"。
+
+        `--autostart`（开机自启那一路）不弹窗：开机没人坐在电脑前，冒一个
+        对话框出来只会吓人；这次不处理，下次用户自己打开时再问。
+        """
+        if not self.show_panel_on_start:
+            return False
+        if autostart.is_enabled():
+            return True  # 已经勾上了，没必要再问
+        self.panel.call(lambda root: self._autostart_dialog(docs))
+        return True
+
+    def _autostart_dialog(self, docs: int) -> None:
+        """在窗口线程里弹的询问框（由 `panel.call` 排进去）。"""
+        text = (
+            f"库已经建好了：首批 {docs} 篇文档可以被同事检索。\n\n"
+            "要不要让它随开机自动启动？\n"
+            "勾上后每次开机它就待在托盘里，同事随时能搜到；"
+            "不勾也能用，只是要你自己双击打开。"
+        )
+        try:
+            if not messagebox.askyesno("开机自启", text):
+                return
+            autostart.set_enabled(True)
+            messagebox.showinfo("已设置", "下次开机 LanDocShare 会自己在托盘里等你。")
+        except Exception:  # noqa: BLE001 - 弹窗出问题不该影响建库
+            return
 
     def _open_page(self) -> None:
         webbrowser.open(self.app.local_url())

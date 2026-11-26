@@ -194,6 +194,7 @@ class LibraryApp:
         idle_minutes: float = 5.0,
         on_status: Callable[[AppStatus], None] | None = None,
         on_notify: Callable[[str], None] | None = None,
+        on_first_batch: Callable[[int], bool] | None = None,
         poster: Callable[[str, dict], dict] | None = None,
         heartbeat_seconds: float = 60.0,
         update_fetch: Callable | None = None,
@@ -212,6 +213,8 @@ class LibraryApp:
         self._poll = poll_seconds
         self._on_status = on_status
         self._on_notify = on_notify
+        self._on_first_batch = on_first_batch
+        self._autostart_asked = False  # 问过开机自启没有（问过就不问了）
         self._poster = poster or _post_json
         self._heartbeat_seconds = heartbeat_seconds
         self._update_fetch = update_fetch
@@ -568,8 +571,41 @@ class LibraryApp:
                 message = "已是最新：没有需要收录的新文档"
             if message:
                 self._notify_user(message)
+            self._maybe_ask_autostart(converted)
             self._update(phase="serving", converted=0)
             self._wait(self._poll)
+
+    _AUTOSTART_META = "autostart_asked"
+
+    def _maybe_ask_autostart(self, converted: int) -> None:
+        """第一次真收录进东西之后，问一次"要不要开机自启"，问过就不再问。
+
+        为什么等首批收录完再问：库刚建好、还一篇没进去的时候问，用户看不到
+        这东西到底能不能用，只能凭感觉答；有那么几篇能搜了再问才有依据。
+        为什么标记存在索引里而不是 config.json：它跟着库走（换台机器重建库
+        会再问一次，那是合理的），也不必给配置文件加一个用户看不懂的字段。
+        """
+        if self._on_first_batch is None or not converted or self._autostart_asked:
+            return
+        if self.index is not None:
+            try:
+                if str(self.index.get_meta(self._AUTOSTART_META, "")) == "1":
+                    self._autostart_asked = True
+                    return
+            except Exception:  # noqa: BLE001 - 索引读不到就先不问，下一轮再说
+                return
+        try:
+            handled = bool(self._on_first_batch(converted))
+        except Exception:  # noqa: BLE001 - 弹窗失败不能影响建库
+            return
+        if not handled:
+            return  # 眼下没法问（例如 --autostart 开机模式）：下一轮还有机会
+        self._autostart_asked = True
+        if self.index is not None:
+            try:
+                self.index.set_meta(self._AUTOSTART_META, "1")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _log_failure_details(self, report) -> None:
         """把失败的篇名与原因记下来（最多 3 条）：只报"N 篇失败"等于没报。
